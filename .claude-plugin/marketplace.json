@@ -1,0 +1,14 @@
+{
+  "name": "swat9013",
+  "owner": {
+    "name": "swat9013",
+    "url": "https://github.com/swat9013"
+  },
+  "description": "Claude Code で使う skill 集",
+  "plugins": [
+    {
+      "name": "swat-skills",
+      "source": "./"
+    }
+  ]
+}

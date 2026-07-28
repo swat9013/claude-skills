@@ -1,0 +1,36 @@
+{
+  "name": "swat-skills",
+  "description": "Claude Code で使う skill 集",
+  "author": {
+    "name": "swat9013"
+  },
+  "homepage": "https://github.com/swat9013/claude-skills",
+  "repository": "https://github.com/swat9013/claude-skills",
+  "license": "MIT",
+  "skills": [
+    "./skills/steering/insights-reflect",
+    "./skills/steering/inventory-claude-md",
+    "./skills/steering/inventory-permissions",
+    "./skills/steering/inventory-skill-mcp",
+    "./skills/steering/inventory-values",
+    "./skills/steering/skill-usage-audit",
+    "./skills/knowledge/claude-config-review",
+    "./skills/knowledge/coding-principles",
+    "./skills/knowledge/dev-env-best-practices",
+    "./skills/knowledge/dialogue",
+    "./skills/knowledge/engineering-judgment",
+    "./skills/knowledge/pr-quality",
+    "./skills/knowledge/python-single-file-script",
+    "./skills/knowledge/repo-agent-maturity",
+    "./skills/knowledge/researcher",
+    "./skills/knowledge/shell-script",
+    "./skills/knowledge/single-file-html",
+    "./skills/knowledge/test-strategy",
+    "./skills/dev/adr",
+    "./skills/dev/contextual-commits",
+    "./skills/dev/frontend-refine",
+    "./skills/dev/worktree-setup",
+    "./skills/util/inventory-dispatch",
+    "./skills/util/issue-dispatch"
+  ]
+}

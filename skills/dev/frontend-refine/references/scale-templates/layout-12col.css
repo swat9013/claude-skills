@@ -1,0 +1,42 @@
+/* 12-column grid + container + fluid type helpers */
+:root {
+  --container-max: 1320px;
+  --container-padding: 1rem;
+  --gutter: 1.5rem;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.1);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.07), 0 10px 13px rgba(0,0,0,0.1);
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.1), 0 4px 6px rgba(0,0,0,0.05);
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+               "Segoe UI Variable", Roboto, "Helvetica Neue", sans-serif,
+               "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --focus-ring-width: 2px;
+  --focus-ring-color: var(--ring, currentColor);
+  --focus-ring-offset: 2px;
+}
+
+.container {
+  max-width: var(--container-max);
+  margin-inline: auto;
+  padding-inline: var(--container-padding);
+}
+
+.grid-12 {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: var(--gutter);
+}
+
+.prose { max-width: 65ch; }
+
+@media (max-width: 768px) {
+  .grid-12 { grid-template-columns: repeat(6, 1fr); gap: 1rem; }
+}
+
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+}

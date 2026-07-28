@@ -1,0 +1,89 @@
+---
+name: engineering-judgment
+description: swat9013 のエンジニアリング価値観を蒸留した決定規則集。設計・実装・テスト・リリースで複数の選択肢からの判断が発生する場面で参照する。Use when「設計判断」「どっちにすべき」「トレードオフ」「アーキテクチャ検討」「技術選定」「テスト戦略」「実装方針の選択」「リリース戦略」「品質と速度」.
+user-invocable: false
+---
+
+# engineering-judgment
+
+エンジニアリング価値観を「競合したらどちらを選ぶか」の決定規則に蒸留したもの。設計・実装・テスト・リリース・運用の判断が発生したら、該当する場面の規則を既定値として適用する。
+
+## メタ規則 (最優先)
+
+1. **この基準は既定値であって絶対ではない**。プロジェクト規約・事業文脈と衝突したら文脈側を優先し、乖離をユーザーに報告する。
+2. **基準は進化する**。規則が現実と噛み合わない場面を見つけたら、黙って従わず指摘する。
+3. **設計判断はユーザーに帰属する**。AI は補助的活用の位置づけ。複数案が拮抗する重要な設計判断は勝手に確定せず、トレードオフを添えて提示する。
+
+## 設計
+
+- **導出順序**: 制約 (ビジネス・チーム規模・非機能要件) → アーキテクチャ特性 (architecture characteristics — 影響度の高い -ilities のみ選抜する。Richards & Ford『Fundamentals of Software Architecture』) → 構造。設計後に見つかった観点で制約を問い直すループを回す。
+- **決定の遅延**: 不可逆な決定は last responsible moment (Poppendieck『Lean Software Development』) まで遅らせる。ただし遅らせすぎて「未決定」がデフォルトの決定になるのは失敗。
+- **進め方**: ユースケース洗い出し → ドメインモデル抽出 → 最小構造で実装 → 実装知見をユースケース・モデル・構造へ還流する。ユースケースは受け入れ条件であり、自動テストに落とす (Clean Architecture / DDD 系譜のユースケース駆動)。
+- **最適化目標**: 少人数で効率よく運用できるシステム。回復不能な構造 (最悪) の回避が、局所最適より先。
+- **自前実装と既製品が拮抗したら既製品を選ぶ** (build vs buy)。自前は作り込むほど柔軟性と操作の直感性を失う。自前を選ぶなら「既製品では満たせない要件」を先に言語化する。
+- **技術選定は (a) テストが書ける (b) ユーザーが読める (c) 環境構築と実装が簡単、で選ぶ**。機能の優位性だけで選ばない。ユーザーが読める言語かどうか不明なら確認する。
+
+## 原則の競合解決
+
+- **変更影響の局所化がすべての原則に優先する**: ある箇所の変更が他モジュールへ波及しない構造を選ぶ (coupling / cohesion — Stevens, Myers & Constantine 1974)。DRY・SOLID・KISS と競合したら波及を抑える側を選ぶ。結合の最小化そのものは目的ではない — 過剰分割 (分散モノリス・早すぎる抽象化) はこの原則の違反。
+- **DRY の対象は「知識」でありコード行ではない** (Hunt & Thomas『The Pragmatic Programmer』)。異なる理由で変わる似たコードは重複のまま残す。共通化がモジュール間結合を生むなら重複を許容する。
+- **deletability を重視する** (tef "Write code that is easy to delete, not easy to extend")。AI で機能実装コストは下がったため、「拡張しやすさ」より「変更影響が波及しない・機能単位で捨てられる」構造を選ぶ。※12-factor の Disposability (プロセスの起動終了) とは別概念。
+- **捨てるときは歴史を残す**: 撤退・移行を決めたら削除して終わりにせず、戻れる記録 (ADR / アーカイブ) と再検討トリガー条件 (どうなったら戻すか) を残す。deletability の対。
+- **結合は排除ではなくバランスさせる** (Khononov『Balancing Coupling in Software Design』)。integration strength (知識共有度) / distance (距離) / volatility (変更頻度) の 3 次元で評価し、変更頻度が高い箇所ほど弱い結合にする。
+
+## 品質 vs 速度
+
+- **まずフェーズを特定する**。探索フェーズ = 速度優先、安定フェーズ = 品質優先。フェーズが不明なら判断前にユーザーへ確認する。
+- **技術的負債の許容判定は Technical Debt Quadrant** (Fowler, 2009) で行う。許容できるのは deliberate かつ prudent な負債 — 所在と悪化条件を把握し記録した負債のみ。分かっていて記録せず放置するのは reckless であり許容しない。
+- **負債を作るときは必ず記録する**: 所在・悪化条件・返済トリガーをコメント / ADR / issue のいずれかに残す。
+- **返済は Boy Scout Rule が基本** (Robert C. Martin『Clean Code』— checkout 時より綺麗に checkin する)。大きな構造変更はビジネス価値と照らして計画返済に切り替える。
+
+## テスト
+
+- **TDD で進める** (Beck『Test-Driven Development: By Example』の Red-Green-Refactor)。テストは目的ではなく手段 — 設計フィードバックとリグレッション防御のためにある (t-wada の整理)。スパイク (探索目的の使い捨てコード) は TDD 免除 — ただしスパイクと明示し、本流に採用する時点で TDD で書き直す。
+- **投資配分は Testing Trophy** (Dodds — 標語は Rauch "Write tests. Not too many. Mostly integration.") — 統合テスト重視。ソフトウェアの実際の使われ方に似たテストほど高い信頼を与える。TDD は開発リズム・Trophy は投資配分であり矛盾しない (統合テストでも Red-Green-Refactor は回せる)。
+- **カバレッジ数値は回帰下限 (floor)**: 下げない基準であって最大化目標ではない ("Not too many")。重要経路 (決済・認可・データ削除) は床を高く設定する。
+- **詳細判断 (テストレベル選択・カバレッジ / ミューテーション運用・テストダブル・テスト保守) は test-strategy skill を参照する** (本節の詳細版)。
+
+## 統合・リリース
+
+- **短命ブランチ (1-2 日) で小さく統合する** (scaled trunk-based development — trunkbaseddevelopment.com)。長命 feature branch を作らない。
+- **Ship small, ship often**。リリース単位は最小の独立した変更。
+- **展開は段階的 (canary release / feature toggle) が理想**。低リスクシステム (社内ツール等) は continuous deployment でよい。feature toggle は短命に保つ (Hodgson — long-lived toggle は複雑化リスク)。
+
+## エラー処理
+
+- **fail fast + Design by Contract**。事前条件・事後条件・不変条件 (Meyer『Object-Oriented Software Construction』) を明示し、違反は即座に可視的に失敗させる (Shore "Fail Fast", IEEE Software 2004)。DbC は fail fast の実装手段の一つ。
+- **開発時は fail fast、本番は graceful degradation** (コア機能を維持して縮退)。沈黙の失敗 (握りつぶし・暗黙の自動回復) は最悪。
+
+## 運用
+
+- **You Build It, You Run It** (Vogels, ACM Queue 2006)。運用性 (可観測性・デプロイ容易性) を初期設計に組み込む。
+- **投資順序は Monitoring が先** (known-unknowns の閾値検知)、**Observability が次** (unknown-unknowns の探索的診断 — Majors)。
+- **Error budget は挑戦を許容する予算** (Google SRE Book)。予算が残っているなら、それを使う攻めの判断を提案してよい。
+
+## セキュリティ
+
+- **検査は開発初期工程へ前倒しする** (shift left — SAST / code review / pre-commit 段階での検出。早期発見ほど修正コストが低い)。
+- **投資はリスクベース**: 資産価値と脅威モデルに基づいて配分する。一律の最大防御にしない。
+
+## 自動化
+
+- **Automate When It Hurts**: 痛み (反復コスト) の実測前に自動化しない。自動化を提案するときは痛みの根拠を添える。
+- **遵守は機械で保証する**: 規約の遵守を人の注意力に頼らない。決定的に判定できる制約は lint / hook / 型・構造で守らせる。遵守が難しい表現形式 (手書きの TAB 区切り等) は最初から選ばない。※上記「いつ自動化するか」とは別軸の「どう守らせるか」の規則。
+- **決定的にできる推論は script へ逐い出す**: LLM 推論のうち決定論的に書ける部分は script 化する (テスト可能・トークン削減)。実現手段は非標準の拡張より標準機能内での実現を優先する。
+
+## 協働・ドキュメント
+
+- **Collective Code Ownership** (Beck『Extreme Programming Explained』)。特定個人しか触れないコードを作らない。
+- **コードレビューの主目的は設計改善と知識共有** — 代替案の議論を通じてメンバー間のスキル・ドメイン知識を伝播させる。**PR の小分け・説明文・レビュアー 8 次元基準・レビュー手順の詳細判断は pr-quality skill を参照する** (本節の詳細版)。
+- **コードで WHAT、ADR で WHY** (Nygard, 2011)。設計判断には rationale と棄却案を残す。
+
+## AI 協働
+
+- **AI-navigable codebase を積極目標にする**。AI に読みやすい構造・命名・ドキュメントは人にも読みやすい。
+- **AI は補助的活用**。設計判断の確定はユーザーが行う (メタ規則 3 と同一)。
+
+## 根拠 (正本)
+
+本書の規則は `${CLAUDE_SKILL_DIR}/references/values-source.md` (正本) からの蒸留。規則の根拠・採用概念の定義と出典・解釈の精査履歴が必要なら正本を Read する。本書と正本が食い違ったら正本が勝つ。

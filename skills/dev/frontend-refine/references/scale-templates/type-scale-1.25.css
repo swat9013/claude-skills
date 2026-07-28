@@ -1,0 +1,18 @@
+/* Type scale: Major Third (1.25), base 16px — default for SaaS/general web */
+:root {
+  --text-xs: 0.64rem;   /* 10.24px */
+  --text-sm: 0.8rem;    /* 12.8px */
+  --text-base: 1rem;    /* 16px */
+  --text-md: 1.25rem;   /* 20px */
+  --text-lg: 1.5625rem; /* 25px */
+  --text-xl: 1.953rem;  /* 31.25px */
+  --text-2xl: 2.441rem; /* 39.06px */
+
+  --leading-tight: 1.1;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-loose: 0.01em;
+}

@@ -1,0 +1,14 @@
+/* 8pt Grid Spacing — Material/Apple/Bootstrap 一致 */
+:root {
+  --space-0: 0;
+  --space-0-5: 0.25rem;   /* 4px  - micro (icon padding) */
+  --space-1: 0.5rem;      /* 8px  - tight, default gutter */
+  --space-1-5: 0.75rem;   /* 12px */
+  --space-2: 1rem;        /* 16px - standard padding/margin */
+  --space-3: 1.5rem;      /* 24px - section spacing */
+  --space-4: 2rem;        /* 32px - large section */
+  --space-6: 3rem;        /* 48px - hero spacing */
+  --space-8: 4rem;        /* 64px - major section */
+  --space-12: 6rem;       /* 96px - page-level */
+  --space-16: 8rem;       /* 128px - rare */
+}
