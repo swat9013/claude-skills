@@ -19,7 +19,7 @@ description: 標準 transcript のユーザー手入力プロンプト (直近 3
 ## スコープ (改変不可の境界)
 
 - **読み対象**: `~/.claude/projects/**/*.jsonl` (標準 transcript) のみ。走査・抽出は script の責務で、LLM が transcript を直接読むことはしない
-- **書き対象**: 本 repo (swat-skills) の `skills/knowledge/engineering-judgment/` と `skills/knowledge/coding-principles/` のみ、かつ **AskUserQuestion での人間承認後に worktree + PR で**行う。main の working tree を直接編集しない
+- **書き対象**: 本 repo (swat-skills) の `skills/knowledge/engineering-judgment/` と `skills/knowledge/coding-principles/`。加えて `反映先未定` の候補について**手順 4 で人間が器を明示的に選んだ場合に限り**、本 repo の `CLAUDE.md` / `.claude/rules/<topic>.md` / 新規 skill へ反映してよい (skill が器を決めるのは禁止。手順 5-3)。いずれも **AskUserQuestion での人間承認後に worktree + PR で**行い、main の working tree を直接編集しない
 - **除外**: `~/.claude/CLAUDE.md` (global) / 他 repo のファイル / `~/.claude/state/rules/` の `#rule` buffer。buffer の消費は `inventory-claude-md` の領分であり本 skill は触らない (repo 表現は同一キーなので突き合わせは可能だが、**書かない**)
 - **非依存**: claude-mem / dotfiles / herdr。すべて標準 transcript と本 repo 内 file のみ
 
@@ -37,7 +37,7 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-user-prompts.py
 
 - `--days N` で観測窓を上書き (省略時 30 日)
 - stdout に mart JSON path (`/tmp/inventory-values/mart-<timestamp>.json`) が出る
-- **mart は生データ** — bucket も発話型も持たない。`meta.excluded` に除外理由別の内訳が出るので、`no_prompt_source` が急増していたら CLI schema 変更を疑う (観測の劣化が silent zero にならない設計)
+- **mart は生データ** — bucket も発話型も持たない。`meta.excluded` に除外理由別の内訳が出るので、`no_prompt_source` が急増していたら CLI schema 変更を疑う (観測の劣化が silent zero にならない設計)。**「急増」の判定には前回 mart が要る**。手元に無ければ `total_prompts` との比を劣化判定の代用にせず、レポートに「前回 mart が無く判定不能」と書く
 
 `meta.total_prompts` が 0 なら「観測不能」を報告して終了する (推測での穴埋めをしない)。
 
@@ -72,6 +72,12 @@ ${CLAUDE_SKILL_DIR}/scripts/select-candidates.py --mart <手順 1 の path>
 
 slice の `candidates` を `rank` 順に読み、価値観候補を組み立てる。**判定はしない** — 出すのは候補・証拠・反映 diff 案まで。
 
+**読了予算の規律**: slice も全件全文読みできるとは限らない (実測 140 件 / 187 KB)。プレビュー等で足切りする場合:
+
+- 全文を読んだ件数と足切りした件数を **手順 6 のレポート §4 に provenance として明記する** (何件をどう読んだかが復元できる形)
+- **全文を読んでいない record に個別の断定理由を書かない**。「プレビューのみで候補化しなかった」以上のことを書けば、読んでいない内容を読んだことにする
+- 網羅が必要なときは `--repo` で分割して回す (手順 2)
+
 #### 3-1. 探索観点 — 価値観が乗る 4 つの発話型
 
 長文を要約するだけでは価値観は出てこない。以下の型を**探すあて**として読む。型そのものは決定的に判定できないため script には持たせておらず、ここが唯一の適用箇所:
@@ -84,6 +90,8 @@ slice の `candidates` を `rank` 順に読み、価値観候補を組み立て�
 | **撤退の決定** | やめる判断と、代わりに残すものが併記される | 「tm 削除でよい。ただ、herdr から戻れるように歴史は残しておきたい」 |
 
 どの型にも当てはまらない候補は**捨てずに** informational に落とし、理由を書く (手順 6 のレポート §4)。
+
+**貼り付け境界チェック**: mart の `text` は「人間が手入力した prompt」だが、その中にユーザーが**貼り戻した assistant の応答**が含まれうる。規範文らしき文章を証拠に採る前に、貼り付け境界より前の人間記述だけで価値観が復元できるかを確認する。できないものは informational へ落とす。**assistant の文章をユーザーの価値観として帰属させない** — 長文帯ほど混入しやすく、エラーログの混在 (手順 2) より見分けにくい。
 
 #### 3-2. 反映先の分類 (3 種)
 
@@ -109,11 +117,11 @@ slice の `candidates` を `rank` 順に読み、価値観候補を組み立て�
 
 #### 3-4. 具体化の前に必ず Read する reference
 
-反映先が skill ファイルなので、diff 案を書く前に同一 plugin 内の以下を Read する:
+反映先が skill ファイルなので、diff 案を書く前に同一 plugin 内の以下を Read する。**手順 4 の選択肢を組み立てるより前に読み終える** — 器の選択肢に載せた後で読むと、既存 checklist との衝突が PR 作成後に発覚して事後裁定になる:
 
 - 常に: `${CLAUDE_SKILL_DIR}/../../knowledge/claude-config-review/references/skill.md`
-- 反映先の現状把握: `skills/knowledge/engineering-judgment/references/values-source.md` (正本の項目構成) と対応する `SKILL.md`、または `skills/knowledge/coding-principles/SKILL.md`
-- `反映先未定` の器として `.claude/rules/` / CLAUDE.md を候補に挙げる場合: 同 `rules.md` / `claude-md.md`
+- 反映先の現状把握: `skills/knowledge/engineering-judgment/references/values-source.md` (正本の項目構成と**冒頭の更新規約**) と対応する `SKILL.md`、または `skills/knowledge/coding-principles/SKILL.md`
+- `反映先未定` の器として `.claude/rules/` / CLAUDE.md を**選択肢に挙げるなら、挙げる前に** 同 `rules.md` / `claude-md.md` の**両方**を読む。片方だけ読んで両方を選択肢に並べない
 
 **`${CLAUDE_SKILL_DIR}` 展開後のフルパス例** (相対 path の暗算ミスで File not found を誘発しないよう明示):
 
@@ -139,8 +147,17 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 #### 5-1. engineering-judgment — 正本 → 蒸留の 2 段
 
-1. **正本を先に更新**: `skills/knowledge/engineering-judgment/references/values-source.md` の該当節に、既存項目と同じ構成 (**価値** / **採用概念** / **検討メモ**) で追記する。由来として証拠 anchor (session_id / timestamp / repo) を残す
+1. **正本を先に更新**: `skills/knowledge/engineering-judgment/references/values-source.md` の該当節に、既存項目と同じ構成 (**価値** / **採用概念** / **背景** / **検討メモ**) で追記する
 2. **SKILL.md へ蒸留**: `skills/knowledge/engineering-judgment/SKILL.md` の対応節へ、決定規則の形 (「競合したらどちらを選ぶか」) に圧縮して反映する
+
+**`session_id` を values-source.md に書かない。** 同書の更新規約が「判断の再現に必要な文脈は **背景** として本書に書き切る (session ID 等の外部参照は残さない)」を要求する — transcript は消えるため、session ID を証拠に据えると正本が単独で完結しなくなる。証拠 anchor (session_id / timestamp / repo) を残すのは**手順 6 のレポートと PR body だけ**。
+
+正本に書くのは以下:
+
+- 判断の再現に必要な文脈は **背景** として散文で書き切る (原文引用の転記ではない。既存項目の形に合わせる)
+- ただし**原文から読み取れない事実を断定形で書かない**。手順 3-3 の「原文の意味を拡張しない」は反映時にも効き続ける。補足が要るなら `推測:` を付けるか、書かない
+- 日付は残してよい (消える外部参照ではない)
+- 原文引用と session_id は手順 6 のレポートと PR body に残す。正本へは持ち込まない
 
 順序は逆にしない。values-source.md には「SKILL.md と本書が食い違ったら本書が勝つ」という更新規約があり、SKILL.md だけを先に書くと正本が負けた状態が生まれる。
 
@@ -176,7 +193,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 - 価値観の**判定は常に人間** (候補ごとの AskUserQuestion。3 段階モデル不変)
 - script は絞り込みと整列まで。bucket / 発話型 / 反映先分類を script に持たせない
 - LLM は候補・証拠・反映 diff 案の具体化まで。承認なしの write はゼロ
-- 承認後の反映先は本 repo の判断規則集 2 つのみ。`反映先未定` の器の決定は人間に返す
+- 承認後の反映先は本 repo の判断規則集 2 つ。`反映先未定` の器の決定は人間に返し、人間が選んだ器 (本 repo の CLAUDE.md / `.claude/rules/` / 新規 skill) にのみ反映する
 - global CLAUDE.md / 他 repo / `#rule` buffer への波及は機能外
 
 ## 罠
@@ -184,6 +201,11 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 | 症状 | 原因 | 対応 |
 |---|---|---|
 | mart 全件を読もうとする | mart は 934 KB / 1,295 件。全部読めば漏れないという直感 | 手順 2 の slice を読む。読み順は script が決める (`rank` 昇順)。全件走破が要るなら `--repo` で分割して回す |
+| 読んでいない候補に断定的な除外理由を書く | slice も全件全文読みできず (実測 140 件 / 187 KB)、足切りしたことがレポート上で見えなくなる | 手順 3 の読了予算。全文読み / 足切りの内訳をレポート §4 に provenance として出し、未読 record には理由を書かない |
+| assistant の文章をユーザーの価値観として採る | 手入力 prompt に、ユーザーが貼り戻した assistant 応答が混じる | 手順 3-1 の貼り付け境界チェック。人間記述だけで復元できないものは informational へ |
+| 正本 (values-source.md) に session ID を書く | 手順 3-3 の証拠 anchor をそのまま反映先へ持ち込む | 手順 5-1。transcript は消えるため正本が単独完結しなくなる。session ID はレポートと PR body だけに残し、正本には **背景** を散文で書く |
+| **背景** に原文にない事実を断定形で書く | 散文で書き切るうちに、原文から復元できない詳細 (構成要素・他ツールの説明等) が混じる | 手順 5-1。手順 3-3 の「意味を拡張しない」は反映時にも効く。裏が取れないなら `推測:` を付けるか書かない |
+| reference を反映直前に読み、PR 後に衝突が出る | 3-4 の Read を「編集の直前」と読む | 手順 3-4。**手順 4 の選択肢を組む前**に読み終える。`.claude/rules/` と CLAUDE.md を並べるなら `rules.md` / `claude-md.md` の両方を読む |
 | 長文を要約しただけの候補が並ぶ | 探すあてがないまま読んだ | 手順 3-1 の 4 発話型を探索観点として明示的に当てる。型に当たらない record は informational へ |
 | 301 字以上を無条件に価値観扱いする | 長さを判定に使った | 長さは絞り込みの入口まで。この帯にはエラーログ・調査資料の貼り付けが混じる。判定は人間 |
 | `反映先未定` を engineering-judgment に押し込む | 「近いから」で分類が擦り抜ける | 手順 5-3。器の決定は人間に返し、決まらなければ反映しない。押し込みは価値観の所在を歪める |

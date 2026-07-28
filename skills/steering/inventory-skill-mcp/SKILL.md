@@ -59,6 +59,7 @@ mart の schema は script docstring 参照。上位から順に各 unit を評�
 - 「session 開始で 1 度 load → 以降 session 全体で暗黙適用」型の skill (`coding-principles` / `engineering-judgment` / `test-strategy` / `pr-quality` 等) は count 単独では実適用回数を過小評価する。`units[skill][].channels.command + .read > 0` の unit は「1 session 1 load 型」の可能性が高いと解釈する
 - coverage を評価するときは `sessions[]` を絞り込む: コード編集の思想系なら `has_code_edit == true` を分母、その中で loaded_skills に対象 skill を含む session を分子とする。設計議論系 (engineering-judgment 等) なら `has_plan_mode == true` あるいは brainstorming skill を loaded_skills に含む session を分母とする
 - どの skill を「思想系」とし coverage を評価するかは LLM 判断。script は語彙を持たない (bucket 判定を script に埋めないのと同型の circular 回避)
+- **coverage を出す前に「誘導機構の稼働開始日」と観測窓を突き合わせる**。invoke を促す機構 (SessionStart 注入 hook 等) が観測窓の途中で導入されていると、既定の 30 日窓は導入前後を混ぜて coverage を過小評価する。機構の導入日は repo の `git log` で確認し、ずれていれば `--days N` で稼働期間に合わせて再スキャンしてから判定する。狭めた窓は母数が落ちるので、割合ではなく **分子/分母を n 付きで併記**する (実例: `hooks/harness/inject-skill-guide.py` の導入は 2026-07-24。30 日窓では `coding-principles` の coverage 5.2% (13/248) だが、導入後 4 日窓で再スキャンすると 42.1% (8/19) で、注入は効いていた)
 
 ### 3. 高確度候補の抽出とセッション内提案
 
@@ -153,6 +154,8 @@ bucket 候補割り当て後、以下の **4 条件をすべて満たす** unit 
 | claude.ai connectors が分母に出ない | ローカル config に出現しない | 手順 2 の「分母補完」で LLM が `session-observed` タグ付きで転記 |
 | 他 project scoped の skill/MCP が分母不明 | 現 project 以外の `.claude/skills` / `.mcp.json` は script が読まない | `denominator-unknown` として報告し、棚卸しを project ごとに回す運用でカバー |
 | 総 invocation が閾値未満 | 新規 install / 長期休止後の初回等 | 全 unit を `insufficient-data` としてヘッダ宣言、informational 提示のみ |
+| 思想系 skill の coverage が異常に低い | 観測窓が invoke 誘導機構 (SessionStart 注入 hook 等) の導入日をまたぎ、導入前の期間が分母を膨らませている | 機構の導入日を `git log` で確認し `--days N` で稼働期間に再スキャンして比較する。両方の窓の値を n 付きで併記し、旧窓の値は破棄しない |
+| 実体の無い skill id が「参照元に旧名が残っている」ように見える | 観測窓が skill の rename / 削除日をまたぎ、旧名での**正常だった**呼び出しが窓内に残っているだけ | rename / 削除の commit 日 (`git log --diff-filter=D`) と invocation の timestamp を突き合わせる。invocation が rename 前なら参照元の修正は不要 (ADR / plan / 変更履歴の旧名は記録であり書き換えない) |
 | 抜粋の user_prompt が空 | tool_use が assistant turn 開始直後で先行 user turn が meta tag のみ | 空文字を許容。抜粋 anchor (session_id + timestamp) で生 transcript を読めば復元可 |
 | Skill 呼出が二重カウントに見える | queue-operation record と user turn record への二重記録は本 script では**発生しない** (session id + tool_use.id で dedupe されている) | 単位 (count) は tool_use.id 単一化済み。session 内複数呼び出しは正しく累計される |
 | bucket を script に埋め込みたくなる | 循環依存 (script が bucket を知ると LLM が再判定できなくなる) | script は生集計のみ。bucket 判定は LLM 段階で mart を読んでから |

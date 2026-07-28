@@ -25,7 +25,7 @@ Architecture Decision Record (MADR 変種) を `docs/adr/NNNN-<slug>.md` に追�
 **責務外**:
 
 - git add / commit / push (→ `/contextual-commits`)
-- ADR の内容自体の質評価・grill 対話 (→ `grill-with-docs`)
+- ADR の内容自体の質評価・grill 対話 (→ `/swat-skills:grill-with-docs`。vendored 版は `disable-model-invocation: true` で Skill tool 委譲が効かないため、依頼文を組み立ててユーザーに実行を提案する)
 - 意思決定そのもの (→ `brainstorming` 等の別 skill)
 - 番号採番の並列衝突回避の完全自動化 (worktree 並行時は commit 前に再確認、下記手順参照)
 

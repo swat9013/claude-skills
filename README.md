@@ -24,7 +24,6 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
-| `insights-reflect` | コマンド / 自動 | 標準 /insights を実行し、HTML レポートからの学びを CLAUDE.md に反映する。 |
 | `inventory-claude-md` | コマンド | project の CLAUDE.md (root + サブディレクトリ + `.claude/rules/*.md` + `~/.claude/state/rules/` の `#rule` バッファ (captured/archive)) を静的観測し、行単位で 6 bucket (keep-inline / move-to-path-scoped / move-to-skill / move-to-lint / delete / merge) の候補提示まで LLM に運ばせる棚卸し。 |
 | `inventory-permissions` | コマンド | Claude Code の permission (allow/deny/ask) / sandbox / guard hook を transcript の tool_use 実績と突合し、両軸集計 (設定 pattern × 実績) と bypass 系列を単位別に 5 bucket (revoke / promote / refine / sandbox / keep) の候補提示まで LLM に運ばせる棚卸し。 |
 | `inventory-skill-mcp` | コマンド | 全 plugin skill + personal skill + project skill + MCP (claude.ai connectors 含む) の直近 30 日 invocation を transcript から決定的に集計し、単位別 (skill / MCP tool / MCP server / plugin) の削除/見直し/保持候補を LLM 具体化まで運ぶ棚卸し。 |

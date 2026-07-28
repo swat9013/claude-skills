@@ -425,6 +425,30 @@ def parse_permission_entry(raw: str, category: str, source_path: str, scope: str
                             confidence=confidence, match_kind=match_kind)
 
 
+def _sandbox_excluded_commands(data: dict) -> list[str]:
+    """`sandbox.excludedCommands` を top-level / `permissions.sandbox` の両方から集める。
+
+    Claude Code の settings.json では sandbox 設定を top-level `sandbox` に書く形と
+    `permissions.sandbox` に書く形の双方が観測される (本 repo の
+    `settings/settings.local.json` は top-level)。片方しか読まないと excludedCommands が
+    黙って 0 件になり、SKILL.md 手順 2 の「allow entry と対になる excludedCommands の
+    連動削除確認」が無検出のまま素通りする。よって両方を読み、重複は初出順で除く。
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    perms = data.get("permissions")
+    containers = [data.get("sandbox"),
+                  perms.get("sandbox") if isinstance(perms, dict) else None]
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for raw in (container.get("excludedCommands") or []):
+            if isinstance(raw, str) and raw not in seen:
+                seen.add(raw)
+                out.append(raw)
+    return out
+
+
 def read_permission_entries(settings_path: Path, scope: str) -> list[PermissionEntry]:
     """settings.json を読み permissions.{allow,deny,ask} + sandbox.excludedCommands
     を PermissionEntry の list として返す。file が無ければ空 list。
@@ -435,21 +459,23 @@ def read_permission_entries(settings_path: Path, scope: str) -> list[PermissionE
         data = json.loads(settings_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
-    perms = data.get("permissions") if isinstance(data, dict) else None
-    if not isinstance(perms, dict):
+    if not isinstance(data, dict):
         return []
     result: list[PermissionEntry] = []
-    for cat in ("allow", "deny", "ask"):
-        for raw in (perms.get(cat) or []):
-            if isinstance(raw, str):
-                result.append(parse_permission_entry(raw, cat, str(settings_path), scope))
-    sandbox = perms.get("sandbox")
-    if isinstance(sandbox, dict):
-        for raw in (sandbox.get("excludedCommands") or []):
-            if isinstance(raw, str):
-                result.append(parse_permission_entry(
-                    raw, "sandbox_excluded_commands", str(settings_path), scope,
-                ))
+    perms = data.get("permissions")
+    if isinstance(perms, dict):
+        for cat in ("allow", "deny", "ask"):
+            for raw in (perms.get(cat) or []):
+                if isinstance(raw, str):
+                    result.append(parse_permission_entry(raw, cat, str(settings_path), scope))
+    for raw in _sandbox_excluded_commands(data):
+        # excludedCommands は `Tool(...)` 形ではなく素の Bash command pattern (`gh:*` /
+        # `git push:*`)。`Bash(<raw>)` として解釈しないと tool 名一致で弾かれ、常に
+        # match_count 0 になり zero-match view を汚す
+        entry = parse_permission_entry(
+            f"Bash({raw})", "sandbox_excluded_commands", str(settings_path), scope,
+        )
+        result.append(dataclasses.replace(entry, raw=raw))
     return result
 
 
@@ -472,13 +498,39 @@ def enumerate_settings_sources(section: str, repo_root: Path,
 
 # --- matcher -----------------------------------------------------------------
 
+# prefix マッチで「token が続いていない」と見なす境界文字。空白のほか shell の区切り
+# (`;` `&` `|` `<` `>` `)`) を含める。素の str.startswith だと `git push --force:*` が
+# `git push --force-with-lease ...` に、`comm:*` が `command rm ...` にマッチしてしまう
+# (実測: 2026-07-28 の棚卸しで --force-with-lease 4 件が deny entry の match に混入)。
+PREFIX_BOUNDARY_CHARS = frozenset(";&|<>)")
+
+
+def _prefix_matches_command(prefix: str, command: str) -> bool:
+    """`Bash(xxx:*)` の xxx が command の先頭 token 列として現れるか。
+
+    Claude Code 本体の matcher は token 境界を見ており、prefix が単語の途中で切れる
+    ケースはマッチしない。素の startswith 近似はそこで過剰マッチするため、prefix 直後が
+    行末・空白・shell 区切りであることを追加条件にする。
+    """
+    if not prefix:
+        return True
+    if not command.startswith(prefix):
+        return False
+    rest = command[len(prefix):]
+    if not rest:
+        return True
+    nxt = rest[0]
+    return nxt.isspace() or nxt in PREFIX_BOUNDARY_CHARS
+
+
 def entry_matches_event(entry: PermissionEntry, event: ToolEvent) -> bool:
     """conservative matcher。誤検知よりは取りこぼしを許す。
 
     - tool 名が一致しなければ即 False
     - `exact_tool` (括弧なし): 常に True (Bash などツール全体を許可/禁止する形)
     - `exact_command` (Bash): command が pattern と完全一致
-    - `prefix` (Bash): command が `pattern[:-2]` で始まる
+    - `prefix` (Bash): command が `pattern[:-2]` で始まり、かつその直後が token 境界
+      (行末 / 空白 / shell 区切り) — `_prefix_matches_command` 参照
     - `glob` (Read/Edit/Write 等の path): input 内の候補 (file_path / path) を
       glob で照合。合致すれば True
     """
@@ -493,8 +545,7 @@ def entry_matches_event(entry: PermissionEntry, event: ToolEvent) -> bool:
         if entry.match_kind == "exact_command":
             return cmd.strip() == entry.pattern.strip()
         if entry.match_kind == "prefix":
-            prefix = entry.pattern[:-2]  # ":*" 除去
-            return cmd.startswith(prefix)
+            return _prefix_matches_command(entry.pattern[:-2], cmd)  # ":*" 除去
         if entry.match_kind == "glob":
             return fnmatch.fnmatch(cmd, entry.pattern)
         return False

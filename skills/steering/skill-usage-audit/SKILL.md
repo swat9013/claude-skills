@@ -17,7 +17,10 @@ description: 指定 skill が実際に呼び出された直近 transcript を特
 
 ### 1. 正本の読込と監査基準の抽出
 
-対象は本 repo (`~/.claude/skills/swat-skills`) の skill に限る。args に plugin prefix (`swat-skills:`) が付いていれば除去し、`skills/*/<skill-name>/SKILL.md` を glob で解決する。見つからない場合と `skills/third/` 配下 (vendor skill — 上流 diff 最小化のため SKILL.md を編集しない) の場合は、監査対象外である旨を報告して終了する。
+対象は本 repo (`~/.claude/skills/swat-skills`) の skill に限る。args に plugin prefix (`swat-skills:`) が付いていれば除去し、`skills/*/<skill-name>/SKILL.md` を glob で解決する。見つからない場合と、以下のいずれかに該当する場合は、監査対象外である旨を報告して終了する:
+
+- `skills/third/` 配下 (vendor skill — 上流 diff 最小化のため SKILL.md を編集しない)
+- 判断規則集系 knowledge skill (`engineering-judgment` / `coding-principles` / `test-strategy` / `pr-quality`) — 内容の改善は `inventory-values` の領分。engineering-judgment には「正本 references → SKILL.md 蒸留」の 2 段更新規約があり、本 skill が SKILL.md だけを編集すると片肺更新になる
 
 解決した SKILL.md を Read し、以下を checklist 化して user に提示する (提示は報告のみで、承認待ちはしない。完了条件 1 はこの提示を指す):
 
