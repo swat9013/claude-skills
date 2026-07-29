@@ -10,8 +10,8 @@
   "skills": [
     "./skills/steering/inventory-claude-md",
     "./skills/steering/inventory-permissions",
+    "./skills/steering/inventory-project-values",
     "./skills/steering/inventory-skill-mcp",
-    "./skills/steering/inventory-values",
     "./skills/steering/skill-usage-audit",
     "./skills/knowledge/claude-config-review",
     "./skills/knowledge/coding-principles",

@@ -6,9 +6,8 @@
 """inventory-claude-md の観測 script (observation JSON 生成)。
 
 project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + サブディレクトリ CLAUDE.md +
-`.claude/rules/*.md`) と `~/.claude/state/rules/` の `#rule` バッファ
-(captured.jsonl / archive.jsonl。#212 のツール 2 出力) を **静的観測** し、以下
-3 項目 + buffer 状態を含む observation JSON を出力する。
+`.claude/rules/*.md`) を **静的観測** し、以下 3 項目を含む observation JSON を
+出力する。
 
 - 参照先実在性 (link_targets): markdown link と `@import` 展開先の実在チェック。
   fail-safe = path として復元可能なもののみ検査。URL / 動的展開文字列は check_mode
@@ -17,10 +16,6 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + サブディレクトリ CLA
   boundary を確定させるための決定的観測。
 - section 物理計測 (sections): markdown 見出し階層と各 section の行数。context
   提供のみ、閾値 enforce はしない。
-- `#rule` buffer (buffer.pending): captured.jsonl を id 単位に fold し
-  (`event:"capture"` で起こし同 id の `event:"refine"` で上書き)、archive.jsonl
-  記載の id を除外した残り (pending) を entries に載せる。採否・repo フィルタは
-  LLM 段階に委ね、script は決定的観測のみ行う。
 
 原則 (map #209 / #214): **観測・集計は決定的に、判断は人間に、LLM は文章の具体化
 のみ**。script は bucket (keep-inline / move-to-path-scoped / move-to-skill /
@@ -30,10 +25,9 @@ move-to-lint / delete / merge) を割り当てない。bucket 判定は SKILL.md
 出力: --output-dir に observation-<timestamp>.json を書き、path を stdout に
 print する。Markdown レポートは LLM 段階の成果物で、本 script は生成しない。
 
-汎用スキル制約: 依存は Claude Code 標準ファイルと home 固定 buffer path のみ
-(`<repo>/CLAUDE.md` / `<repo>/.claude/rules/*.md` /
-`~/.claude/state/rules/{captured,archive}.jsonl`)。global `~/.claude/CLAUDE.md`
-は読みも書きもしない (仕様上除外)。
+汎用スキル制約: 依存は Claude Code 標準ファイルのみ (`<repo>/CLAUDE.md` /
+`<repo>/.claude/rules/*.md`)。global `~/.claude/CLAUDE.md` は読みも書きもしない
+(仕様上除外)。`#rule` buffer への依存は ADR 0018 で撤去済み。
 """
 
 from __future__ import annotations
@@ -48,7 +42,6 @@ from typing import Any
 
 # --- 定数 --------------------------------------------------------------------
 
-DEFAULT_BUFFER_DIR = Path("~/.claude/state/rules").expanduser()
 DEFAULT_OUTPUT_DIR = Path("/tmp/inventory-claude-md")
 
 # markdown link: [text](target)
@@ -324,124 +317,6 @@ def observe_rules_file(path: Path, repo_root: Path) -> dict[str, Any]:
     return obs
 
 
-# --- buffer 読取 -------------------------------------------------------------
-
-
-def read_buffer_file(path: Path) -> tuple[str, list[dict[str, Any]]]:
-    """append-only JSONL バッファを読み、生レコードを順序保持で返す。
-
-    壊れた行 / dict でない行はスキップする (fail-safe: 捕捉を落とさない)。
-    id の補完はしない (fold 側が id 無しレコードを skip する責務を持つ)。
-
-    Returns (status, records) where
-    status ∈ {"present", "empty", "missing", "unreadable"}。
-    """
-    if not path.exists():
-        return "missing", []
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
-        return "unreadable", []
-    lines = [ln for ln in raw.splitlines() if ln.strip()]
-    if not lines:
-        return "empty", []
-    records: list[dict[str, Any]] = []
-    for ln in lines:
-        try:
-            obj = json.loads(ln)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        records.append(obj)
-    return "present", records
-
-
-def fold_captured(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """captured.jsonl の混在レコードを id 単位に fold する。
-
-    inject-rule.py `_fold` と同 semantics:
-    - `event:"capture"` で entry を起こす (raw / repo を保持)
-    - 同 id の `event:"refine"` で refined / refine_status を上書き
-    - capture が先行しない refine は無視
-    - id が無い / str でないレコードは skip
-
-    挿入順 (capture 到着順) を保つ。
-    """
-    state: dict[str, dict[str, Any]] = {}
-    for rec in records:
-        rid = rec.get("id")
-        if not isinstance(rid, str) or not rid:
-            continue
-        event = rec.get("event")
-        if event == "capture":
-            raw = rec.get("raw")
-            state[rid] = {
-                "id": rid,
-                "raw": raw if isinstance(raw, str) else "",
-                "refined": None,
-                "refine_status": None,
-                "repo": rec.get("repo"),
-            }
-        elif event == "refine":
-            entry = state.get(rid)
-            if entry is None:
-                continue
-            refined = rec.get("refined")
-            entry["refined"] = refined if isinstance(refined, str) else None
-            entry["refine_status"] = rec.get("status")
-    return state
-
-
-def archived_ids(records: list[dict[str, Any]]) -> set[str]:
-    """archive.jsonl の記載 id 集合。id が無い / str でない行は無視。"""
-    ids: set[str] = set()
-    for rec in records:
-        rid = rec.get("id")
-        if isinstance(rid, str) and rid:
-            ids.add(rid)
-    return ids
-
-
-def observe_buffer(buffer_dir: Path) -> dict[str, Any]:
-    """`~/.claude/state/rules/{captured,archive}.jsonl` を観測する。
-
-    inject-rule.py と同じ consumption semantics で pending を導出する:
-    captured.jsonl を id 単位に fold し、archive.jsonl の id を除外した残りが
-    pending (毎セッション注入され続ける未棚卸しルール)。
-    """
-    captured_status, captured_records = read_buffer_file(buffer_dir / "captured.jsonl")
-    archive_status, archive_records = read_buffer_file(buffer_dir / "archive.jsonl")
-
-    folded = fold_captured(captured_records)
-    archived = archived_ids(archive_records)
-    entries = [entry for rid, entry in folded.items() if rid not in archived]
-
-    if not buffer_dir.exists() or captured_status == "missing":
-        overall = "missing"
-    elif not entries:
-        overall = "empty"
-    else:
-        overall = "present"
-
-    return {
-        "dir": str(buffer_dir),
-        "status": overall,
-        "captured": {
-            "status": captured_status,
-            "record_count": len(captured_records),
-        },
-        "archive": {
-            "status": archive_status,
-            "id_count": len(archived),
-        },
-        "pending": {
-            "count": len(entries),
-            "entries": entries,
-        },
-    }
-
-
 # --- 集計 --------------------------------------------------------------------
 
 
@@ -486,9 +361,7 @@ def summarize_meta(root_obs: dict[str, Any]) -> dict[str, Any]:
 # --- 出力 --------------------------------------------------------------------
 
 
-def build_observation(
-    repo_root: Path, buffer_dir: Path
-) -> dict[str, Any]:
+def build_observation(repo_root: Path) -> dict[str, Any]:
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     root_path = repo_root / "CLAUDE.md"
     root_obs = observe_markdown_file(root_path, repo_root, label="root")
@@ -498,13 +371,11 @@ def build_observation(
         for p in find_subdir_claude_md(repo_root)
     ]
     rules_obs = [observe_rules_file(p, repo_root) for p in find_rules_files(repo_root)]
-    buffer_obs = observe_buffer(buffer_dir)
 
     return {
         "meta": {
             "generated_at": generated_at,
             "repo_root": str(repo_root),
-            "buffer_dir": str(buffer_dir),
             "root_meta": summarize_meta(root_obs),
         },
         "sources": {
@@ -514,7 +385,6 @@ def build_observation(
             },
             "rules": rules_obs,
         },
-        "buffer": buffer_obs,
     }
 
 
@@ -537,8 +407,8 @@ def write_observation(
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "inventory-claude-md の観測 script。project 範囲の CLAUDE.md 系 + "
-            "buffer を静的に観測し observation JSON を出力する。"
+            "inventory-claude-md の観測 script。project 範囲の CLAUDE.md 系を"
+            "静的に観測し observation JSON を出力する。"
         )
     )
     parser.add_argument(
@@ -546,12 +416,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path.cwd(),
         help="CLAUDE.md を探す repo root (default: cwd)。",
-    )
-    parser.add_argument(
-        "--buffer-dir",
-        type=Path,
-        default=DEFAULT_BUFFER_DIR,
-        help="#212 tool 2 の buffer directory (default: ~/.claude/state/rules)。",
     )
     parser.add_argument(
         "--output-dir",
@@ -565,10 +429,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     repo_root = args.repo_root.resolve()
-    buffer_dir = Path(args.buffer_dir).expanduser()
     output_dir = Path(args.output_dir).expanduser()
 
-    observation = build_observation(repo_root, buffer_dir)
+    observation = build_observation(repo_root)
     out_path = write_observation(observation, output_dir)
     print(str(out_path))
     return 0

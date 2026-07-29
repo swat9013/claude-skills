@@ -24,10 +24,10 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
-| `inventory-claude-md` | コマンド | project の CLAUDE.md (root + サブディレクトリ + `.claude/rules/*.md` + `~/.claude/state/rules/` の `#rule` バッファ (captured/archive)) を静的観測し、行単位で 6 bucket (keep-inline / move-to-path-scoped / move-to-skill / move-to-lint / delete / merge) の候補提示まで LLM に運ばせる棚卸し。 |
+| `inventory-claude-md` | コマンド | project の CLAUDE.md (root + サブディレクトリ + `.claude/rules/*.md`) を静的観測し、行単位で 6 bucket (keep-inline / move-to-path-scoped / move-to-skill / move-to-lint / delete / merge) の候補提示まで LLM に運ばせる棚卸し。 |
 | `inventory-permissions` | コマンド | Claude Code の permission (allow/deny/ask) / sandbox / guard hook を transcript の tool_use 実績と突合し、両軸集計 (設定 pattern × 実績) と bypass 系列を単位別に 5 bucket (revoke / promote / refine / sandbox / keep) の候補提示まで LLM に運ばせる棚卸し。 |
+| `inventory-project-values` | コマンド | 実行中の project の標準 transcript から、ユーザーが手入力したプロンプト (直近 30 日 / 60 字以上) を決定的に観測し、同一規範の再出現回数を判定材料にして project 規範の候補を証拠 anchor 付きで具体化する棚卸し。 |
 | `inventory-skill-mcp` | コマンド | 全 plugin skill + personal skill + project skill + MCP (claude.ai connectors 含む) の直近 30 日 invocation を transcript から決定的に集計し、単位別 (skill / MCP tool / MCP server / plugin) の削除/見直し/保持候補を LLM 具体化まで運ぶ棚卸し。 |
-| `inventory-values` | コマンド | 標準 transcript のユーザー手入力プロンプト (直近 30 日) を決定的に観測し、121 字以上の帯から価値観候補と反映 diff 案を証拠 anchor 付きで具体化する棚卸し。 |
 | `skill-usage-audit` | コマンド | 指定 skill が実際に呼び出された直近 transcript を特定し、SKILL.md の目的・成功条件・制約と実挙動を突合して逸脱を検証、skill 記述起因の欠陥を worktree + PR で改善する監査ループ。 |
 
 ### knowledge
@@ -87,7 +87,8 @@ Bash / Write / WebFetch の危険操作を実行前に deny する PreToolUse gu
 hook は install した環境でそのまま動くが、以下を前提にしている。
 
 - **`jq` が PATH にあること**。無い場合、`guard-git.sh` / `guard-pipe-execute.sh` / `guard-destructive.sh` / `guard-webfetch.sh` は判定不能として **deny 側に倒れる** (fail-closed)。該当する Bash / WebFetch 呼び出しがすべて拒否されるため、hook を使うなら jq を入れる
-- **guard の方針は作者の運用に合わせて固定されている**。例: `git push` は main/master 宛を deny、`bash`/`sh`/`zsh` の直接起動を deny、WebFetch は `guard-webfetch.sh` の `ALLOWLIST` に載るドメインのみ許可。合わない場合は該当 script を編集する
+- **guard の方針は作者の運用に合わせて固定されている**。例: `git push --force` (`--force-with-lease` を除く) を deny、`bash`/`sh`/`zsh` の直接起動を deny、WebFetch は `guard-webfetch.sh` の `ALLOWLIST` に載るドメインのみ許可。合わない場合は該当 script を編集する
+- **protected branch の防御は hook では持たない**。main/master への直接 push の禁止は GitHub / GitLab の branch protection 側で設定する前提 (hook はローカルにしか効かないため)
 - **`guard-worktree-escape.py` は `~/.claude/state/worktree-guard/` に session ごとの作業 root を書く** (7 日で自動削除)。書けない環境では guard が無効化されるだけで、tool 実行は妨げない
 
 ## 更新

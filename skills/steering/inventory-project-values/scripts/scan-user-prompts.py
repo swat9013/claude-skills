@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""inventory-values の観測 script (data mart 生成)。
+"""inventory-project-values の観測 script (data mart 生成)。
 
 transcript (~/.claude/projects/<cwd-hash>/<sid>.jsonl) を data lake として、直近
 N 日 (--days、default 30) の **ユーザーが手入力したプロンプト**だけを抽出し、
@@ -35,7 +35,6 @@ import collections
 import dataclasses
 import datetime as dt
 import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -47,6 +46,7 @@ from _transcript_lib import (  # noqa: E402
     truncate,
     walk_transcripts,
 )
+from _transcript_lib import resolve_repo_at as _resolve_repo_at  # noqa: E402
 
 # --- 定数 --------------------------------------------------------------------
 
@@ -66,10 +66,14 @@ HUMAN_PROMPT_SOURCES = frozenset({"typed", "queued"})
 # origin 自体が無い record は判定材料なしとして通す (promptSource 側で担保済み)。
 HUMAN_ORIGIN_KIND = "human"
 
-# `#rule ` 捕捉の A-strict 判定 prefix。仕様正本は docs/steering.md §4.1 と
-# hooks/harness/capture-rule.sh (sh 実装のため定数の物理共有は不能)。
-# 捕捉された prompt は hook が block するため通常 transcript に残らないが、
-# hook 未導入環境・仕様変更時に価値観でない運用メモが混入しないよう明示的に弾く。
+# `#rule ` 運用メモの判定 prefix。A-strict = 非空行が 1 行以上あり、その全てが
+# `#rule ` (末尾スペース込み・行頭一致) で始まる prompt のみ該当し、通常行との
+# 混在 prompt は手入力として残す。
+#
+# 捕捉 hook 自体は ADR 0018 で撤去済み (`#rule ` prompt は今後 block されず
+# transcript に残る) が、除外は**意図的に維持する** — 撤去前後で mart の観測帯を
+# 揺らさないため。観測帯の拡張は別 issue の領分であり、本 gate の削除はそこで
+# 判断する。仕様正本は本コメント (参照先 doc / script は現存しない)。
 RULE_PREFIX = "#rule "
 
 # slash command 呼出しは `<command-message>` / `<command-name>` で**始まる**展開
@@ -95,9 +99,6 @@ EXCLUSION_REASONS = (
     "non_human_origin",         # origin.kind が human 以外
     "empty_text",               # 抽出結果が空
 )
-
-# git 解決の上限 (秒)。解決不能でも観測は続けるため失敗は None に潰す。
-GIT_TIMEOUT_SEC = 5
 
 # repo をどこから解決したか。cwd 直接か、消えた worktree の実在祖先経由か。
 REPO_SOURCE_CWD = "cwd"
@@ -202,10 +203,10 @@ def collect_text(content: Any) -> tuple[str, bool]:
 
 
 def is_rule_capture_prompt(text: str) -> bool:
-    """capture-rule.sh の A-strict 判定と同じ規則で `#rule ` 捕捉対象かを返す。
+    """A-strict 判定で `#rule ` 運用メモかを返す。
 
     非空行が 1 行以上あり、その全てが `#rule ` (末尾スペース込み・行頭一致) で
-    始まる場合のみ True。混在 prompt は通常の手入力として残す (docs/steering.md §4.1)。
+    始まる場合のみ True。混在 prompt は通常の手入力として残す (RULE_PREFIX 参照)。
     """
     total = 0
     matched = 0
@@ -253,42 +254,13 @@ def classify_user_record(rec: dict) -> Classification:
 
 # --- repo 解決 ---------------------------------------------------------------
 
-def _git_output(cwd: Path, argv: list[str]) -> str:
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(cwd), *argv],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return proc.stdout
-
-
-def _resolve_repo_at(dir_path: Path) -> str | None:
-    """実在するディレクトリ 1 つに対して git の repo 識別子を返す。"""
-    url = _git_output(dir_path, ["remote", "get-url", "origin"]).strip()
-    if url:
-        return url.splitlines()[0].strip()
-    common_dir = _git_output(dir_path, ["rev-parse", "--git-common-dir"]).strip()
-    if not common_dir:
-        return None
-    common_path = Path(common_dir)
-    if not common_path.is_absolute():
-        common_path = dir_path / common_path
-    try:
-        return str(common_path.resolve().parent)
-    except OSError:
-        return None
-
-
 def resolve_repo(cwd: str) -> tuple[str | None, str | None]:
     """cwd から repo 識別子を解決し、(repo, 解決元) を返す。
 
-    解決手順は capture-rule.sh と同一 (origin remote URL → git-common-dir の親)。
-    得られる表現は `#rule` buffer (`~/.claude/state/rules/captured.jsonl`) の
-    `repo` field と一致するため、後段で buffer entry と repo 単位で突き合わせられる。
+    1 ディレクトリの解決は `_transcript_lib.resolve_repo_at` (origin remote URL →
+    git-common-dir の親) に委ねる。select-candidates.py の `--repo` 既定解決も同じ
+    関数を呼ぶため、mart の `repo` 値と絞り込みキーの表現一致が構造的に保証される。
+    remote が付いていない repo でも path 表現に落ちるため、絞り込みが空にならない。
 
     issue ごとに worktree を作って merge 後に削除する運用では、観測時点で cwd が
     既に存在しない record が大量に出る。そのままでは repo 単位の絞り込みが 3 割

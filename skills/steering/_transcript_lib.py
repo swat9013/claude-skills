@@ -6,18 +6,27 @@ inventory-permissions (scan-permissions.py) と inventory-skill-mcp
 `sys.path.insert(0, Path(__file__).resolve().parents[2])` +
 `from _transcript_lib import ...` の形で読み込む。
 
-**挙動変更ゼロ** — 定義は移設元と完全一致 (walk_transcripts は docstring 付きの
-scan-permissions.py 版を採用)。共有スコープは以下 5 定義に限定し (#253 決定)、
+共有スコープは transcript-walk 系 5 定義 (#253 決定) + **repo 識別子の解決** (#315)。
 出力規約 helper・extract 層は各 scanner 側に残す。underscore 始まりのファイル名は
 「直接実行しない pure module」を表す (uv run の entry point ではない)。
+
+repo 解決 (`resolve_repo_at`) を共有するのは、mart を書く scan-user-prompts.py と
+mart を repo で絞る select-candidates.py が**同一の repo 表現**を出す必要があるため
+(表現がずれると絞り込みが黙って 0 件になる)。一致をテストの assertion ではなく
+呼び先の単一性で構造的に保証する。祖先遡り (消えた worktree の救済) は
+scan-user-prompts.py 側の観測契約なので昇格させない。
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
 from pathlib import Path
 from typing import Iterable
+
+# git 解決の上限 (秒)。解決不能でも観測は続けるため失敗は空文字に潰す。
+GIT_TIMEOUT_SEC = 5
 
 # user-reject の best-effort 判定文言。false positive は避けるので content 文字列を
 # includes で軽く見る程度。#29499 の限界 (別種の user-reject を拾えない / 別種の
@@ -44,6 +53,41 @@ def truncate(s: str | None, limit: int) -> str:
     if len(s) <= limit:
         return s
     return s[:limit]
+
+
+def git_output(cwd: Path, argv: list[str]) -> str:
+    """`git -C <cwd> <argv>` の stdout。失敗・timeout・git 不在は空文字に潰す。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(cwd), *argv],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout
+
+
+def resolve_repo_at(dir_path: Path) -> str | None:
+    """実在するディレクトリ 1 つに対して git の repo 識別子を返す。
+
+    解決手順は origin remote URL → git-common-dir の親の順。worktree からでも
+    git-common-dir が親 repo に寄るため、同一 repo の worktree は同じ識別子になる。
+    """
+    url = git_output(dir_path, ["remote", "get-url", "origin"]).strip()
+    if url:
+        return url.splitlines()[0].strip()
+    common_dir = git_output(dir_path, ["rev-parse", "--git-common-dir"]).strip()
+    if not common_dir:
+        return None
+    common_path = Path(common_dir)
+    if not common_path.is_absolute():
+        common_path = dir_path / common_path
+    try:
+        return str(common_path.resolve().parent)
+    except OSError:
+        return None
 
 
 def _iter_jsonl(fp) -> Iterable[dict]:

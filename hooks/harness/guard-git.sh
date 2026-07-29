@@ -55,13 +55,10 @@ if printf '%s\n' "$COMMAND" | grep -qE '^[[:space:]]*git[[:space:]]+push[[:space
 fi
 
 # git push 条件付き許可
+# main/master への直接 push 判定は持たない (GitHub/GitLab の branch protection に委譲 → docs/adr/0019)。
 if printf '%s\n' "$COMMAND" | grep -qE '^[[:space:]]*git push'; then
   if printf '%s\n' "$COMMAND" | grep -qE -- '--force($| )|-f($| )' && ! printf '%s\n' "$COMMAND" | grep -q -- '--force-with-lease'; then
     deny "force pushは禁止。ユーザーに確認を求めてください"
-  fi
-  BRANCH=$(git branch --show-current 2>/dev/null || printf '')
-  if printf '%s\n' "$BRANCH" | grep -qE '^(main|master)$'; then
-    deny "main/masterへの直接pushは禁止。PRを経由してください"
   fi
   printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
   exit 0
