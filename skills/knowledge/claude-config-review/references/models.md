@@ -8,8 +8,9 @@ Claude の主要モデル (opus / sonnet / haiku) の特性を明文化し、ski
 
 | モデル | ID (執筆時点) | 強み | 主な向き先 |
 |---|---|---|---|
-| Opus 4.7 | `claude-opus-4-7` | 推論深度 / 長文脈処理 / 複雑な意思決定 | 設計 / 仕様検討 / 多段推論 / 創造的タスク |
-| Sonnet 4.6 | `claude-sonnet-4-6` | バランス (速度 × 推論 × コスト) | 通常の実装 / レビュー / 中程度の推論 |
+| Opus 5 | `claude-opus-5` | 推論深度 / 長文脈処理 / 複雑な意思決定 | 設計 / 仕様検討 / 多段推論 / 創造的タスク |
+| Sonnet 5 | `claude-sonnet-5` | バランス (速度 × 推論 × コスト) | 通常の実装 / レビュー / 中程度の推論 |
+| Fable 5 | `claude-fable-5` | — | — |
 | Haiku 4.5 | `claude-haiku-4-5-20251001` | 高速 / 低コスト | 機械的判定 / 軽い分類 / 高頻度呼び出し |
 
 モデル ID は変更されうる。最新 ID は `claude-code-guide` subagent で確認する ([sources](./sources.md))。
@@ -105,7 +106,7 @@ token 数の増加に伴い signal-to-noise 比が下がり、関連情報が他
 
 以下のいずれかが発生したら本ドキュメントを更新する。
 
-- 新モデルの発表 (例: Opus 5.0)
+- 新モデルの発表 (世代が上がったら本表の ID を差し替える。`skill.md` の `model` 行にも同じ ID 一覧があるので対で直す)
 - 既存モデルの ID 変更
 - 既存モデルの deprecation 通知
 - 公式 prompt engineering ガイドの大きな更新

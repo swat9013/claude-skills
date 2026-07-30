@@ -38,7 +38,7 @@ SKILL.md の決定規則の正本 (canonical source)。各項目は「**価値**
 **検討メモ (2026-07-04 解消)**:
 - 原文「何よりも疎結合・高凝集」は、同じ回答で参照した Balanced Coupling と文字通りには矛盾する (Khononov は最小化ではなくバランスを主張)。精査の結果、価値の本体は**変更波及の抑制**であり結合最小化そのものではないと確定。常に最小結合へ倒すと過剰分割 (分散モノリス・早すぎる抽象化) を生み、それはこの価値の違反である。
 - 原文「Disposability」は 12-Factor App の同名概念 (プロセスの高速起動・graceful shutdown — https://12factor.net/disposability) と衝突するため **deletability** を正式採用。
-- 原文が参照した GitHub repo (github.com/vladikk/modularity 配下) は 2026-07-04 時点で現存を確認できず、書籍を正典とする。
+- 原典は書籍。補助教材として github.com/vladikk/modularity 配下の skill が公開されており、本 repo は Claude Code plugin (`modularity@vladikk-modularity`) 経由で参照する (ADR 0021 以前は `apm.yml` 経由で `skills/third/{balanced-coupling,design}` として vendor していた)。概念定義が食い違ったら書籍を正典とする。
 
 ### 自前実装 vs 既製品 (2026-07-28 追加)
 

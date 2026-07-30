@@ -55,7 +55,6 @@ ADR・コミットメッセージ・フロントエンドなど、成果物を�
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
-| `adr` | 自動 | Architecture Decision Record を docs/adr/NNNN-<slug>.md に追加する。 |
 | `contextual-commits` | 自動 | Adds structured action lines to commit bodies. |
 | `frontend-refine` | コマンド / 自動 | HTML/フロントエンドを作成・改善するとき、デザインシステムの規範 (トークン 3 層 / Refactoring UI tactics / WCAG AA / Rams・Nielsen heuristics) に照らして、Prep (骨格トークン生成) → Build (tactics 参照) → Review (51 項目 self-review + 静的検査) の 3 フェーズで洗練を担保する。 |
 | `worktree-setup` | コマンド | 対象リポジトリに Claude Code の worktree 並列セッション環境をセットアップする。 |

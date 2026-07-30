@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""research-gate.py - research/report.md の静的検査（6項目）を実行し PASS/WARN/FAIL JSON を出力
+"""research-gate.py - 調査レポート (.ai/research/*.md) の静的検査（6項目）を実行し PASS/WARN/FAIL JSON を出力
 
 Usage: research-gate.py <report_md_path>
 """

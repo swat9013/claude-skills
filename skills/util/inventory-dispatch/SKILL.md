@@ -82,7 +82,7 @@ target ごとに 1 コマンドずつ起動する (起動規約どおり単文 �
    ~/.claude/skills/swat-skills/skills/util/inventory-dispatch/scripts/inventory_herd_ops.py watch --since 1700000000 --timeout-sec 240
    ```
 
-   この Bash 呼び出しは **tool の timeout を 300000ms 以上に明示指定する** — 指定しないと default 120 秒で watch (既定 240 秒) が途中終了させられ、event が返らない (issue-dispatch 手順 6.1 と同じ罠)。どの event でも `.panes` (現在の追跡 pane) と `.reports` (target ごとの newest report path) が返る — 照合は event に依らず台帳と突合して行う。
+   この Bash 呼び出しは **tool の timeout を 300000ms 以上に明示指定する** — 指定しないと default 120 秒で watch (既定 240 秒) が途中終了させられ、event が返らない (issue-dispatch の監視ループの待機ステップと同じ罠)。どの event でも `.panes` (現在の追跡 pane) と `.reports` (target ごとの newest report path) が返る — 照合は event に依らず台帳と突合して行う。
 
 2. **event 別処理**:
 

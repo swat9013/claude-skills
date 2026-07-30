@@ -8,7 +8,7 @@ Claude Code の仕様が不明 / 古い / 矛盾しているときに、どの�
 
 | 種別 | URL | カバー範囲 |
 |---|---|---|
-| Claude API ドキュメント | https://docs.anthropic.com | Claude API 全般 (Messages API / tool use / 価格など) |
+| Claude API ドキュメント | https://platform.claude.com/docs | Claude API 全般 (Messages API / tool use / 価格など)。旧 `docs.anthropic.com` はこのホストへ 301 |
 | Claude Code ドキュメント | https://code.claude.com/docs | Claude Code CLI 全般 (skill / hook / settings) |
 | Claude Code GitHub | https://github.com/anthropics/claude-code | changelog / issues / PR |
 | Claude Agent SDK | https://github.com/anthropics/claude-agent-sdk | Agent SDK |

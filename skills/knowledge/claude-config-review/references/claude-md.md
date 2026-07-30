@@ -52,7 +52,7 @@ CLAUDE.md を新設・編集する前に確認する。**機械検査で済む�
 - [ ] **責務分離 (global vs project)**: グローバルにプロジェクト固有制約を入れていないか / プロジェクトに環境横断規範を書いていないか
 - [ ] **責務分離 (CLAUDE.md vs rules)**: 発火条件付きで絞れる規約は rules に移したか → [rules](./rules.md)。全セッションで必要な汎用規範のみ CLAUDE.md に残す
 - [ ] **責務分離 (規範 vs 自動化)**: hook / settings / linter で決定論的に守らせられる項目を「気をつけろ」と書いていないか。書くなら自動化を実装する方が優先 ([hook](./hook.md) / [settings](./settings.md))
-- [ ] **既存自動化との重複回避 (逆向きチェック)**: 追加しようとする規範が既に `~/.dotfiles/dot_claude/hooks/` (PreToolUse / PostToolUse) / `~/.dotfiles/dot_claude/settings.json` (permissions) / `~/.dotfiles/dot_claude/rules/` で機械的に defend されていないか `grep -r` で確認したか。defend 済みなら追加しない — feedforward 重複は確率的な再現と context bloat にしかならない → [models](./models.md)
+- [ ] **既存自動化との重複回避 (逆向きチェック)**: 追加しようとする規範が既に hook (PreToolUse / PostToolUse) / settings の `permissions` / 既存 rules で機械的に defend されていないか `grep -r` で確認したか。探す先はプロジェクトの hook 配置 (plugin なら `hooks/hooks.json` + script ディレクトリ、repo-local なら `.claude/`) と global (`~/.claude/`) の両方。defend 済みなら追加しない — feedforward 重複は確率的な再現と context bloat にしかならない → [models](./models.md)
 - [ ] **モデル先頭バイアスへの配置**: 重要規範を先頭側に寄せたか → [models](./models.md)
 - [ ] **import への切り出し**: 本文に直書きする必然性のない細則は `@path` import で外出ししたか
 - [ ] **古い情報の除去**: 既に解決した bug への暫定対処 / 撤去済み機能への参照が残っていないか

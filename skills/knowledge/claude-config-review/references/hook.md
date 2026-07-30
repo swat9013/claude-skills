@@ -2,7 +2,7 @@
 
 ## いつこの doc を Read するか
 
-`settings.json` の `hooks` セクションを編集する / `~/.claude/hooks/` 配下のスクリプトを新設 or 変更する / hook を**どの event slot に置くか**判断するときに Read する。ops 寄りのログ整形やフォーマッタの変更だけで完結するなら本 doc は不要。
+hook の登録を編集する (settings の `hooks` セクション / plugin の `hooks/hooks.json`。両者の違いは「仕様」節) / hook script を新設 or 変更する / hook を**どの event slot に置くか**判断するときに Read する。ops 寄りのログ整形やフォーマッタの変更だけで完結するなら本 doc は不要。
 
 ## 責務
 
@@ -13,7 +13,14 @@ hook は Claude Code のイベント (tool 実行前後 / セッション開始 
 
 ## 仕様
 
-`~/.claude/settings.json` の `hooks` セクションで登録する。各 hook は event と matcher を指定し、ヒット時にコマンドを実行する。
+各 hook は event と matcher を指定し、ヒット時にコマンドを実行する。登録先は 2 経路あり、**構造が違う**ので取り違えない:
+
+| 経路 | 登録先 | 構造 |
+|---|---|---|
+| settings 経由 (global / project) | `~/.claude/settings.json` / `<repo>/.claude/settings.json` の `hooks` セクション | settings の中の `hooks` キー配下に event を並べる |
+| plugin 配布 | plugin root の `hooks/hooks.json` (自動 discovery。plugin.json に `hooks` を書かない) | ファイル最上位に **外側 `"hooks"` wrapper が必須**。wrapper 無しは silently invisible で hook が不発になる |
+
+plugin 経路は settings のトップレベル event 構造とは別物。どちらに置くかを先に決めてから書く。
 
 ### event 種別 (主なもの)
 
@@ -32,7 +39,7 @@ hook スクリプトは目的別に 2 ディレクトリへ物理分離する。
 - **harness hook**: Claude の振る舞いそのものを制御する (deny / 書き換え / 注入)。
 - **ops hook**: 副次処理 (ログ / 通知 / メトリクス)。
 
-物理分離することで、ops 系の変更が harness 系を巻き込まなくなる。具体的なディレクトリ名 (例: `harness/` / `ops/`) はプロジェクト側 CLAUDE.md / rules で規定する。
+物理分離することで、ops 系の変更が harness 系を巻き込まなくなる。ディレクトリ名 (例: `harness/` / `ops/`) を規約化するかはプロジェクト側の判断で、規約が無い場合も「1 script に harness と ops を混ぜない」ところまでは守る。
 
 ## チェックリスト
 
@@ -41,7 +48,7 @@ hook を新設・編集する前に確認する。
 - [ ] event 種別が目的に合うか (時系列的に正しい挿入点か)
 - [ ] matcher が広すぎないか (× `.*` / ○ 具体的な tool 名)
 - [ ] hook の役割が deny / warning / 書き換え / 注入 / 観測 のどれかに明確化されているか
-- [ ] harness と ops の物理分離が守られているか (上記参照)
+- [ ] ops 系の副次処理 (ログ / 通知 / メトリクス) を harness script に混ぜていないか — script 本文を読めば判定できる。ディレクトリ命名規約を持たないプロジェクトでも、この観点自体は検証できる
 - [ ] エラー時に Claude セッションを破壊しないか (× `set -e` で軽微エラーも exit 1 → tool 拒否扱い / ○ 検査系は stdout に warning を出して exit 0、deny したい時だけ意図して exit 1)
 - [ ] 副作用が冪等か (同じ event が複数回発火しても安全か)
 - [ ] 実行時間が短いか (重い処理は別プロセスで非同期化)

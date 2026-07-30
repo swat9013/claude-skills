@@ -14,7 +14,7 @@ rules ファイルは CLAUDE.md から分割される、発火条件付きの細
 ## 仕様
 
 - 単一の markdown ファイル。frontmatter `paths:` で発火条件 (対象ファイルの glob、カンマ区切りで複数指定可) を宣言する。該当ファイル編集時のみコンテキストに読み込まれる。
-  - ○ `paths: "dot_claude/skills/**, **/SKILL.md"` のように対象を絞る
+  - ○ `paths: "skills/**/SKILL.md, .claude-plugin/plugin.json"` のように対象を絞る
   - × `paths:` 欠落 → 全セッションで毎回ロードされ CLAUDE.md と等価
 - 1 ファイル 1 関心が原則 (例: `chezmoi-managed-files.md` は chezmoi source 編集規約に限定)。
 
@@ -27,7 +27,7 @@ rules ファイルを新設・編集する前に確認する。
 rules 固有 (= `paths:` で path-scoped にすることで価値が出る) の項目のみここに残す。aspirational / global vs project / recurring failure のような汎用判断は [claude-md](./claude-md.md) のチェックリストに従う。
 
 - [ ] frontmatter `paths:` で発火条件を宣言したか (無いなら rules ではなく CLAUDE.md に置く)
-- [ ] **既存自動化との重複回避**: 追加しようとする細則が既に `~/.dotfiles/dot_claude/hooks/` / `~/.dotfiles/dot_claude/settings.json` / 他 rules / CLAUDE.md で defend されていないか `grep -r` で確認したか (重複は drift と context bloat の原因)
+- [ ] **既存自動化との重複回避**: 追加しようとする細則が既に hook / settings の `permissions` / 他 rules / CLAUDE.md で defend されていないか `grep -r` で確認したか (重複は drift と context bloat の原因)。プロジェクト側と global (`~/.claude/`) の両方を見る
 - [ ] `paths:` の glob が編集対象ファイルを正確に捉えているか (狭すぎて未起動 / 広すぎて常時ロードのどちらでもない)
 - [ ] 1 ファイル 1 関心の責務分割になっているか (1 つの `paths:` で発火する内容が単一テーマか)
 - [ ] CLAUDE.md 索引との一貫性: 新規 rules は CLAUDE.md の索引表に追加したか / 削除 rules は索引から外したか

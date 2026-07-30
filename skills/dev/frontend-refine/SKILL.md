@@ -25,7 +25,7 @@ HTML/フロントエンドを作成・改善するとき、デザインシステ
 
 ## When NOT to use
 
-- 組織横断のデザインシステムをゼロから構築するプロセス — 別スコープ (`.ai/research/2026-07-09-174127-design-system-fundamentals.md` を参照)
+- 組織横断のデザインシステムをゼロから構築するプロセス — 別スコープ (本 skill は「既存の規範を借りて 1 つの成果物を洗練させる」までを扱う)
 - 高レベル architecture 設計 — `third/design` (High-Level Design) を使う
 - HTML/CSS の syntax verify や browser 表示検証 — `knowledge/single-file-html` の verify (Tier 1/2) を使う
 

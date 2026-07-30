@@ -36,14 +36,7 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **Why:** 都度決め打ちの font-size は一貫性を欠き、hierarchy の飛び幅がバラつく。scale から選ぶことで階層が予測可能になる
 - **Bad:** `font-size: 17px;` `font-size: 23px;` のような根拠のない値
 - **Good:** 1.25 (Major Third) など modular scale から選択する
-- **CSS 例:**
-  ```css
-  --text-sm: 0.8rem;    /* 12.8px */
-  --text-base: 1rem;    /* 16px */
-  --text-lg: 1.25rem;   /* 20px */
-  --text-xl: 1.563rem;  /* 25px */
-  --text-2xl: 1.953rem; /* 31.25px */
-  ```
+- **段階の値:** Prep phase が生成する `scale-templates/type-scale-{1.20,1.25,1.333}.css` が正本。ここに値を再掲しない (再掲すると同じ token 名が 2 つの値を持つ)。実装側は `font-size: var(--text-lg)` の形で参照する
 
 ### [T] Font weight 400 未満は禁止
 

@@ -17,7 +17,7 @@ description: 指定 skill が実際に呼び出された直近 transcript を特
 
 ### 1. 正本の読込と監査基準の抽出
 
-対象は本 repo (`~/.claude/skills/swat-skills`) の skill に限る。args に plugin prefix (`swat-skills:`) が付いていれば除去し、`skills/*/<skill-name>/SKILL.md` を glob で解決する。見つからない場合と、以下のいずれかに該当する場合は、監査対象外である旨を報告して終了する:
+対象は本 repo (`~/.claude/skills/swat-skills`) の skill に限る。args に plugin prefix (`swat-skills:`) が付いていれば除去し、**配布 skill と repo-local skill の両方**を glob で解決する — `skills/*/<skill-name>/SKILL.md` と `.claude/skills/<skill-name>/SKILL.md` (後者は plugin 配布外の project-local 配置)。解決した repo 相対 path を以降 `<skill-path>` として手順 4 の版差分コマンドにもそのまま渡す (category を決め打ちで組み立て直さない — 実在しない path を `git log` に渡すと空ログになり、版差分確認が silent に skip される)。見つからない場合と、以下のいずれかに該当する場合は、監査対象外である旨を報告して終了する:
 
 - `skills/third/` 配下 (vendor skill — 上流 diff 最小化のため SKILL.md を編集しない)
 - 判断規則集系 knowledge skill (`engineering-judgment` / `coding-principles` / `test-strategy` / `pr-quality`) — 内容の改善は `inventory-project-values` の領分。engineering-judgment には「正本 references → SKILL.md 蒸留」の 2 段更新規約があり、本 skill が SKILL.md だけを編集すると片肺更新になる
@@ -76,7 +76,7 @@ subagent が報告本文を送らず idle 化したら、SendMessage で報告�
 判定前に**版差分を確認する** (監査セッションの cwd は任意なので `-C` で repo を明示する):
 
 ```bash
-git -C ~/.claude/skills/swat-skills log --format='%h %ci %s' -- skills/<category>/<skill-name>/SKILL.md
+git -C ~/.claude/skills/swat-skills log --format='%h %ci %s' -- <skill-path>
 ```
 
 各 transcript の実行日時 (手順 3 報告の項目 1) と突合して実行時点の版を特定し、旧版準拠の挙動を現行仕様違反と誤判定しない。旧版本文が要るときは `git -C ... show <hash>:<path>` で取得する。log が空 (未 commit の新設 skill 等) なら版差分確認は skip し、現行版のみで評価する。現行版で是正済みの逸脱は「是正の実証」として記録するに留める。
@@ -108,7 +108,7 @@ git -C ~/.claude/skills/swat-skills log --format='%h %ci %s' -- skills/<category
 | 症状 | 原因 | 対応 |
 |---|---|---|
 | 呼出 transcript が大量ヒット | skill 名の単純 grep が言及・ファイル一覧を拾う | invocation マーカー (`<command-name>` / `"skill":`) で grep する (手順 2 のとおり) |
-| 類似名 skill の transcript が混入 | 前方一致 grep (例: `grill` 前方一致が `grilling` と `grill-with-docs` の両方にヒット) | `</command-name>` / 閉じ `"` まで含めた完全一致にする |
+| 類似名 skill の transcript が混入 | 前方一致 grep (例: `foo` 前方一致が `foo` と `foo-bar` の両方にヒット) | `</command-name>` / 閉じ `"` まで含めた完全一致にする |
 | 呼出回数が実際より多く見える | queue-operation と user turn の二重記録 | 呼出回数は turn 構造を確認してから確定する |
 | 監査対象 file に生 command が無い | wrapper transcript (対象セッションを `<transcript-data>` 内包) or 圧縮形式で tool_use 本文欠落 | 生セッション jsonl を特定し直す。欠落項目は「逐語検証不能」と明記し、tool_result から挙動判定 |
 | 現行仕様に照らすと逸脱だらけ | 実行時点の SKILL.md が旧版 | `git log -- <path>` で版を特定し、旧版基準で評価 + 現行是正済みかを併記 |

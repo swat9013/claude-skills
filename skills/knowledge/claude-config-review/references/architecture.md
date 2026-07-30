@@ -70,8 +70,8 @@ Slot は 2 軸の組み合わせ:
 
 steering loop の sensor は components の機構を借用して実装する:
 
-- 観測 (sensor 機能): `hook` (Stop など) で session 終了を捉え、`skill` (review-session 系) で semantic 評価。これが I/Sensor slot を埋める形になる。
-- 反映: 出力から components (skill / CLAUDE.md / rules / hook / settings) を書き換える。sensor は本来 fix しないが、self-maintenance は loop なので書き換えまで担う。
+- 観測 (sensor 機能): I/Sensor slot は `hook` (session 終了や tool 使用を捉える event) + evaluative な `skill` (semantic 評価) の組み合わせで**構成できる**。実際にどの機構を置くかはプロジェクト側の決定であり、本 doc は slot の存在だけを扱う (自動発火の sensor を持たない構成もありうる)。
+- 反映: 出力から components (skill / CLAUDE.md / rules / hook / settings) を書き換える。sensor は本来 fix しないが、self-maintenance は loop なので書き換えまで担う。書き換えを人間承認付きの手動起動ツールに寄せる構成もこの形に含まれる。
 
 したがって architecture (本文書) は「regulated 側 = components の slot 配置」に閉じる。regulator 側 (self-maintenance) の設計判断は別文脈 (CONTEXT.md / 各 skill) を参照する。
 

@@ -16,7 +16,7 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "requests<3",
-#     "rich",
+#     "rich>=13",
 # ]
 # ///
 ```
@@ -98,14 +98,14 @@ uv run pytest script.py
 `--with` フラグが必要な理由: pytest は PEP 723 メタデータを自動読み込みしない。
 `dependencies` に `pytest` を含めれば `--with` は不要だが、本番依存と混在する。
 
-### dependencies に含める場合のパターン
+### dependencies に含める場合のパターン (非推奨 — 本番依存に test 依存が混入する)
 
 ```python
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "requests",
-#     "pytest",
+#     "requests<3",
+#     "pytest>=8",
 # ]
 # ///
 ```

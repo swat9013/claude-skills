@@ -25,7 +25,6 @@
     "./skills/knowledge/shell-script",
     "./skills/knowledge/single-file-html",
     "./skills/knowledge/test-strategy",
-    "./skills/dev/adr",
     "./skills/dev/contextual-commits",
     "./skills/dev/frontend-refine",
     "./skills/dev/worktree-setup",

@@ -116,7 +116,7 @@ references: []
 
 ### 定石 7: エミュレータは ARM64 system image + Quick Boot で 10 倍速くなる
 
-- **System Image**: Apple Silicon では必ず **`arm64-v8a`** を選ぶ。x86 image は Rosetta 2 経由で著しく遅い。API 35 (Android 15) が現行推奨。
+- **System Image**: Apple Silicon では必ず **`arm64-v8a`** を選ぶ。x86 image は Rosetta 2 経由で著しく遅い。調査時点 (2026-06) の推奨は API 35 (Android 15) — 現行の推奨 API level は Android Studio リリースノートで確認する。
 - **ハードウェアアクセラレーション**: ARM 上では macOS Hypervisor Framework + MoltenVK (Vulkan) が自動で効く。Intel 時代の HAXM は不要。
 - **Quick Boot / Snapshot**: 初回起動後にスナップショットを作ると次回以降 Cold Boot 比で最大 10 倍速。
   - M4 Mac 16GB 実績: Cold Boot ~22-30秒 → Quick Boot ~2-3秒。
@@ -157,7 +157,7 @@ references: []
 | 状況 / 条件 | 推奨・結論 | 理由 |
 |-------------|-----------|------|
 | 新規に Mac で Android 環境を組む | Studio (DMG or Cask) + bundled JBR + ARM64 emulator | 公式が最もテストした構成。Apple Silicon ネイティブで最速 |
-| dotfiles で宣言的管理したい | Cask (android-studio / commandlinetools / platform-tools) + mise で JDK | brew + mise で再現可能・宣言的。本リポジトリの方針と整合 |
+| dotfiles で宣言的管理したい | Cask (android-studio / commandlinetools / platform-tools) + mise で JDK | brew + mise で再現可能・宣言的 |
 | ターミナルで複数プロジェクトの JDK が分かれる | mise で per-project `.tool-versions` | 起動コスト最小・多言語対応。KMP の Ruby も同居管理できる |
 | ビルドが無言で壊れる | `JAVA_HOME` と Studio の Gradle JDK 設定の一致を最初に疑う | JDK 不一致が最頻出原因。3 実行経路が別 JDK を見る |
 | エミュレータが遅い | arm64-v8a image + Quick Boot snapshot | x86 image の Rosetta 2 経由が遅さの主因 |
@@ -194,4 +194,4 @@ references: []
 - [ ] **bundled JDK パスが `jre` か `jbr` か** — 2 ソースで `Contents/jre/...` と `Contents/jbr/...` が混在。Studio のバージョンで異なるため、実機で `ls /Applications/Android\ Studio.app/Contents/` を確認するのが確実。`JAVA_HOME` 設定時の正誤に直結するので影響度: 中。
 - [ ] **ターミナル用 JDK の推奨メジャーバージョン** — KMP 公式は「JBR 17 以上」、別ソースは「JDK 21/25 LTS」と幅がある。Android Gradle Plugin の要求 JDK はバージョン依存のため、使う AGP のリリースノートで最終確認すべき。影響度: 中（不一致でビルド不可になりうる）。
 - [ ] **未来日付バージョンの確証** — Android Studio Quail 1 (2026.1.1, 2026-04-28) / JDK 25 LTS (2025-09) 等は調査時点 (2026-06-11) で時系列整合はするが、二次情報由来で一次リリースノートの突き合わせが未完。正確なバージョン番号が要る場合は公式リリースノートで再確認。影響度: 低〜中。
-- [ ] **本 dotfiles への組み込み可否** — 本リポジトリは chezmoi 管理。Android ツール群 (Cask 3 種 + mise の Java) を Brewfile / mise 設定にどう落とすかは未調査。実装時は `package-management` skill を参照。影響度: 低（調査スコープ外）。
+- [ ] **dotfiles への組み込み可否** — Android ツール群 (Cask 3 種 + mise の Java) を Brewfile / mise 設定にどう落とすかは未調査。dotfiles 側の管理方式に依存するため本 reference のスコープ外。影響度: 低。

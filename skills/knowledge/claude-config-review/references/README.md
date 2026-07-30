@@ -2,7 +2,7 @@
 
 ## このドキュメント群の位置づけ
 
-Claude Code の 5 種コンポーネント (skill / hook / CLAUDE.md / settings / rules) を編集・新設するときの参照知識。プロジェクト非依存。
+Claude Code の 5 種コンポーネント (skill / hook / CLAUDE.md / settings / rules) を編集・新設するときの参照知識。仕様とレビュー観点は汎用だが、配置選好や例示は本 repo の構成 (Skills ディレクトリプラグイン) を前提にした箇所がある。
 
 claude-config-review skill の `references/` 配下に正本配置され、5 種コンポーネントを編集する前に Claude が Read することを想定する。
 

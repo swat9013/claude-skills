@@ -72,7 +72,7 @@ font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
 ### Lucide (default for React)
 
 - URL: https://lucide.dev/
-- 特徴: 318+ icons、24px base、stroke-width 1.5、tree-shakable
+- 特徴: 24px base、stroke-width 1.5、tree-shakable
 - License: ISC (MIT 互換)
 - Install: `npm install lucide-react`
 
@@ -86,7 +86,7 @@ font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
 ### Radix Icons (default for Radix Primitives 併用時)
 
 - URL: https://www.radix-ui.com/icons
-- 特徴: 318+ icons、15×15px 固定グリッド、Radix Primitives とのデザイン言語統一が前提
+- 特徴: 15×15px 固定グリッド、Radix Primitives とのデザイン言語統一が前提
 - License: MIT
 - Install: `npm install @radix-ui/react-icons`
 

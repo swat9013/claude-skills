@@ -46,7 +46,6 @@ grep -E '<pattern>' "$INPUT" \
 | 2 行目 | `set -euo pipefail` | エラー即停止 / 未定義変数禁止 / pipe 内エラー検出 |
 | 実行権限 | `chmod +x` | shebang 経由の直接実行 |
 | 引数チェック | `"${1:?usage: $0 <input>}"` | `set -u` 下で usage 自動表示付き必須化 |
-| 配置 | global: `~/.dotfiles/dot_claude/scripts/<name>.sh` / project-local: `<repo>/scripts/<name>.sh` | reflect の allowlist 登録規約 |
 | ファイル末尾 | 最終行に改行 | POSIX 標準 |
 
 ## 検証
@@ -70,4 +69,4 @@ bats / shunit2 など test framework を入れたくなったら [python-single-
 ## 関連
 
 - [python-single-file-script](../python-single-file-script/SKILL.md): escalate 先 (テスト・依存・複雑さが必要なケース)
-- 配置と allowlist 登録は reflect skill が担う (本 skill は書き方知識のみ)
+- 配置先決定 (global: `~/.dotfiles/dot_claude/scripts/<name>.sh` / local: `<repo>/scripts/<name>.sh`) と allowlist 登録は本 skill の責務外 (本 skill は書き方知識のみ)

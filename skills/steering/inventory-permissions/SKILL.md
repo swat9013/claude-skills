@@ -30,7 +30,7 @@ Claude Code の permission 3 層 — **permission** (正規表現ベースの一
 
 Claude Code 本体の permission matcher 実装を確認できれば `sample_matched` を厳密化できるが、確認できなくても本 skill は動く。実装冒頭で以下を試み、確認できたら「matcher_confidence を `exact` に昇格して報告」を宣言する。確認できなくても続行 — ブロッカーにしない。
 
-- 手元の Claude Code パッケージ内 permission 判定コードの探索 (opensrc / grep)
+- 手元の Claude Code パッケージ内 permission 判定コードの探索 (grep)
 - 公式 docs (`https://code.claude.com/docs/ja/`) の permission matcher 記述
 - 実測 (deny 済み entry で似た pattern を作って発火試験)
 

@@ -77,7 +77,7 @@ Python の uv はバージョン管理内蔵ですが、Node.js は**専用ツ�
 | **Volta** | 高速 | 強（package.json で自動強制） | バージョンを git commit で強制統一したい |
 | **mise** | 高速 | 中（既存ファイル全読込） | Python 等も同時管理・環境変数/タスク統合まで欲しい |
 
-> この dotfiles 環境は **mise** を採用済み（package-management skill 参照）。多言語統一の観点で mise 継続が整合的。
+> 既に **mise** を採用している環境なら、多言語統一の観点で mise 継続が整合的。
 
 ### 固定は「宣言」と「切替」を分けて二重化する
 
@@ -708,7 +708,7 @@ pnpm add -D typedoc
 pnpm typedoc src/index.ts
 ```
 
-チュートリアル中心なら Python 版と同じく **VitePress** や **Docusaurus** が選択肢。
+チュートリアル中心なら **VitePress** や **Docusaurus** が選択肢。
 
 **出典**: [TypeDoc](https://typedoc.org/), [VitePress](https://vitepress.dev/)
 
@@ -718,7 +718,7 @@ pnpm typedoc src/index.ts
 
 ### パッケージ・バージョン管理
 - **パッケージマネージャー**: pnpm（corepack で版固定）
-- **Node.js バージョン**: fnm / Volta / mise + `.nvmrc` + `engines`（この dotfiles は mise）
+- **Node.js バージョン**: fnm / Volta / mise + `.nvmrc` + `engines`（多言語を同時に管理するなら mise）
 - **ランタイム**: Node.js 22.x LTS（プロトタイプは Bun、edge は Deno）
 
 ### 言語・UI
@@ -728,7 +728,7 @@ pnpm typedoc src/index.ts
 
 ### 開発ツール
 - **テスト**: Vitest（単体・E2E は Playwright）
-- **リント+フォーマット**: Biome（新規）/ oxlint（速度）/ ESLint v9 flat config（プラグイン必須）
+- **リント+フォーマット**: Biome（新規）/ oxlint（速度）/ ESLint flat config（プラグイン必須。採用版は本文のリント節を参照 — v9.x には EOL 期日がある）
 - **環境変数**: Zod で起動時検証
 - **フック**: Husky + lint-staged（pre-commit/pre-push 分離）
 
@@ -793,4 +793,4 @@ pnpm test
 - [tsup](https://tsup.egoist.dev/)
 - [TypeDoc](https://typedoc.org/)
 
-> 詳細な調査ログ（49件の出典・トレードオフ分析）は [`.ai/research/2026-06-08-154203-nodejs-dev-environment-best-practices.md`](../.ai/research/2026-06-08-154203-nodejs-dev-environment-best-practices.md) を参照。
+> 本書は調査レポートからの蒸留版。出典は上記一覧が正本 (調査時の生ログは gitignore 済みで配布対象外)。

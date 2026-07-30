@@ -14,8 +14,8 @@ architecture.md の 2x2 slot 分類 (Computational/Inferential × Guide/Sensor) 
 
 | 文献 | URL | 参照元 |
 |---|---|---|
-| Martin Fowler, "Harness Engineering" | https://martinfowler.com/articles/harness-engineering.html | architecture.md (slot 概念全般) |
-| Martin Fowler, "Sensors for Coding Agents" | https://martinfowler.com/articles/sensors-for-coding-agents.html | architecture.md (Sensor slot 概念) |
+| Birgitta Böckeler, "Harness engineering for coding agent users" | https://martinfowler.com/articles/harness-engineering.html | architecture.md (slot 概念全般) |
+| Birgitta Böckeler, "Maintainability sensors for coding agents" | https://martinfowler.com/articles/sensors-for-coding-agents.html | architecture.md (Sensor slot 概念) |
 
 ### Long-context behavior
 

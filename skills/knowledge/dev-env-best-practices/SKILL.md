@@ -50,4 +50,4 @@ staleness 判定はこの表の「最終取得日」を single source とする�
 
 ## 更新の罠
 
-この skill は references/ も含めて swat-skills plugin 同梱。index や reference を更新するときは plugin repo (`~/ghq/github.com/swat9013/swat-skills/skills/dev-env-best-practices/`) を直接編集する。`~/.claude/skills/swat-skills/` は symlink なので編集はそのまま repo に反映される。
+この skill は references/ も含めて swat-skills plugin 同梱。index や reference を更新するときは plugin repo (`~/ghq/github.com/swat9013/swat-skills/skills/knowledge/dev-env-best-practices/`) を直接編集する。`~/.claude/skills/swat-skills/` は symlink なので編集はそのまま repo に反映される。

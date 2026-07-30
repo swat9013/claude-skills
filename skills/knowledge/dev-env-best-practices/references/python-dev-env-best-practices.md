@@ -271,7 +271,7 @@ if __name__ == "__main__":
 | UI インタラクション | Alpine.js (~15KB) | モーダル、ドロップダウン等 |
 | テンプレート | Jinja2 | サーバーサイドレンダリング |
 
-> **HTMX 4.0** は XMLHttpRequest → Fetch API 移行（ストリーミング応答対応）を含む大規模リファクタリングで 2026 年前半〜中盤リリース予定だが、現時点ではアルファ版。本番は **2.0.9 安定版** を据え置くこと。
+> **HTMX 4.0** は XMLHttpRequest → Fetch API 移行（ストリーミング応答対応）を含む大規模リファクタリング。調査時点 (2026-06) ではアルファ版だったため本番は **2.0.9 安定版** 据え置きを推奨した。この判断は 4.0 の現況次第で変わるので、採用前にリリース状況を確認する。
 
 ### プロジェクト構造
 
@@ -555,7 +555,7 @@ jobs:
       run: uv python install ${{ matrix.python-version }}
 
     - name: Install dependencies
-      run: uv sync --all-extras
+      run: uv sync --all-groups
 
     - name: Run Ruff
       run: |

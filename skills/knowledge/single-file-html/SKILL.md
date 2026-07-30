@@ -1,7 +1,7 @@
 ---
 name: single-file-html
 user-invocable: false
-description: Use when building a self-contained single-file HTML artifact (explainer doc, dashboard, report, graphical page with inline SVG) that must open standalone with zero external dependencies, when asked to create/build a one-file HTML page or embed diagrams as inline SVG, or when rendering and visually checking an HTML file in a browser. Not for converting a spec to readable HTML (use spec-to-readable-html) or exploring several UI variations (use prototype).
+description: Use when building a self-contained single-file HTML artifact (explainer doc, dashboard, report, graphical page with inline SVG) that must open standalone with zero external dependencies, when asked to create/build a one-file HTML page or embed diagrams as inline SVG, or when rendering and visually checking an HTML file in a browser. Not for exploring several UI variations (use prototype).
 ---
 
 # Single-File HTML
@@ -15,7 +15,7 @@ Core principle: **the file is the deliverable, and "looks done" is not "verified
 ## When to use / NOT
 
 - **Use** for: graphical explainer docs, dashboards, reports, standalone interactive pages, anything that must work offline by double-clicking.
-- **NOT** for: converting a spec/requirements doc to readable HTML -> `spec-to-readable-html`. Exploring multiple toggleable UI mockups -> `prototype`.
+- **NOT** for: exploring multiple toggleable UI mockups -> `prototype`.
 
 ## Core principles
 

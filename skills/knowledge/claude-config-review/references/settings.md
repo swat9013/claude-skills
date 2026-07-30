@@ -27,10 +27,16 @@
 
 ### settings.local.json との分担
 
-- **`settings.json`**: リポジトリで共有される設定 (VCS で共有、複数マシンで同期)
-- **`settings.local.json`**: per-machine な秘匿設定 (VCS 管理外、per-machine)
+同名のファイルが役割の違う 4 箇所に現れるので、どれを指しているかを先に確定する:
 
-機密情報 (API キー / トークン) や個人環境固有のパスは local 側に置く。
+| 実体 | 役割 | VCS |
+|---|---|---|
+| `~/.claude/settings.json` | ユーザー全環境の既定 | dotfiles 側の管理下 |
+| `<repo>/.claude/settings.json` | リポジトリで共有する設定 | 追跡する |
+| `<repo>/.claude/settings.local.json` | per-machine な実行時設定・秘匿値 | **管理外** |
+| 配布用テンプレート (例: `settings/settings.local.json`) | 各環境の local へ反映させる原本 | **追跡する** |
+
+機密情報 (API キー / トークン) や個人環境固有のパスは runtime local 側に置く。配布テンプレートが追跡下にあるのは矛盾ではない — 原本を共有し、反映先が管理外という分担。
 
 ## チェックリスト
 
@@ -39,7 +45,7 @@ settings.json を編集する前に確認する。
 - [ ] `permissions.allow` が最小権限原則に従っているか (広すぎる pattern はないか)
 - [ ] `permissions.deny` が allow と矛盾していないか (deny が allow を覆す挙動を理解しているか)
 - [ ] hook 登録の event / matcher が妥当か → [hook](./hook.md) のチェックリストも参照
-- [ ] `settings.local.json` との分担が守られているか (per-machine 設定が settings.json に混ざっていないか)
+- [ ] `settings.local.json` との分担が守られているか (per-machine 設定が settings.json に混ざっていないか)。上表で対象がどの実体かを先に確定する — 追跡下の配布テンプレートを「管理外のはず」と誤判定しない
 - [ ] `permissions.defaultMode` の選択が意図通りか (`bypassPermissions` は強い権限を与えるので慎重に)
 - [ ] 環境変数が秘匿情報を含んでいないか (秘匿は local 側へ)
 - [ ] 同じ目的で複数の hook が重複登録されていないか
