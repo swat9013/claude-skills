@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "dispatch-ops": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--script",
+        "${CLAUDE_PLUGIN_ROOT}/mcp/dispatch-ops/main.py"
+      ]
+    },
+    "transcript-ops": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--script",
+        "${CLAUDE_PLUGIN_ROOT}/mcp/transcript-ops/main.py"
+      ]
+    }
+  }
+}

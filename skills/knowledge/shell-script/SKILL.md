@@ -69,4 +69,4 @@ bats / shunit2 など test framework を入れたくなったら [python-single-
 ## 関連
 
 - [python-single-file-script](../python-single-file-script/SKILL.md): escalate 先 (テスト・依存・複雑さが必要なケース)
-- 配置先決定 (global: `~/.dotfiles/dot_claude/scripts/<name>.sh` / local: `<repo>/scripts/<name>.sh`) と allowlist 登録は本 skill の責務外 (本 skill は書き方知識のみ)
+- 配置先決定 (全 project で使うなら user scope の script ディレクトリ / その repo だけなら `<repo>/scripts/<name>.sh`) と allowlist 登録は本 skill の責務外 (本 skill は書き方知識のみ)

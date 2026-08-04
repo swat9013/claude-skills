@@ -103,7 +103,7 @@ niche option (`exclude-newer` 等) や uv add コマンド詳細は [references/
 
 - [shell-script](../shell-script/SKILL.md): escalate 元。境界条件は shell-script 側の表が source of truth
 - [references/pep723-and-uv.md](references/pep723-and-uv.md): uv コマンド詳細・`exclude-newer`・lock ファイル生成コマンド (`.lock` を commit する運用規則は上記「実行・テスト」節が正本)
-- 配置先決定 (global: `~/.dotfiles/dot_claude/scripts/<name>.py` / local: `<repo>/scripts/<name>.py`) と allowlist 登録は本 skill の責務外 (本 skill は書き方知識のみ)
+- 配置先決定 (全 project で使うなら user scope の script ディレクトリ / その repo だけなら `<repo>/scripts/<name>.py`) と allowlist 登録は本 skill の責務外 (本 skill は書き方知識のみ)
 
 ## メンテナンス
 

@@ -28,8 +28,11 @@ if [ -z "$HOST" ]; then
   deny "URL からホスト名を抽出できませんでした"
 fi
 
-# allowlist (完全一致)
-ALLOWLIST="code.claude.com docs.anthropic.com claude.com www.anthropic.com github.com raw.githubusercontent.com gist.githubusercontent.com gitlab.com docs.python.org peps.python.org doc.rust-lang.org pkg.go.dev developer.mozilla.org docs.rs crates.io pypi.org npmjs.com registry.npmjs.org rubygems.org stackoverflow.com qiita.com zenn.dev martinfowler.com"
+# allowlist (完全一致)。subdomain は展開されないので、許可したい host は
+# 1 つずつ列挙する (`claude.com` を書いても `platform.claude.com` は通らない)。
+# docs.anthropic.com は platform.claude.com へ 301 済みだが、旧 URL を載せた
+# 第三者記事が残るため entry も残す。
+ALLOWLIST="code.claude.com platform.claude.com docs.anthropic.com claude.com www.anthropic.com github.com raw.githubusercontent.com gist.githubusercontent.com gitlab.com docs.python.org peps.python.org doc.rust-lang.org pkg.go.dev developer.mozilla.org docs.rs crates.io pypi.org npmjs.com registry.npmjs.org rubygems.org stackoverflow.com qiita.com zenn.dev martinfowler.com"
 
 for allowed in $ALLOWLIST; do
   if [ "$HOST" = "$allowed" ]; then

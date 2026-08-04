@@ -7,17 +7,24 @@
 
 Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self-check する。
 
+## CSS 例の書式
+
+CSS 例は **raw 値を `:root` (token 定義層) に置き、使用側は `var(--*)` で参照する** 2 層で書いてある。Review phase の F1 (8pt scale) / F3 (生 hex 直書き禁止) は `:root` 以外の raw 値を Red Flag にするため、この形で写せば Review 合格条件 (Red Flag = 0) と衝突しない。
+
+`:root` を併記した例の token は「どんな値を意図しているか」を見せるための抜粋で、実物は Prep phase の `design-tokens.css` が正本 (`--space-*` は `scale-templates/spacing-8pt.css`、`--shadow-*` は `scale-templates/layout-12col.css` 由来)。
+
 ## Hierarchy
 
 ### [S] color × size × weight の 3 軸で hierarchy を作る
 
 - **Why:** weight だけの変化は視覚的差が乏しく、hierarchy が弱くなる。color と size を組み合わせることで階層が一目で伝わる
 - **Bad:** 見出しも本文も同じ color、weight だけ 700 vs 400 で差をつける
-- **Good:** 見出しは color `#1a202c` weight 600 size 1.5rem、本文は color `#4a5568` weight 400 size 1rem
+- **Good:** 見出しは color `--foreground` (濃い charcoal) weight 600 size 1.5rem、本文は color `--muted-foreground` (中間 gray) weight 400 size 1rem
 - **CSS 例:**
   ```css
-  h2 { color: #1a202c; font-weight: 600; font-size: 1.5rem; }
-  p  { color: #4a5568; font-weight: 400; font-size: 1rem; }
+  :root { --foreground: #1a202c; --muted-foreground: #4a5568; }
+  h2 { color: var(--foreground);       font-weight: 600; font-size: 1.5rem; }
+  p  { color: var(--muted-foreground); font-weight: 400; font-size: 1rem; }
   ```
 
 ### [S] 重要度低の要素を目立たなくすることで主役を浮かせる
@@ -27,8 +34,14 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **Good:** secondary は transparent + border のみ、primary だけ solid fill にする
 - **CSS 例:**
   ```css
-  .btn-primary   { background: #3b82f6; color: #fff; border: none; }
-  .btn-secondary { background: transparent; border: 1px solid #cbd5e0; color: #4a5568; }
+  :root {
+    --primary: #3b82f6;
+    --primary-foreground: #f8fafc;
+    --border: #cbd5e0;
+    --muted-foreground: #4a5568;
+  }
+  .btn-primary   { background: var(--primary); color: var(--primary-foreground); border: none; }
+  .btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--muted-foreground); }
   ```
 
 ### [T] Font size は modular ratio で段階化。arbitrary サイズ禁止
@@ -55,8 +68,12 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **Good:** `background: #1a202c; color: rgba(255,255,255,0.7);`
 - **CSS 例:**
   ```css
-  .dark-panel { background: #1a202c; }
-  .dark-panel .muted-text { color: rgba(255, 255, 255, 0.7); }
+  :root {
+    --panel-dark: #1a202c;
+    --on-dark-muted: rgba(255, 255, 255, 0.7);
+  }
+  .dark-panel { background: var(--panel-dark); }
+  .dark-panel .muted-text { color: var(--on-dark-muted); }
   ```
 
 ## Whitespace
@@ -78,11 +95,11 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 
 - **Why:** 近接の原則 (Gestalt proximity) により、間隔の大小そのものが「これらは関連している」という情報を伝える
 - **Bad:** label と input の間隔も、field 同士の間隔も同じ 16px
-- **Good:** label-input 間は 4-8px、field 同士は 24px と差をつける
+- **Good:** label-input 間は 4-8px (`--space-0-5` / `--space-1`)、field 同士は 24px (`--space-3`) と差をつける。8pt scale の外 (6px 等) を作らず、既存の段で差をつける
 - **CSS 例:**
   ```css
-  .field { display: flex; flex-direction: column; gap: 6px; }
-  .form  { display: flex; flex-direction: column; gap: 24px; }
+  .field { display: flex; flex-direction: column; gap: var(--space-0-5); } /* 4px */
+  .form  { display: flex; flex-direction: column; gap: var(--space-3); }   /* 24px */
   ```
 
 ### [T] Line-height は行の長さに反比例
@@ -130,8 +147,10 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **Good:** `color: hsl(210, 10%, 60%);` (わずかに青みがかった cool gray)
 - **CSS 例:**
   ```css
-  --gray-500: hsl(210, 10%, 60%);
-  --gray-700: hsl(210, 12%, 35%);
+  :root {
+    --gray-500: hsl(210, 10%, 60%);
+    --gray-700: hsl(210, 12%, 35%);
+  }
   ```
 
 ### [S] 早期に色を投入。grayscale で完成させてから色を足すと clash する
@@ -153,8 +172,10 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **CSS 例:**
   ```css
   /* 金融: red = loss, green = gain (業界慣習に合わせる) */
-  --color-loss: #dc2626;
-  --color-gain: #16a34a;
+  :root {
+    --color-loss: #dc2626;
+    --color-gain: #16a34a;
+  }
   ```
 
 ### [S] Overlay で色を作る
@@ -164,8 +185,12 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **Good:** `background: #1a202c; color: rgba(255,255,255,0.9);`
 - **CSS 例:**
   ```css
-  .on-dark       { color: rgba(255, 255, 255, 0.9); }
-  .on-dark-muted { color: rgba(255, 255, 255, 0.6); }
+  :root {
+    --on-dark-strong: rgba(255, 255, 255, 0.9);
+    --on-dark-muted:  rgba(255, 255, 255, 0.6);
+  }
+  .on-dark       { color: var(--on-dark-strong); }
+  .on-dark-muted { color: var(--on-dark-muted); }
   ```
 
 ### [S] Accent color は small area に限定する
@@ -259,20 +284,20 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **Good:** すべての shadow の y-offset を正の値 (下向き) に統一する
 - **CSS 例:**
   ```css
-  /* すべて y-offset は正の値で統一 */
-  .card  { box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
-  .modal { box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15); }
+  /* すべて y-offset は正の値で統一 (層の合成は 2-3 層 tactic と併用) */
+  .card  { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 6px rgba(0, 0, 0, 0.1); }
+  .modal { box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07), 0 10px 20px rgba(0, 0, 0, 0.15); }
   ```
 
 ### [S] Inset shadow と outer shadow を用途で使い分ける
 
 - **Why:** inset (内側) shadow は「へこんでいる」印象を与え、outer shadow は「浮いている」印象を与える。要素の意味 (入力欄 vs カード) に合わせて使い分けないと知覚と実態が矛盾する
 - **Bad:** `input { box-shadow: 0 4px 6px rgba(0,0,0,0.1); }` (浮いて見える input)
-- **Good:** input には inset shadow、card には outer shadow を使う
+- **Good:** input には inset shadow、card には outer shadow を使う。どちらも 2-3 層で合成する (inset も単層だと「へこみ」が平坦に見える)
 - **CSS 例:**
   ```css
-  input { box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08); }
-  .card { box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+  input { box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.06), inset 0 2px 4px rgba(0, 0, 0, 0.04); }
+  .card { box-shadow: var(--shadow-md); } /* layout-12col.css の 2 層 token */
   ```
 
 ### [S] Dark mode では shadow より surface lightness で depth 表現
@@ -341,8 +366,12 @@ Claude が Build phase に入ったら **[S] tactic のみ**を能動的に self
 - **Good:** レイアウト形状を保った skeleton を表示する
 - **CSS 例:**
   ```css
+  :root {
+    --skeleton-base:  #e2e8f0;
+    --skeleton-sheen: #edf2f7;
+  }
   .skeleton {
-    background: linear-gradient(90deg, #e2e8f0 25%, #edf2f7 37%, #e2e8f0 63%);
+    background: linear-gradient(90deg, var(--skeleton-base) 25%, var(--skeleton-sheen) 37%, var(--skeleton-base) 63%);
     background-size: 400% 100%;
     animation: skeleton-loading 1.4s ease infinite;
   }

@@ -26,7 +26,7 @@ HTML/フロントエンドを作成・改善するとき、デザインシステ
 ## When NOT to use
 
 - 組織横断のデザインシステムをゼロから構築するプロセス — 別スコープ (本 skill は「既存の規範を借りて 1 つの成果物を洗練させる」までを扱う)
-- 高レベル architecture 設計 — `third/design` (High-Level Design) を使う
+- 高レベル architecture 設計
 - HTML/CSS の syntax verify や browser 表示検証 — `knowledge/single-file-html` の verify (Tier 1/2) を使う
 
 ## Phase 1: Prep
@@ -55,6 +55,8 @@ HTML/フロントエンドを作成・改善するとき、デザインシステ
 | Semantic tokens | shadcn 8 種 (`--background`/`--foreground`/`--primary`/`--muted`/`--accent`/`--destructive`/`--border`/`--ring`) | 同 | shadcn 提供のを流用 |
 
 Palette hue は User 依頼のトーン (calm / trustworthy → Blue、warm → Amber、fresh → Green、bold → Red 等) から選定。迷ったら Blue。
+
+上表の default から外れるとき (user が Material 3 / Open Props / 別 icon set / 用途別 font stack を名指し、依頼が特定デザイン言語に寄る等) のみ `references/presets.md` を Read し、URL / License / install 手順 / 使い方をそこから引く。default のままなら Read 不要。
 
 ### 成果物生成
 

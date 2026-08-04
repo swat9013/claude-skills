@@ -9,7 +9,7 @@ description: herdr (AI agent 向け terminal multiplexer) session 内で、inven
 
 herdr session 内で inventory 系 3 skill (`inventory-permissions` / `inventory-claude-md` / `inventory-skill-mcp`) をそれぞれ独立した Claude Code セッションとして起動する dispatcher。展開先は**この skill を呼び出したセッションが居る herdr workspace の分割 pane** — user は同じ workspace 内で全セッションを見渡し、pane 移動で直接介入できる。各 pane はレポート生成まで自走し、dispatcher はレポート完成を監視 → 要約を AskUserQuestion で user に諮り → 承認された候補の適用指示を pane へ送信 → pane 側が worktree + PR 作成まで進める。
 
-**承認判定は常に人間** (ADR 0011)。dispatcher はレポートの要約と選択肢提示のみを行い、候補の適用判断・pane 内 AskUserQuestion への代答は一切しない (責務境界を参照)。
+**承認判定は常に人間**。dispatcher はレポートの要約と選択肢提示のみを行い、候補の適用判断・pane 内 AskUserQuestion への代答は一切しない (責務境界を参照)。
 
 ## args
 
@@ -19,7 +19,7 @@ herdr session 内で inventory 系 3 skill (`inventory-permissions` / `inventory
 
 決定論部分 (前提検査 / pane 起動 / レポート監視 / テキスト送信 / pane 回収) は 1 script に外出ししてある。生の `herdr` を手で叩かず script を使う (例外は手順 4 の `herdr pane read` のみ)。初期 prompt template・event 分類・submit 方式の規則は script の docstring とテストが正本 — 本書には書かない:
 
-- [`scripts/inventory_herd_ops.py`](scripts/inventory_herd_ops.py) — herdr 操作 (preflight / spawn / watch / send / close)。テスト: repo root の `tests/test_inventory_herd_ops.py`
+- [`scripts/inventory_herd_ops.py`](scripts/inventory_herd_ops.py) — herdr 操作 (preflight / spawn / watch / send / close)。テスト (`tests/test_inventory_herd_ops.py`) は [plugin repo](https://github.com/swat9013/swat-skills) の root 直下にあり、配布物には含まれない
 
 **起動は必ず「literal な tilde path を command 名にした単文」で行う。1 Bash 呼び出し = 1 script 起動:**
 
@@ -28,6 +28,8 @@ herdr session 内で inventory 系 3 skill (`inventory-permissions` / `inventory
 ```
 
 sandbox の `excludedCommands` 照合は command 文字列のテキスト一致であり、登録 entry (tilde 表記) と別形の起動 — `${CLAUDE_SKILL_DIR}` 展開 (絶対 path になる) / 変数間接 / compound command (for loop・`VAR=x` 前置・`&&` 連結) — は照合されず sandbox 内に落ちる。落ちると subprocess の herdr は socket connect deny で即死する (fail-closed なので誤 dispatch には進まないが、dispatch は不能)。issue-dispatch と同一の制約。
+
+**上の綴りは symlink install (`~/.claude/skills/swat-skills`) 前提。** marketplace plugin として install した環境では、自分の install path での綴りに読み替えて起動し、**同じ綴り**を `excludedCommands` に登録する (`${CLAUDE_SKILL_DIR}` 表記へ置き換えない — 展開後の絶対 path は tilde entry と照合されない)。両形式の書き分けは `/apply-swat-settings` の「path 解決」節が持っている。
 
 ## 手順
 
@@ -122,7 +124,7 @@ target ごとに 1 コマンドずつ起動する (起動規約どおり単文 �
 
 dispatch → 監視 → 承認仲介 → 全回収で止まる。以下を**構造的に守る**:
 
-- **承認判定は常に人間** (ADR 0011)。dispatcher が行うのはレポートの要約と AskUserQuestion での選択肢提示のみで、候補の採否を dispatcher 自身が判断しない
+- **承認判定は常に人間**。dispatcher が行うのはレポートの要約と AskUserQuestion での選択肢提示のみで、候補の採否を dispatcher 自身が判断しない
 - **pane 内の AskUserQuestion へ send-text で代答することを禁止する**。script send を使ってよいのは「レポート完成後、dispatcher 側 AskUserQuestion で user 承認を得た適用指示」の 1 種のみ。pane が承認待ち・permission 待ちで停滞していたら user に pane 移動を案内する (代わりに答えない)
 - 無人 commit なし — commit / PR 作成は各 pane 側が repo 規約 (worktree 必須・gate) の下で行う
 - inventory 各 skill の手順の中身 (観測 script / bucket 分類 / 高確度候補の扱い) は各 pane の領分 — dispatcher は関与しない
@@ -143,5 +145,3 @@ dispatch → 監視 → 承認仲介 → 全回収で止まる。以下を**構�
 ## 参照
 
 - 各 inventory skill の手順正本: `skills/steering/inventory-permissions/SKILL.md` / `skills/steering/inventory-claude-md/SKILL.md` / `skills/steering/inventory-skill-mcp/SKILL.md`
-- steering 運用正本 (統治対象マップ / ADR 0011 の 3 層分離): `docs/steering.md`
-- 先行実装 (構成・script 設計の参照元): `skills/util/issue-dispatch/SKILL.md`

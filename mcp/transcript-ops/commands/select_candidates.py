@@ -1,16 +1,13 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = []
-# ///
-"""inventory-project-values の候補絞り込み script (mart → 読み順が確定した slice)。
+"""`select_candidates` tool の実装 (mart → 読み順が確定した slice)。
 
-scan-user-prompts.py が出す mart は実測で 1,295 prompt / 934 KB あり、LLM に全件を
-読ませる前提は成立しない。本 script は mart を**決定的に絞り込み・並べ替え**て、
+`scan_prompts` が出す mart は実測で 1,295 prompt / 934 KB あり、LLM に全件を
+読ませる前提は成立しない。本 tool は mart を**決定的に絞り込み・並べ替え**て、
 LLM が上から順に読める slice JSON を出す。
 
 **判定は一切しない** — 「どれがフィードバックか」「どれが価値観か」は 3 段階モデル
-(docs/steering.md §1) どおり LLM の具体化と人間の判定に委ねる。ここで行うのは
+(運用正本は plugin repo の docs/steering.md §1 —
+https://github.com/swat9013/swat-skills/blob/main/docs/steering.md) どおり
+LLM の具体化と人間の判定に委ねる。ここで行うのは
 長さ (`text_chars`) / `repo` / **正規形の完全一致**という機械的に観測できる属性
 だけによる絞り込みと整列であり、bucket も発話型も知らない。
 
@@ -32,12 +29,17 @@ LLM が上から順に読める slice JSON を出す。
 している」= 未ルール化の強いシグナルでもあるため、**第 2 の候補源**として人間が
 読み返せる形で残す (逐語反復された価値観が定型判定される経路が実在する)。
 
-**repo scope**: `--repo` 未指定時は **cwd の git remote** に既定解決する (`--all-repos`
+**repo scope**: `repo` 未指定時は **cwd の git remote** に既定解決する (`all_repos`
 で全 project 横断に開ける)。他 project で実行したときに無関係な repo の prompt が
 slice に載らないようにするための既定であり、解決できなければ黙って全 repo に
-倒さず fail する。
+倒さず fail する。MCP tool として呼ばれた場合の cwd は **server プロセスの cwd**
+(セッション起動時に固定) なので、別 repo を指したいときは `repo_root` を明示する。
 
-出力: --output-dir に candidates-<timestamp>.json を書き、path を stdout に print する。
+出力: output_dir に candidates-<timestamp>.json を書き、**path だけを返す**
+(slice 本体は context に載せない)。
+
+`parse_args` / `main(argv)` を残してあるのは、slice schema を固定するテストが CLI
+形の entrypoint を通して観測契約を検査しているため。tool 側の入口は `run()`。
 """
 
 from __future__ import annotations
@@ -51,8 +53,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from _transcript_lib import resolve_now, resolve_repo_at, truncate  # noqa: E402
+from adapter.transcript import resolve_now, resolve_repo_at, truncate
 
 # --- 定数 --------------------------------------------------------------------
 
@@ -107,8 +108,15 @@ CANDIDATE_FIELDS = (
     "git_branch",
     "text_chars",
     "truncated",
+    "steering_pattern",
     "text",
 )
+
+# 優先帯の先頭に置く発話型。訂正 prompt は**規範とのずれが露出した瞬間**なので、
+# 同じ観測帯の中で先に読む値打ちがある (#478 P3)。**読み順 (`rank`) は変えない** —
+# 帯を変えると観測帯が揺れて過去の棚卸しと比較できなくなるため、優先帯は
+# `priority_order` という別の索引として足す。
+PRIORITY_PATTERN = "correct"
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -116,7 +124,7 @@ CANDIDATE_FIELDS = (
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mart", type=Path, required=True,
-                   help="scan-user-prompts.py が出した mart JSON の path")
+                   help="scan_prompts が出した mart JSON の path")
     p.add_argument("--min-chars", type=int, default=DEFAULT_MIN_CHARS,
                    help=f"候補に含める text_chars の下限。default {DEFAULT_MIN_CHARS}")
     p.add_argument("--repo", type=str, default=None,
@@ -133,30 +141,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--stdout-slice", action="store_true",
                    help="ファイルに書かず slice JSON を stdout に出す (テスト用)")
     args = p.parse_args(argv)
-    if args.repo is not None:
-        args.repo_scope = REPO_SCOPE_EXPLICIT
-    elif args.all_repos:
-        args.repo_scope = REPO_SCOPE_ALL
-    else:
-        # cwd 解決は git 呼び出しを伴うため main() が行う (select() は pure に保つ)。
-        args.repo_scope = REPO_SCOPE_CWD
+    args.repo_scope = resolve_repo_scope(args.repo, args.all_repos)
     return args
+
+
+def resolve_repo_scope(repo: str | None, all_repos: bool) -> str:
+    """`repo` / `all_repos` の指定から scope label を決める。
+
+    cwd 解決 (git 呼び出し) はここでは行わない — `select()` を pure に保つため、
+    実際の解決は `resolve_repo_filter` が担う。
+    """
+    if repo is not None:
+        return REPO_SCOPE_EXPLICIT
+    if all_repos:
+        return REPO_SCOPE_ALL
+    return REPO_SCOPE_CWD
 
 
 def resolve_repo_filter(
     args: argparse.Namespace,
     resolver: Callable[[Path], str | None] | None = None,
+    repo_root: Path | None = None,
 ) -> str | None:
-    """`--repo` 未指定時に cwd の repo 識別子を解決する (`main()` 専用)。
+    """repo 未指定時に cwd (または `repo_root`) の repo 識別子を解決する。
 
-    解決に使うのは scan-user-prompts.py と同じ `_transcript_lib.resolve_repo_at`
+    解決に使うのは scan_prompts と同じ `adapter.transcript.resolve_repo_at`
     なので、mart の `repo` 値と表現が一致する。**解決できないときに全 repo へ倒さ
-    ない** — 他 project の prompt を黙って slice に載せないことが `--repo` 既定化の
+    ない** — 他 project の prompt を黙って slice に載せないことが repo 既定化の
     目的そのものなので、明示を要求して fail する。
     """
     if args.repo_scope != REPO_SCOPE_CWD:
         return args.repo
-    return (resolver or resolve_repo_at)(Path.cwd())
+    return (resolver or resolve_repo_at)(repo_root or Path.cwd())
 
 
 # --- 集計 --------------------------------------------------------------------
@@ -238,6 +254,34 @@ def build_boilerplate_forms(
     return forms
 
 
+def build_steering_pattern_section(candidates: list[dict]) -> dict:
+    """発話型の内訳と、訂正を先に読むための優先帯索引。
+
+    `priority_order` は候補の `rank` を並べ替えたもので、**候補自体の rank は
+    動かさない**。読み順 (text_chars 降順) は観測帯の定義に属し、変えると過去の
+    棚卸しと比較できなくなるため、優先帯は索引として分離する。
+
+    帯内の順序は `rank` 昇順のまま — 訂正の中でどれが重いかは長さでしか機械的に
+    測れず、それは既存の読み順そのものだから。
+    """
+    histogram: collections.Counter = collections.Counter(
+        str(c.get("steering_pattern") or "") for c in candidates
+    )
+    priority = [c["rank"] for c in candidates
+                if c.get("steering_pattern") == PRIORITY_PATTERN]
+    rest = [c["rank"] for c in candidates
+            if c.get("steering_pattern") != PRIORITY_PATTERN]
+    return {
+        "priority_pattern": PRIORITY_PATTERN,
+        "histogram": dict(sorted(histogram.items())),
+        "priority_order": priority + rest,
+        "definition": (
+            f"{PRIORITY_PATTERN} を先頭帯に、帯内は rank 昇順 "
+            "(rank = text_chars 降順の読み順。優先帯は rank を変えない)"
+        ),
+    }
+
+
 def build_repo_index(candidates: list[dict]) -> list[dict]:
     """候補の repo 別内訳。`--repo` で次に絞り込むときの入口になる。"""
     grouped: dict[Any, list[dict]] = collections.defaultdict(list)
@@ -288,7 +332,7 @@ def select(mart: dict, args: argparse.Namespace, generated_at: str) -> dict:
     boilerplate_excluded: collections.Counter = collections.Counter()
     matched: list[dict] = []
     # 除外理由は **below_min_chars → other_repo → boilerplate** の順に確定させる
-    # (record ごとに 1 理由。scan-user-prompts.py の EXCLUSION_REASONS と同じ規約)。
+    # (record ごとに 1 理由。scan_prompts の EXCLUSION_REASONS と同じ規約)。
     for prompt in prompts:
         if int(prompt.get("text_chars") or 0) < args.min_chars:
             below_min += 1
@@ -346,6 +390,7 @@ def select(mart: dict, args: argparse.Namespace, generated_at: str) -> dict:
         "boilerplate_forms": build_boilerplate_forms(
             boilerplate_index, boilerplate_excluded
         ),
+        "steering_patterns": build_steering_pattern_section(candidates),
         "repos": build_repo_index(candidates),
         "candidates": candidates,
     }
@@ -355,6 +400,72 @@ def select(mart: dict, args: argparse.Namespace, generated_at: str) -> dict:
 
 def load_mart(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def emit(slice_json: dict, args: argparse.Namespace, now: dt.datetime) -> str:
+    """candidates-<timestamp>.json を書いて path を返す。"""
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    out = args.output_dir / f"candidates-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+    out.write_text(
+        json.dumps(slice_json, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return str(out)
+
+
+class RepoScopeUnresolved(RuntimeError):
+    """cwd から repo を解決できず、明示 (repo / all_repos) が要る状態。
+
+    全 repo へ倒す fallback を持たない — 他 project の prompt を黙って slice に
+    載せないことが repo 既定解決の目的そのものだから。
+    """
+
+
+def run(
+    mart: str,
+    min_chars: int = DEFAULT_MIN_CHARS,
+    repo: str | None = None,
+    all_repos: bool = False,
+    limit: int | None = None,
+    output_dir: str = str(DEFAULT_OUTPUT_DIR),
+    repo_root: str | None = None,
+    now: str | None = None,
+) -> dict:
+    """tool 側の入口。slice は返さず、書いた path と絞り込みの meta だけを返す。
+
+    **呼出し値は argv を経由させない** — `-` で始まる mart path / repo 名が argparse の
+    option 解釈に晒される。CLI 形の entrypoint は schema 固定テストのために残すが、
+    ここから受け取るのは default 値だけにする。
+    """
+    args = parse_args(["--mart", ""])
+    args.mart = Path(mart)
+    args.min_chars = min_chars
+    args.output_dir = Path(output_dir)
+    args.repo = repo
+    args.all_repos = all_repos
+    args.repo_scope = resolve_repo_scope(repo, all_repos)
+    args.limit = limit
+    args.now = now
+
+    args.repo = resolve_repo_filter(
+        args, repo_root=Path(repo_root) if repo_root else None
+    )
+    if args.repo_scope == REPO_SCOPE_CWD and args.repo is None:
+        raise RepoScopeUnresolved(
+            f"cwd から repo を解決できない: {repo_root or Path.cwd()} / "
+            "他 repo の prompt を黙って載せないため、repo か all_repos を明示する"
+        )
+
+    generated = resolve_now(args.now)
+    slice_json = select(
+        load_mart(args.mart), args, generated.isoformat().replace("+00:00", "Z")
+    )
+    return {
+        "path": emit(slice_json, args, generated),
+        "meta": slice_json["meta"],
+        "repo_index": slice_json["repos"],
+        "steering_patterns": slice_json["steering_patterns"]["histogram"],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -383,13 +494,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
         return 0
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    out = args.output_dir / f"candidates-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
-    out.write_text(
-        json.dumps(slice_json, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(str(out))
+    print(emit(slice_json, args, now))
     return 0
 
 

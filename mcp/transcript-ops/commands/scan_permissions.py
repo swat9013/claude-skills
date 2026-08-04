@@ -1,9 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = []
-# ///
-"""inventory-permissions の観測 script (data mart 生成)。
+"""`scan_permissions` tool の実装 (inventory-permissions 向け data mart 生成)。
 
 transcript (`~/.claude/projects/**/*.jsonl`) を data lake として直近 N 日
 (--days、default 30) を **stateless 全走査** し、以下 2 軸 × 2 section を含む
@@ -21,18 +16,21 @@ mart JSON を出力する。
   全 repo 実績)。省略時 project、`--section all` で両方。
 
 原則 (map #209): **観測・集計は決定的に、判断は人間に、LLM は文章の具体化のみ**。
-script は bucket (revoke / promote / refine / sandbox / keep) を割り当てない。
+本 tool は bucket (revoke / promote / refine / sandbox / keep) を割り当てない。
 bucket 判定は SKILL.md 手順の LLM 段階で mart を読んでから行う (循環依存の回避)。
 
-出力: --output-dir に run-<timestamp>/ を作り、LLM 段階が読む順の分割ファイル
+出力: output_dir に run-<timestamp>/ を作り、LLM 段階が読む順の分割ファイル
 (00-meta / 10-derived-views / 20-axis-a / 30-bypass-samples / 90-mart) を書いて
-path を読む順に stdout へ print する (詳細は split_outputs の docstring)。
-Markdown レポートは LLM 段階の成果物で、本 script は生成しない。
+**path だけを返す** (mart 本体は context に載せない)。詳細は split_outputs の
+docstring。Markdown レポートは LLM 段階の成果物で、本 tool は生成しない。
 
 汎用スキル制約: 依存は Claude Code 標準ファイルのみ
 (`~/.claude/projects/` / `~/.claude/settings.json` / `<repo>/.claude/settings.json` /
 `<repo>/.claude/settings.local.json`)。swat-skills 固有 hook 資産
 (tool-signatures.jsonl 等) には触らない。
+
+`parse_args` / `main(argv)` を残してあるのは、mart schema を固定するテストが CLI
+形の entrypoint を通して観測契約を検査しているため。tool 側の入口は `run()`。
 """
 
 from __future__ import annotations
@@ -48,11 +46,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from _transcript_lib import (  # noqa: E402
-    USER_REJECT_PATTERNS,
+from adapter.transcript import (
+    PERMISSION_DENIAL_TOOL_RE,
+    HookFiring,
     _iter_jsonl,
+    classify_base_outcome,
+    flatten_result_text,
+    hook_firing_of,
     resolve_now,
+    session_id_of,
+    tool_use_result_of,
     truncate,
     walk_transcripts,
 )
@@ -65,6 +68,7 @@ SCHEMA_VERSION = 1
 DEFAULT_DAYS = 30
 DEFAULT_TRANSCRIPTS_DIR = Path("~/.claude/projects").expanduser()
 DEFAULT_GLOBAL_SETTINGS = Path("~/.claude/settings.json").expanduser()
+DEFAULT_CONFIG_DIR = Path("~/.claude").expanduser()
 DEFAULT_OUTPUT_DIR = Path("/tmp/inventory-permissions")
 
 DEFAULT_SUFFICIENT_THRESHOLD = 30
@@ -97,9 +101,35 @@ SPLIT_FILES = (
      "purpose": "全設定 entry の両軸集計 (全 entry を含む母集団)"},
     {"name": "30-bypass-samples.json", "order": 30, "standard_flow": True,
      "purpose": "top bypass group の代表系列"},
+    {"name": "40-hooks.json", "order": 40, "standard_flow": True,
+     "purpose": "hook の設定側分母 × fire 実績 (fire 0 / 遅い / timeout の観測。"
+                "observability に観測限界を同梱)"},
     {"name": "90-mart.json", "order": 90, "standard_flow": False,
      "purpose": "mart 全量 (bypass_sequences / axis_b_actual_usage 含む、想定外の追加検査用)"},
 )
+
+# hook 観測の限界を mart に同梱する。**`nonzero_exit_count: 0` を「失敗していない」と
+# 読ませないための注記**で、matcher_confidence / sufficient_for_relative_judgment と
+# 同じ役割 (観測の確度を数値の隣に置く)。実測 (直近 60 transcript / hook_success
+# 1,788 件) では exitCode は全件 0 で、失敗は別 type (`hook_cancelled`) にしか出ない。
+HOOK_OBSERVABILITY = {
+    "exit_code_source": "attachment.hook_success のみ (他 3 種は exitCode を持たない)",
+    "duration_source": "attachment.hook_success / hook_cancelled の durationMs",
+    "failure_confidence": "approx",
+    "notes": [
+        "nonzero_exit_count は「観測窓内に非 0 終了が記録されなかった」であって"
+        "「hook が失敗していない」ではない。実測で hook_success の exitCode は全件 0",
+        "timeout による打ち切りは hook_cancelled (timedOut) にしか出ない",
+        "system.stop_hook_summary の hookInfos は {command, durationMs} だけで"
+        "hookName も exitCode も持たないため、Stop hook の帰属には使えない",
+        "fire_count 0 の判定が成立するのは configured (設定側の分母) に載る unit だけ。"
+        "observed_unlisted は分母に無いので 0 件になり得ない",
+        "key_collision: true の unit は fire_count を同 key の他 unit と共有する。"
+        "「fire していない」は主張できるが「n 回動いた」は主張できない",
+        "command を持たない attachment (hook_additional_context / hook_system_message) は"
+        "hookName でしか引けず、matcher が `*` の設定には帰属しない (observed_unlisted に残る)",
+    ],
+}
 
 # Bash command_head の抽出上限 (先頭 2 token を primary key に、fallback で先頭 1)
 COMMAND_HEAD_MAX_TOKENS = 2
@@ -108,17 +138,16 @@ CONTENT_EXCERPT_LIMIT = 200
 # `Tool(pattern)` 形式を解体
 PERMISSION_ENTRY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*(?:\((.*)\))?\s*$")
 
-# tool_result.content 内の deny 定型文言 (permission-rule)
-PERMISSION_DENIAL_TOOL_RE = re.compile(
-    r"Permission to use\s+(?P<tool>[A-Za-z_][A-Za-z0-9_-]*)"
-    r"(?:\s+with\s+command\s+(?P<cmd>.+?))?\s+has been denied\.",
-    re.DOTALL,
-)
-
 # 自動モード分類器 deny の Reason 先頭ラベル `[Xxx Yyy]`
 AUTOMODE_REASON_LABEL_RE = re.compile(r"Reason:\s*\[([^\]]+)\]")
 
-# USER_REJECT_PATTERNS は _transcript_lib へ移設 (inventory-skill-mcp と共有)。
+# hook command 中の script file token (照合キーの抽出源)。
+HOOK_SCRIPT_TOKEN_RE = re.compile(
+    r"[\w./~${}@-]*[\w-]+\.(?:py|sh|bash|zsh|js|cjs|mjs|ts|rb|pl)\b"
+)
+
+# USER_REJECT_PATTERNS / PERMISSION_DENIAL_TOOL_RE は adapter.transcript に置く
+# (scan_invocations と共有し、outcome 判定の優先順を 1 箇所で固定するため)。
 
 # NOTE: `~/.claude/projects/` の dir 名は cwd を `/` と `.` の両方を `-` に置換した
 # **lossy** エンコード (`/Users/a-b/x.y` → `-Users-a-b-x-y`)。逆写像は unique に
@@ -168,6 +197,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="global settings。default ~/.claude/settings.json")
     p.add_argument("--repo-root", type=Path, default=Path.cwd(),
                    help="現 project root。省略時 cwd")
+    p.add_argument("--config-dir", type=Path, default=DEFAULT_CONFIG_DIR,
+                   help="Claude Code config dir (plugin hooks の分母源)。"
+                        "default ~/.claude")
     p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                    help="mart 出力先。default /tmp/inventory-permissions")
     p.add_argument("--now", type=str, default=None,
@@ -185,7 +217,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 # --- 共通ユーティリティ ------------------------------------------------------
-# resolve_now / truncate は _transcript_lib へ移設 (inventory-skill-mcp と共有)。
+# resolve_now / truncate は adapter.transcript にある (scan_invocations と共有)。
 
 def extract_command_head(command: str, max_tokens: int = COMMAND_HEAD_MAX_TOKENS) -> str:
     """Bash command から先頭 token を取り出す。
@@ -220,82 +252,79 @@ def classify_outcome(
     is_error: Any,
     content: Any,
     tool_denial_kind: str | None,
+    tool_use_result: Any = None,
 ) -> tuple[str, str | None, str | None]:
     """tool_result から outcome (7 分類) を返す。
 
     Returns (outcome, denial_kind, denial_reason_label)。
-    - is_error == False または未定義 → ("success", None, None) — Anthropic API 仕様上
-      `is_error` は optional で、無い場合は false 相当 (Read / Edit / TaskUpdate 等
-      多くの tool の成功 result は is_error field を持たない)
-    - is_error == True → toolDenialKind を優先、無ければ content 文言で fallback
+
+    成否そのもの (success / error / user-reject / unknown) の判定は
+    `adapter.transcript.classify_base_outcome` に委譲する (#476) — scan_invocations
+    側の分類器と同じ record に同じ答えを出すため、判定の分岐をここで再導出しない。
+    本関数が足すのは **base が選んだ枝の中での deny 種別の label 付け**だけ。
+
+    - base success / unknown → そのまま (deny 種別は無い)
+    - base user-reject → deny_user-rejected
+    - base error → toolDenialKind → content 文言の順で deny_permission-rule /
+      deny_automode へ細分し、当たらなければ error
+
+    `is_error` 欠落時は `toolUseResult` (構造化真値) で判定する。両方無い record は
+    unknown — 従来ここは success に丸めていたが、判定不能を成功に数えていた。
 
     outcome 語彙:
       success / deny_permission-rule / deny_user-rejected / deny_automode /
       deny_hook / error / unknown
     """
-    if is_error is False or is_error is None:
-        return "success", None, None
+    base = classify_base_outcome(
+        is_error, content, tool_use_result, tool_denial_kind
+    )
+    if base in ("success", "unknown"):
+        return base, None, None
+    if base == "user-reject":
+        return "deny_user-rejected", "user-rejected", None
 
-    text = _flatten_text(content)
+    text = flatten_result_text(content)
 
     if tool_denial_kind == "permission-rule":
         return "deny_permission-rule", "permission-rule", None
-    if tool_denial_kind == "user-rejected":
-        return "deny_user-rejected", "user-rejected", None
     if tool_denial_kind in ("automode-blocked", "automode-unavailable"):
-        label = None
-        m = AUTOMODE_REASON_LABEL_RE.search(text)
-        if m:
-            label = m.group(1).strip()
-        return "deny_automode", tool_denial_kind, label
+        return "deny_automode", tool_denial_kind, _automode_reason_label(text)
 
     # toolDenialKind が無い場合は content 文言で fallback (permission-rule /
-    # user-rejected / automode の 3 種のみ)。hook-deny の text fallback は
-    # git の pre-commit エラー等 (`hook failed with exit code 1`) を高頻度で
-    # 誤検知するため採らない — hook 由来は明示的 toolDenialKind に限定する。
+    # automode の 2 種のみ。user-rejected は base 側で判定済み)。hook-deny の
+    # text fallback は git の pre-commit エラー等 (`hook failed with exit code 1`)
+    # を高頻度で誤検知するため採らない — hook 由来は明示的 toolDenialKind に限定する。
     if PERMISSION_DENIAL_TOOL_RE.search(text):
         return "deny_permission-rule", "permission-rule", None
-    low = text.lower()
-    for pat in USER_REJECT_PATTERNS:
-        if pat in low:
-            return "deny_user-rejected", "user-rejected", None
-    if "denied by the claude code auto mode" in low:
-        label = None
-        m = AUTOMODE_REASON_LABEL_RE.search(text)
-        if m:
-            label = m.group(1).strip()
-        return "deny_automode", "automode-blocked", label
+    if "denied by the claude code auto mode" in text.lower():
+        return "deny_automode", "automode-blocked", _automode_reason_label(text)
 
     return "error", None, None
 
 
-def _flatten_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for c in content:
-            if isinstance(c, dict):
-                t = c.get("text")
-                if isinstance(t, str):
-                    parts.append(t)
-        return " ".join(parts)
-    return ""
+def _automode_reason_label(text: str) -> str | None:
+    m = AUTOMODE_REASON_LABEL_RE.search(text)
+    return m.group(1).strip() if m else None
 
 
 # --- transcript walk ---------------------------------------------------------
-# _iter_jsonl / walk_transcripts は _transcript_lib へ移設 (inventory-skill-mcp と共有)。
+# _iter_jsonl / walk_transcripts は adapter.transcript にある (scan_invocations と共有)。
 
 def extract_events(
     jsonl_path: Path,
     cutoff: dt.datetime,
     project_dir: str,
+    hook_sink: list[HookFiring] | None = None,
 ) -> list[ToolEvent]:
     """1 transcript file から tool_use event を抽出し、outcome を後続
     tool_result で補完する。
 
     生 tool_use 記録に紐づく tool_result が同 file 内に無い場合は outcome=unknown
     のまま残す。cutoff より古い assistant record は skip。
+
+    `hook_sink` を渡すと hook の fire 実績 (`attachment.hook_*`) も同じ walk で
+    追記する。**別関数に切って 2 周させない** — lake は実測 1.2 GB あり、hook 観測の
+    ためだけに全走査をもう 1 周するコストが観測価値に見合わないため (#478)。
     """
     events: list[ToolEvent] = []
     pending: dict[str, int] = {}
@@ -304,15 +333,21 @@ def extract_events(
         with jsonl_path.open("r", encoding="utf-8", errors="replace") as fp:
             for rec in _iter_jsonl(fp):
                 rtype = rec.get("type")
+                if hook_sink is not None and rtype == "attachment":
+                    firing = hook_firing_of(rec)
+                    if firing is not None and _hook_within_window(firing, cutoff):
+                        hook_sink.append(firing)
+                    continue
                 if rtype == "user":
                     msg = rec.get("message") or {}
                     content = msg.get("content")
                     if isinstance(content, list):
-                        for block in content:
-                            if not isinstance(block, dict):
-                                continue
-                            if block.get("type") != "tool_result":
-                                continue
+                        result_blocks = [
+                            b for b in content
+                            if isinstance(b, dict) and b.get("type") == "tool_result"
+                        ]
+                        tur = tool_use_result_of(rec, result_blocks)
+                        for block in result_blocks:
                             tid = block.get("tool_use_id")
                             if tid in pending:
                                 idx = pending.pop(tid)
@@ -321,6 +356,7 @@ def extract_events(
                                     block.get("is_error"),
                                     block.get("content"),
                                     tdk if isinstance(tdk, str) else None,
+                                    tur,
                                 )
                                 events[idx].outcome = outcome
                                 events[idx].denial_kind = dk
@@ -341,7 +377,7 @@ def extract_events(
                 content = msg.get("content")
                 if not isinstance(content, list):
                     continue
-                sid = rec.get("sessionId") or rec.get("session_id") or ""
+                sid = session_id_of(rec)
                 cwd = rec.get("cwd") or ""
                 for block in content:
                     if not isinstance(block, dict):
@@ -380,6 +416,274 @@ def extract_events(
     except OSError:
         return []
     return events
+
+
+def _hook_within_window(firing: HookFiring, cutoff: dt.datetime) -> bool:
+    """hook firing が観測窓内か。timestamp 欠損は保守的に窓内扱い (event 側と同じ)。"""
+    ts = _parse_ts(firing.timestamp)
+    return ts is None or ts >= cutoff
+
+
+# --- hook の設定側分母 -------------------------------------------------------
+# 「fire していない hook」は**設定側の分母**が要る。transcript には fire した hook
+# しか現れないので、observed だけでは「0 回」を主張できない (#478 P4)。分母は
+# settings の `hooks` と plugin の `hooks.json` の 2 系統から列挙する。
+
+
+def _hook_command_key(command: str) -> str:
+    """hook command の照合キー (最初に現れる script file の basename)。
+
+    設定側は `"${CLAUDE_PLUGIN_ROOT}"/hooks/harness/guard-git.sh` のように変数を
+    含み、観測側は展開済み絶対 path で現れる。**matcher の文字列一致では紐づかない**
+    (設定の matcher が regex で、観測側は match した実 tool 名になるため) ので、
+    照合は command 中の script 名で行う。
+
+    「**最後の** script 名」を採る。実 hook には `export PATH=...; <runner>.js
+    <entry>.js` のような長い shell 一行が実在し、先頭側は共通の runner なので
+    先頭を採ると別 hook が同じ key に潰れて fire を二重計上する。末尾側は実際に
+    起動される script に寄る (実測で claude-mem の 4 hook が正しく分かれる)。
+    素の token 分割で末尾を採ると `:true}` のような shell 断片を掴むため、
+    **script 拡張子を持つ token だけ**を候補にする。
+    """
+    tokens = HOOK_SCRIPT_TOKEN_RE.findall(command)
+    if tokens:
+        return tokens[-1].rsplit("/", 1)[-1]
+    for token in command.replace('"', " ").replace("'", " ").split():
+        if "=" in token or token.startswith("-"):
+            continue
+        return token.rsplit("/", 1)[-1]
+    return ""
+
+
+def hook_name_for(event: str, matcher: str) -> str:
+    """設定の (event, matcher) から観測側の `hookName` 表記を組む。
+
+    matcher が空 / `*` の hook は観測側でも event 名だけで現れる (`Stop` 等)。
+    """
+    if not matcher or matcher == "*":
+        return event
+    return f"{event}:{matcher}"
+
+
+def read_hook_entries(settings_path: Path, scope: str, source_label: str) -> list[dict]:
+    """settings / hooks.json の `hooks` から hook 設定を列挙する。
+
+    出力の 1 単位は **(event, command) の組**で、同一 command に複数 matcher が
+    紐づく場合は matchers に畳む — 単位を raw entry のままにすると、同じ script を
+    複数 matcher で登録した hook (guard-shell.sh の bash / sh 等) に同じ fire を
+    重複計上してしまうため。
+    """
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    grouped: dict[tuple[str, str], dict] = {}
+    for event, matcher_groups in (data.get("hooks") or {}).items():
+        if not isinstance(matcher_groups, list):
+            continue
+        for group in matcher_groups:
+            if not isinstance(group, dict):
+                continue
+            matcher = str(group.get("matcher") or "")
+            for hook in group.get("hooks") or []:
+                if not isinstance(hook, dict):
+                    continue
+                command = str(hook.get("command") or "")
+                if not command:
+                    continue
+                key = (str(event), command)
+                entry = grouped.setdefault(key, {
+                    "hook_event": str(event),
+                    "matchers": [],
+                    "hook_names": [],
+                    "command": truncate(command, CONTENT_EXCERPT_LIMIT),
+                    "command_key": _hook_command_key(command),
+                    "source_path": str(settings_path),
+                    "source": source_label,
+                    "scope": scope,
+                })
+                if matcher not in entry["matchers"]:
+                    entry["matchers"].append(matcher)
+                    entry["hook_names"].append(hook_name_for(str(event), matcher))
+    return list(grouped.values())
+
+
+def enumerate_hook_sources(repo_root: Path, global_settings: Path,
+                           config_dir: Path) -> list[dict]:
+    """hook 設定の source 一覧 (settings 3 種 + install 済み plugin の hooks.json)。
+
+    plugin 側まで見るのは、ツール 1 の統治対象が「permission / sandbox / **guard
+    hook**」で、その guard hook の実体が plugin 同梱 (`hooks/hooks.json`) だから。
+    settings だけを分母にすると、統治対象の本体が丸ごと「未設定」に見える。
+    """
+    sources: list[dict] = [
+        {"path": global_settings, "scope": "global", "source": "settings"},
+        {"path": repo_root / ".claude" / "settings.json",
+         "scope": "project", "source": "settings"},
+        {"path": repo_root / ".claude" / "settings.local.json",
+         "scope": "project-local", "source": "settings"},
+    ]
+    # skills ディレクトリプラグイン (symlink 配置) は installed_plugins.json に
+    # 載らない。載らない側が本 repo の配布形なので、両方の install 形を列挙する。
+    skills_root = config_dir / "skills"
+    if skills_root.is_dir():
+        for entry in sorted(skills_root.iterdir()):
+            sources.append({
+                "path": entry / "hooks" / "hooks.json",
+                "scope": f"plugin:{entry.name}",
+                "source": "plugin",
+            })
+    plugins_json = config_dir / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(plugins_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    for pkey, entries in (data.get("plugins") or {}).items():
+        if not isinstance(entries, list) or not entries:
+            continue
+        entry = entries[0] if isinstance(entries[0], dict) else {}
+        install_path = entry.get("installPath")
+        if not install_path:
+            continue
+        sources.append({
+            "path": Path(str(install_path)) / "hooks" / "hooks.json",
+            "scope": f"plugin:{str(pkey).split('@')[0]}",
+            "source": "plugin",
+        })
+    # 同一実体を 2 経路で拾うと (symlink 配置 + installed_plugins) 同じ hook が
+    # 2 unit に割れ、never_fired_units が水増しされる。実 path で重複を落とす。
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for src in sources:
+        if not src["path"].is_file():
+            continue
+        try:
+            key = str(src["path"].resolve())
+        except OSError:
+            key = str(src["path"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(src)
+    return deduped
+
+
+def _percentile(values: list[int], ratio: float) -> int:
+    """昇順 values の分位点 (最近傍)。空なら 0。"""
+    if not values:
+        return 0
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, max(0, round(ratio * (len(ordered) - 1))))
+    return ordered[idx]
+
+
+def _firing_stats(firings: list[HookFiring]) -> dict:
+    durations = [f.duration_ms for f in firings if f.duration_ms is not None]
+    exit_codes: collections.Counter = collections.Counter(
+        f.exit_code for f in firings if f.exit_code is not None
+    )
+    timestamps = sorted(f.timestamp for f in firings if f.timestamp)
+    return {
+        "fire_count": len(firings),
+        "distinct_sessions": len({f.session_id for f in firings if f.session_id}),
+        "exit_codes": {str(code): count for code, count in sorted(exit_codes.items())},
+        "nonzero_exit_count": sum(c for code, c in exit_codes.items() if code != 0),
+        "timed_out_count": sum(1 for f in firings if f.timed_out),
+        "duration_ms": {
+            "observed": len(durations),
+            "p50": _percentile(durations, 0.5),
+            "p95": _percentile(durations, 0.95),
+            "max": max(durations) if durations else 0,
+            "total": sum(durations),
+        },
+        "last_fired_at": timestamps[-1] if timestamps else "",
+    }
+
+
+def aggregate_hook_activity(configured: list[dict],
+                            firings: list[HookFiring]) -> dict:
+    """設定側の分母 × fire 実績。**bucket は付けない** (判定は LLM 段階)。
+
+    紐づけは (event, command basename) を第一キーにする。command を持たない
+    attachment (`hook_additional_context` / `hook_system_message`) は hookName で
+    引き当てる (`matched_by` に手段を残す)。
+    """
+    by_command: dict[tuple[str, str], list[HookFiring]] = collections.defaultdict(list)
+    by_name: dict[str, list[HookFiring]] = collections.defaultdict(list)
+    for firing in firings:
+        key = _hook_command_key(firing.command)
+        if key:
+            by_command[(firing.hook_event, key)].append(firing)
+        else:
+            by_name[firing.hook_name].append(firing)
+
+    # 同一 (event, command_key) を複数の設定 unit が共有すると、同じ firing が
+    # 両方の row に載る (実測: 単一 runner に別 entry を渡す形の plugin hook)。
+    # 数を割り振る根拠が transcript に無いので、按分せず**共有である事実を出す**。
+    key_owners: collections.Counter = collections.Counter(
+        (e["hook_event"], e["command_key"]) for e in configured
+    )
+    used_command_keys: set[tuple[str, str]] = set()
+    used_names: set[str] = set()
+    rows: list[dict] = []
+    for entry in configured:
+        key = (entry["hook_event"], entry["command_key"])
+        matched = list(by_command.get(key, []))
+        matched_by = "command" if matched else None
+        if matched:
+            used_command_keys.add(key)
+        for name in entry["hook_names"]:
+            if name in by_name:
+                matched.extend(by_name[name])
+                used_names.add(name)
+                matched_by = matched_by or "hook_name"
+        rows.append({
+            **{k: entry[k] for k in ("hook_event", "matchers", "hook_names",
+                                     "command", "command_key", "source_path",
+                                     "source", "scope")},
+            "matched_by": matched_by,
+            # True なら fire_count は同 key の他 unit と**共有**の値 (unit 単独の
+            # 実績ではない)。「この hook は fire していない」の主張はできるが
+            # 「この hook が n 回動いた」は主張できない
+            "key_collision": key_owners[key] > 1,
+            **_firing_stats(matched),
+        })
+    rows.sort(key=lambda r: (r["fire_count"], r["hook_event"], r["command_key"]))
+
+    unlisted: dict[str, list[HookFiring]] = collections.defaultdict(list)
+    for (event, key), group in by_command.items():
+        if (event, key) not in used_command_keys:
+            unlisted[f"{event}::{key}"].extend(group)
+    for name, group in by_name.items():
+        if name not in used_names:
+            unlisted[f"{name}::"].extend(group)
+    unlisted_rows = [
+        {
+            "hook_event": group[0].hook_event,
+            "hook_name": group[0].hook_name,
+            "command_key": _hook_command_key(group[0].command),
+            **_firing_stats(group),
+        }
+        for group in unlisted.values()
+    ]
+    unlisted_rows.sort(key=lambda r: (-r["fire_count"], r["hook_name"]))
+
+    return {
+        "configured": rows,
+        "observed_unlisted": unlisted_rows,
+        "totals": {
+            "configured_units": len(rows),
+            "never_fired_units": sum(1 for r in rows if r["fire_count"] == 0),
+            "key_collision_units": sum(1 for r in rows if r["key_collision"]),
+            "total_firings": len(firings),
+            "nonzero_exit_firings": sum(1 for f in firings
+                                        if f.exit_code not in (None, 0)),
+            "timed_out_firings": sum(1 for f in firings if f.timed_out),
+        },
+        "observability": HOOK_OBSERVABILITY,
+    }
 
 
 # --- 設定 entry 列挙 ---------------------------------------------------------
@@ -570,10 +874,21 @@ def entry_matches_event(entry: PermissionEntry, event: ToolEvent) -> bool:
 
 def aggregate_axis_a(entries: list[PermissionEntry],
                      events: list[ToolEvent]) -> list[dict]:
-    """設定 entry 別に match_count / outcome_breakdown / sample_matched を組む。"""
+    """設定 entry 別に match_count / outcome_breakdown / sample_matched を組む。
+
+    entry ごとに全 event を舐めると entries × events になる (実測 357 × 46,863 =
+    1,673 万回の matcher 呼出)。tool 名一致は `entry_matches_event` の第 1 条件なので、
+    先に tool で index して母集団を絞る。**照合結果は変わらない** — index は
+    matcher の第 1 条件をそのまま前倒ししただけで、event の順序も保つ。
+    """
+    events_by_tool: dict[str, list[ToolEvent]] = collections.defaultdict(list)
+    for ev in events:
+        events_by_tool[ev.tool].append(ev)
+
     out: list[dict] = []
     for e in entries:
-        matched = [ev for ev in events if entry_matches_event(e, ev)]
+        matched = [ev for ev in events_by_tool.get(e.tool, ())
+                   if entry_matches_event(e, ev)]
         outcome_counter = collections.Counter(ev.outcome for ev in matched)
         # sample_matched: tool × command_head 別 count top 3
         combo_counter: collections.Counter = collections.Counter()
@@ -601,19 +916,24 @@ def aggregate_axis_a(entries: list[PermissionEntry],
 
 def aggregate_axis_b(events: list[ToolEvent],
                      entries: list[PermissionEntry]) -> list[dict]:
-    """tool × command_head × outcome の集計。config_matches に対応 entry の raw を挙げる。"""
+    """tool × command_head × outcome の集計。config_matches に対応 entry の raw を挙げる。
+
+    代表 event (`raw_input` の復元源) は集計と**同じ 1 pass**で確保する。key ごとに
+    events を線形探索すると keys × events になる (実測 2,875 × 46,863 = 1.35 億)。
+    採るのは先頭 event で、探索していた頃と同じ 1 件。
+    """
     key_counter: collections.Counter = collections.Counter()
     outcome_map: dict[tuple[str, str], collections.Counter] = {}
+    representative: dict[tuple[str, str], ToolEvent] = {}
     for ev in events:
         key = (ev.tool, ev.command_head)
         key_counter[key] += 1
         outcome_map.setdefault(key, collections.Counter())[ev.outcome] += 1
-    # 突き合わせ用: entry ごとに match するかを representative event で試す
+        representative.setdefault(key, ev)
     out: list[dict] = []
     for (tool, head), count in key_counter.most_common():
         matches: list[str] = []
-        # 代表 event 1 件を採り entry 照合 (raw_input 復元は先頭 event を使う)
-        rep = next((ev for ev in events if ev.tool == tool and ev.command_head == head), None)
+        rep = representative.get((tool, head))
         if rep is not None:
             for e in entries:
                 if entry_matches_event(e, rep):
@@ -915,6 +1235,8 @@ def split_outputs(mart: dict) -> list[tuple[str, dict]]:
             "bypass_group_samples": build_bypass_group_samples(
                 s["derived_views"]["bypass_grouped"], s["bypass_sequences"]),
         }),
+        # hook は section (cwd scope) を持たない窓全体の観測なので per_section にしない
+        "40-hooks.json": lambda: {"hook_activity": mart["hook_activity"]},
         "90-mart.json": lambda: mart,
     }
     return [(f["name"], builders[f["name"]]()) for f in SPLIT_FILES]
@@ -966,20 +1288,27 @@ def _summarize_settings_sources(entries: list[PermissionEntry]) -> list[dict]:
 
 # --- entrypoint --------------------------------------------------------------
 
+def _stamp(moment: dt.datetime) -> str:
+    """mart に出す ISO timestamp (UTC は `Z` 表記)。"""
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 def _filter_events_for_project(events: list[ToolEvent], repo_root: str) -> list[ToolEvent]:
     """cwd == repo_root (子孫含む) の event のみ残す。project section 用。"""
     root = repo_root.rstrip("/")
     return [ev for ev in events if ev.cwd == root or ev.cwd.startswith(root + "/")]
 
 
-def main(argv: list[str] | None = None) -> int:
-    ns = parse_args(argv)
+def build(ns: argparse.Namespace) -> dict:
+    """mart 構築まで (ファイル I/O を伴わない)。"""
     now = resolve_now(ns.now)
     cutoff = now - dt.timedelta(days=ns.days)
 
     all_events: list[ToolEvent] = []
+    hook_firings: list[HookFiring] = []
     for project_dir_name, jsonl in walk_transcripts(ns.transcripts_dir, cutoff):
-        all_events.extend(extract_events(jsonl, cutoff, project_dir_name))
+        all_events.extend(
+            extract_events(jsonl, cutoff, project_dir_name, hook_sink=hook_firings))
 
     sections_out: dict[str, dict] = {}
 
@@ -1002,13 +1331,20 @@ def main(argv: list[str] | None = None) -> int:
             ns.bypass_lookahead, ns.bypass_max_gap_seconds,
         )
 
+    hook_entries: list[dict] = []
+    for src in enumerate_hook_sources(ns.repo_root, ns.global_settings, ns.config_dir):
+        hook_entries.extend(
+            read_hook_entries(src["path"], src["scope"], src["source"]))
+
     total_events = sum(s["event_count"] for s in sections_out.values())
     mart = {
         "meta": {
-            "generated_at": now.isoformat(),
+            # timestamp は 6 tool 共通で `Z` 表記に揃える (mart をまたいで
+            # 突合する消費側が表記差を吸収しなくて済むように)
+            "generated_at": _stamp(now),
             "observation_window": {
-                "start": cutoff.isoformat(),
-                "end": now.isoformat(),
+                "start": _stamp(cutoff),
+                "end": _stamp(now),
                 "days": ns.days,
             },
             "section": ns.section,
@@ -1023,24 +1359,84 @@ def main(argv: list[str] | None = None) -> int:
                 "matcher の glob pattern は fnmatch による近似 (Claude Code 本体の matcher と揺れる余地あり)。",
                 "guard_reverse_lookup は transcript の toolDenialKind + Reason label ベース (hooks.json の静的列挙はしない)。",
                 "bucket 判定は本 script では行わない (責務境界: 判定は SKILL.md 手順の LLM 段階)。",
+                "hook_activity は section (cwd scope) で絞らない — 「30 日どこでも fire していない」"
+                "が「fire していない hook」の主張になるため、分母を窓全体に取る。",
             ],
         },
         "sections": sections_out,
+        "hook_activity": aggregate_hook_activity(hook_entries, hook_firings),
+    }
+    return mart
+
+
+def emit(mart: dict, ns: argparse.Namespace) -> list[str]:
+    """分割ファイルを run-<timestamp>/ に書き、読む順の path を返す。
+
+    stamp は mart の `generated_at` から起こす — `resolve_now` を引き直すと
+    mart 内の時刻と dir 名が秒境界でずれる。
+    """
+    generated = dt.datetime.fromisoformat(mart["meta"]["generated_at"])
+    ts = generated.strftime("%Y%m%dT%H%M%SZ")
+    run_dir = ns.output_dir / f"run-{ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    for name, doc in split_outputs(mart):
+        path = run_dir / name
+        path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+        paths.append(str(path))
+    return paths
+
+
+def run(
+    section: str = "project",
+    days: int = DEFAULT_DAYS,
+    repo_root: str | None = None,
+    output_dir: str = str(DEFAULT_OUTPUT_DIR),
+    transcripts_dir: str = str(DEFAULT_TRANSCRIPTS_DIR),
+    global_settings: str = str(DEFAULT_GLOBAL_SETTINGS),
+    config_dir: str = str(DEFAULT_CONFIG_DIR),
+    now: str | None = None,
+) -> dict:
+    """tool 側の入口。mart は返さず、書いた path と判定可能性の meta だけを返す。"""
+    ns = parse_args([])
+    ns.section = section
+    ns.days = days
+    ns.repo_root = Path(repo_root) if repo_root else Path.cwd()
+    ns.output_dir = Path(output_dir)
+    ns.transcripts_dir = Path(transcripts_dir)
+    ns.global_settings = Path(global_settings)
+    ns.config_dir = Path(config_dir)
+    ns.now = now
+
+    mart = build(ns)
+    meta = mart["meta"]
+    return {
+        "paths": emit(mart, ns),
+        "read_order": [f["name"] for f in SPLIT_FILES],
+        "meta": {
+            "section": meta["section"],
+            "repo_root": meta["repo_root"],
+            "observation_window": meta["observation_window"],
+            "total_events": meta["total_events"],
+            "sufficient_for_relative_judgment": meta["sufficient_for_relative_judgment"],
+            "event_count_by_section": {
+                name: s["event_count"] for name, s in mart["sections"].items()
+            },
+            "hook_activity": mart["hook_activity"]["totals"],
+        },
     }
 
+
+def main(argv: list[str] | None = None) -> int:
+    ns = parse_args(argv)
+    mart = build(ns)
     if ns.stdout_mart:
         json.dump(mart, sys.stdout, ensure_ascii=False, indent=2)
         print()
         return 0
-
-    ts = now.strftime("%Y%m%dT%H%M%SZ")
-    run_dir = ns.output_dir / f"run-{ts}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    for name, doc in split_outputs(mart):
-        path = run_dir / name
-        path.write_text(json.dumps(doc, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
-        print(str(path))
+    for path in emit(mart, ns):
+        print(path)
     return 0
 
 

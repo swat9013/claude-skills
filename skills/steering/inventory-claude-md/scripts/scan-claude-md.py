@@ -5,9 +5,9 @@
 # ///
 """inventory-claude-md の観測 script (observation JSON 生成)。
 
-project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + サブディレクトリ CLAUDE.md +
-`.claude/rules/*.md`) を **静的観測** し、以下 3 項目を含む observation JSON を
-出力する。
+project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.md`
++ サブディレクトリ CLAUDE.md + `.claude/rules/*.md`) を **静的観測** し、以下 3
+項目を含む observation JSON を出力する。
 
 - 参照先実在性 (link_targets): markdown link と `@import` 展開先の実在チェック。
   fail-safe = path として復元可能なもののみ検査。URL / 動的展開文字列は check_mode
@@ -16,6 +16,10 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + サブディレクトリ CLA
   boundary を確定させるための決定的観測。
 - section 物理計測 (sections): markdown 見出し階層と各 section の行数。context
   提供のみ、閾値 enforce はしない。
+- 静的トークンコスト (token_cost): **行単位**の概算 token 数と section 別の合計。
+  CLAUDE.md 系は session 開始で無条件に載るので、行数ではなく token が実コスト。
+  実績側 (どの file が何 session に注入されたか) は transcript-ops の
+  `scan_overhead` が出し、突合は LLM 段階が行う (#478 P2)。
 
 原則 (map #209 / #214): **観測・集計は決定的に、判断は人間に、LLM は文章の具体化
 のみ**。script は bucket (keep-inline / move-to-path-scoped / move-to-skill /
@@ -26,8 +30,14 @@ move-to-lint / delete / merge) を割り当てない。bucket 判定は SKILL.md
 print する。Markdown レポートは LLM 段階の成果物で、本 script は生成しない。
 
 汎用スキル制約: 依存は Claude Code 標準ファイルのみ (`<repo>/CLAUDE.md` /
-`<repo>/.claude/rules/*.md`)。global `~/.claude/CLAUDE.md` は読みも書きもしない
-(仕様上除外)。`#rule` buffer への依存は ADR 0018 で撤去済み。
+`<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/*.md`)。global
+`~/.claude/CLAUDE.md` は読みも書きもしない (仕様上除外)。`#rule` buffer への
+依存は ADR 0018 で撤去済み。
+
+`CLAUDE.local.md` は memory 階層の project-local 層で、`.gitignore` 済みなら
+VCS 管理外になる。script は**読むだけ**で tracked/untracked を判定しない
+(git 依存を持たない)。`sources.claude_md.local` に `label: "project-local"` で
+独立キーとして出し、LLM 段階が source class を JSON から直接読めるようにする。
 """
 
 from __future__ import annotations
@@ -35,6 +45,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -66,6 +77,15 @@ URL_RE = re.compile(r"^(https?|ftp|mailto):", re.IGNORECASE)
 # 動的展開文字列 (dollar var / パイプ / スペース含み等) を link_target として除外
 DYNAMIC_MARKERS = ("$", "{", "}", "|", "`", " ")
 
+# token 概算の係数。**transcript-ops の `adapter/transcript.py` と同じ規則**で、
+# 変えるなら両方を同時に変える (片方だけ動かすと、同じ file の静的コストと注入実績が
+# 別スケールになり突合できない)。parity は `tests/test_scan_claude_md.py` が検査する。
+# script は PEP 723 の単一ファイルで adapter を import できないため写しになる。
+CJK_RE = re.compile("[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef]")
+ASCII_CHARS_PER_TOKEN = 4.0
+CJK_CHARS_PER_TOKEN = 1.0
+TOKEN_ESTIMATOR = "approx: cjk 1 字/token + その他 4 字/token (tokenizer 非使用)"
+
 
 # --- 純関数 ------------------------------------------------------------------
 
@@ -96,6 +116,54 @@ def strip_anchor(target: str) -> str:
     """`path.md#section` → `path.md` (存在検査は path 部のみ)."""
     idx = target.find("#")
     return target[:idx] if idx > 0 else target
+
+
+def estimate_tokens(text: str) -> int:
+    """文字列の token 数を概算する (`TOKEN_ESTIMATOR` の係数)。
+
+    tokenizer を持ち込まないのは、観測の決定性 (同じ入力に同じ数) と依存ゼロを
+    優先するため。**桁の比較にだけ使える精度**で、bucket 判定の単独根拠にしない。
+    """
+    if not text:
+        return 0
+    cjk = len(CJK_RE.findall(text))
+    other = len(text) - cjk
+    return math.ceil(cjk / CJK_CHARS_PER_TOKEN + other / ASCII_CHARS_PER_TOKEN)
+
+
+def build_token_cost(
+    lines: list[str], sections: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """行単位の概算 token と section 別合計。
+
+    CLAUDE.md 系は session 開始で**無条件に**載るので、実コストは行数ではなく
+    token になる。行単位で出すのは、bucket の単位が行 / 行群 (SKILL.md 手順 2) で
+    あり、「この 3 行に毎 session 何 token 払っているか」が候補の重み付けに直接
+    効くため。
+
+    `per_line` は index 0 = 1 行目の配列で持つ (行ごとの dict にすると同じ情報が
+    数倍に膨らみ、observation JSON を読む窓を食う)。
+    """
+    per_line = [estimate_tokens(line) for line in lines]
+    total = sum(per_line)
+    section_costs = []
+    for section in sections:
+        start = max(1, section["start_line"])
+        end = min(len(per_line), section["end_line"])
+        est = sum(per_line[start - 1:end]) if end >= start else 0
+        section_costs.append({
+            "heading_text": section["heading_text"],
+            "start_line": section["start_line"],
+            "end_line": section["end_line"],
+            "est_tokens": est,
+            "share": (est / total) if total else 0.0,
+        })
+    return {
+        "estimator": TOKEN_ESTIMATOR,
+        "total_est_tokens": total,
+        "per_line_est_tokens": per_line,
+        "sections": section_costs,
+    }
 
 
 def parse_headings(lines: list[str]) -> list[dict[str, Any]]:
@@ -283,6 +351,7 @@ def observe_markdown_file(
             "sections": [],
             "link_targets": [],
             "imports": [],
+            "token_cost": build_token_cost([], []),
         }
     headings = parse_headings(lines)
     sections = sections_from_headings(headings, len(lines))
@@ -302,6 +371,7 @@ def observe_markdown_file(
         "sections": sections,
         "link_targets": link_targets,
         "imports": imports,
+        "token_cost": build_token_cost(lines, sections),
     }
 
 
@@ -321,7 +391,11 @@ def observe_rules_file(path: Path, repo_root: Path) -> dict[str, Any]:
 
 
 def find_subdir_claude_md(repo_root: Path) -> list[Path]:
-    """root 直下以外の CLAUDE.md を探す (worktree 内の重複を許容)."""
+    """root 直下以外の CLAUDE.md を探す (worktree 内の重複を許容)。
+
+    glob は完全一致 `CLAUDE.md` なので `CLAUDE.local.md` は拾わない
+    (project-local 層は build_observation が root 直下のみ別キーで観測する)。
+    """
     return sorted(
         p for p in repo_root.rglob("CLAUDE.md")
         if p.resolve() != (repo_root / "CLAUDE.md").resolve()
@@ -355,6 +429,9 @@ def summarize_meta(root_obs: dict[str, Any]) -> dict[str, Any]:
         "import_fail_count": len(import_fails),
         "link_check_total": len(checkable),
         "link_check_fail_count": len(fails),
+        # 常時ロードの実コスト。行数と併記するのは、行数が同じでも token は数倍
+        # 違う (表・コードブロック・日本語) ため
+        "est_tokens": root_obs.get("token_cost", {}).get("total_est_tokens", 0),
     }
 
 
@@ -365,6 +442,11 @@ def build_observation(repo_root: Path) -> dict[str, Any]:
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     root_path = repo_root / "CLAUDE.md"
     root_obs = observe_markdown_file(root_path, repo_root, label="root")
+
+    # project-local 層 (memory 階層の 4 層目)。対象は root 直下の 1 path のみ
+    # (skill 側の観測境界。SKILL.md スコープ節を参照)。
+    local_path = repo_root / "CLAUDE.local.md"
+    local_obs = observe_markdown_file(local_path, repo_root, label="project-local")
 
     subdir_obs = [
         observe_markdown_file(p, repo_root, label="subdir")
@@ -377,10 +459,12 @@ def build_observation(repo_root: Path) -> dict[str, Any]:
             "generated_at": generated_at,
             "repo_root": str(repo_root),
             "root_meta": summarize_meta(root_obs),
+            "local_meta": summarize_meta(local_obs),
         },
         "sources": {
             "claude_md": {
                 "root": root_obs,
+                "local": local_obs,
                 "subdirs": subdir_obs,
             },
             "rules": rules_obs,

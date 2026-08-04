@@ -31,11 +31,11 @@ const harrow = (x1,x2,y,color) => {           // horizontal arrow with head
 };
 ```
 
-CSS to make figures scale to their container:
+CSS to make figures scale to their container. The colors come through the semantic tokens that the `frontend-refine` Prep phase writes into `.ai/design/design-tokens.css` (step 1 of the authoring workflow) — raw hex outside `:root` is a Red Flag in the static review that gates this skill:
 
 ```css
-.dia { display:block; width:100%; height:auto; background:#fbfcfe;
-       border:1px solid #e3e7ee; border-radius:8px; }
+.dia { display:block; width:100%; height:auto; background:var(--muted);
+       border:1px solid var(--border); border-radius:8px; }
 ```
 
 ## Data-driven dispatch

@@ -12,7 +12,7 @@ description: |-
 
 ## 観点リスト
 
-開発環境構築で抑えるべき観点。reference を読むときの網羅性確認と、新規調査を researcher に依頼するときの調査観点の両方に使う。言語/FW により濃淡はあるが、欠落させる場合は理由を明示する。
+開発環境構築で抑えるべき観点。reference を読むときの網羅性確認と、新規調査を依頼するときの調査観点の両方に使う。言語/FW により濃淡はあるが、欠落させる場合は理由を明示する。
 
 1. ランタイム / 言語バージョン管理（プロジェクト内でバージョン固定できるか）
 2. 依存関係・パッケージ管理（マネージャー選定、lockfile の再現性）
@@ -46,8 +46,8 @@ staleness 判定はこの表の「最終取得日」を single source とする�
 
 ## 調査の委譲
 
-新規・更新調査は `researcher` skill に委譲する。ただし researcher は手動呼び出し専用（`disable-model-invocation: true`。モデルの Skill tool からは起動できない）のため、観点リストを調査観点として埋め込んだ調査依頼文を組み立て、ユーザーに `/researcher <依頼文>` の実行を提案する。
+新規・更新調査は `mattpocock-skills` plugin の `research` skill に委譲する。観点リストを調査観点として埋め込んだ調査依頼文を組み立ててから渡す (依頼文に観点を入れないと、調査軸がこの skill の網羅性基準からずれる)。同 skill は model からも起動できるので、Skill tool 経由で直接呼んでよい。
 
 ## 更新の罠
 
-この skill は references/ も含めて swat-skills plugin 同梱。index や reference を更新するときは plugin repo (`~/ghq/github.com/swat9013/swat-skills/skills/knowledge/dev-env-best-practices/`) を直接編集する。`~/.claude/skills/swat-skills/` は symlink なので編集はそのまま repo に反映される。
+この skill は references/ も含めて swat-skills plugin 同梱。index や reference の更新は [plugin repo](https://github.com/swat9013/swat-skills) の `skills/knowledge/dev-env-best-practices/` に対して行う。install 済みの plugin ディレクトリを直接書き換えても上流には還らず、次の更新で失われる。

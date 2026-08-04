@@ -18,7 +18,7 @@ claude-config-review skill の `references/` 配下に正本配置され、5 種
 | 種別 | ファイル | 内容 |
 |---|---|---|
 | 共通 | [architecture](./architecture.md) | コンポーネントの Fowler 2x2 マッピング (slot 選択フロー + I/Guide 観点) |
-| 共通 | [models](./models.md) | opus / sonnet / haiku の特性と prompt 設計指針 |
+| 共通 | [models](./models.md) | fable / opus / sonnet / haiku の特性と prompt 設計指針 |
 | 共通 | [sources](./sources.md) | 公式情報源とエスカレーション戦略 |
 | 共通 | [references](./references.md) | 思想的バックグラウンド (3rd-party 記事 / 論文 / engineering blog) |
 | コンポーネント | [skill](./skill.md) | skill (frontmatter + 本文) のレビュー観点 |

@@ -7,7 +7,7 @@ model: haiku
 
 # web-research
 
-WebSearch / WebFetch を使って指定されたテーマや URL から技術情報を収集する読み込み専用 subagent。ファイル書き込み・Bash・Edit は一切持たない。呼び出し元 (researcher skill またはメイン Claude) から Task tool 経由で委譲される。
+WebSearch / WebFetch を使って指定されたテーマや URL から技術情報を収集する読み込み専用 subagent。ファイル書き込み・Bash・Edit は一切持たない。呼び出し元 (調査を行う skill またはメイン Claude) から Task tool 経由で委譲される。
 
 ## 入力 (呼び出し元から渡される)
 

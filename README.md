@@ -24,7 +24,8 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
-| `inventory-claude-md` | コマンド | project の CLAUDE.md (root + サブディレクトリ + `.claude/rules/*.md`) を静的観測し、行単位で 6 bucket (keep-inline / move-to-path-scoped / move-to-skill / move-to-lint / delete / merge) の候補提示まで LLM に運ばせる棚卸し。 |
+| `apply-swat-settings` | コマンド | swat-skills の正本 settings (permission / sandbox) を、原則に照らして cwd の project へ適用するインストーラ。 |
+| `inventory-claude-md` | コマンド | project の CLAUDE.md (root + project-local `CLAUDE.local.md` + サブディレクトリ + `.claude/rules/*.md`) を静的観測し、行単位で 6 bucket (keep-inline / move-to-path-scoped / move-to-skill / move-to-lint / delete / merge) の候補提示まで LLM に運ばせる棚卸し。 |
 | `inventory-permissions` | コマンド | Claude Code の permission (allow/deny/ask) / sandbox / guard hook を transcript の tool_use 実績と突合し、両軸集計 (設定 pattern × 実績) と bypass 系列を単位別に 5 bucket (revoke / promote / refine / sandbox / keep) の候補提示まで LLM に運ばせる棚卸し。 |
 | `inventory-project-values` | コマンド | 実行中の project の標準 transcript から、ユーザーが手入力したプロンプト (直近 30 日 / 60 字以上) を決定的に観測し、同一規範の再出現回数を判定材料にして project 規範の候補を証拠 anchor 付きで具体化する棚卸し。 |
 | `inventory-skill-mcp` | コマンド | 全 plugin skill + personal skill + project skill + MCP (claude.ai connectors 含む) の直近 30 日 invocation を transcript から決定的に集計し、単位別 (skill / MCP tool / MCP server / plugin) の削除/見直し/保持候補を LLM 具体化まで運ぶ棚卸し。 |
@@ -42,9 +43,9 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | `dialogue` | コマンド | 安易な解決に走らない・sycophancy 禁止の対話モード。 |
 | `engineering-judgment` | 自動 | swat9013 のエンジニアリング価値観を蒸留した決定規則集。 |
 | `pr-quality` | 自動 | Google Engineering Practices を蒸留した PR 品質の決定規則集。 |
+| `prompting-principles` | 自動 | Claude 向け指示文 (プロンプト) の文面をどう書くかの決定規則集。 |
 | `python-single-file-script` | 自動 | PEP 723 インラインメタデータ + uv run で単一ファイル Python スクリプトを新規作成・編集する場面に参照する。 |
 | `repo-agent-maturity` | コマンド / 自動 | repo (省略時は cwd) をコーディングエージェント (Claude Code / Cursor / Windsurf) 受け入れ準備度で Lv.1〜5 に採点する。 |
-| `researcher` | コマンド | 外部技術情報を集めて引用付きの構造化レポートにする調査エンジン (手動呼び出し専用)。 |
 | `shell-script` | 自動 | bash で .sh single-file script を新規作成・編集する場面に参照する。 |
 | `single-file-html` | 自動 | Use when building a self-contained single-file HTML artifact (explainer doc, dashboard, report, graphical page with inline SVG) that must open standalone with zero external dependencies, when asked to create/build a one-file HTML page or embed diagrams as inline SVG, or when rendering and visually checking an HTML file in a browser. |
 | `test-strategy` | 自動 | swat9013 のテスト設計・戦略を蒸留した決定規則集。 |
@@ -66,7 +67,7 @@ ADR・コミットメッセージ・フロントエンドなど、成果物を�
 | skill | 起動 | 用途 |
 | --- | --- | --- |
 | `inventory-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-skill-mcp) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動し、レポート完成を監視して要約を user に提示、承認された候補の適用指示を pane へ送る一括棚卸し dispatcher。 |
-| `issue-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、ブロックされていない open issue を優先度順に取り出し、空き slot 分だけ対応 skill + issue 番号入りの Claude Code セッションを、呼び出し元と同じ workspace の分割 pane として起動する dispatcher。 |
+| `issue-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、着手可能な open issue を選んで Claude Code セッションを分割 pane として起動し、監視ループで回収・駐機・補充を回す dispatcher。 |
 <!-- /generated:skills -->
 
 ## 同梱している subagent

@@ -8,6 +8,7 @@
   "repository": "https://github.com/swat9013/claude-skills",
   "license": "MIT",
   "skills": [
+    "./skills/steering/apply-swat-settings",
     "./skills/steering/inventory-claude-md",
     "./skills/steering/inventory-permissions",
     "./skills/steering/inventory-project-values",
@@ -19,9 +20,9 @@
     "./skills/knowledge/dialogue",
     "./skills/knowledge/engineering-judgment",
     "./skills/knowledge/pr-quality",
+    "./skills/knowledge/prompting-principles",
     "./skills/knowledge/python-single-file-script",
     "./skills/knowledge/repo-agent-maturity",
-    "./skills/knowledge/researcher",
     "./skills/knowledge/shell-script",
     "./skills/knowledge/single-file-html",
     "./skills/knowledge/test-strategy",

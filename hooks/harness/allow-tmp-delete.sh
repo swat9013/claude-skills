@@ -8,6 +8,14 @@
 # 承認ルート: /tmp /private/tmp $HOME/.claude/tmp <cwd>/tmp の各「配下」
 # (ルート自体は対象外)。recursive 削除 (-rf) 可。glob/変数/置換/quote/未知 flag/
 # tmp 外混在/.. 脱出/ルート自体 は素通し。
+#
+# 受理する rm の綴り (リテラル一致のみ): `rm` / `/bin/rm` / `/usr/bin/rm`。
+# それぞれ先頭に単一 token `command` を伴ってよい。allow は「その実行ファイルを
+# 承認なしで起動する」決定なので、basename が rm というだけの任意パス
+# (`./rm` / `/opt/x/bin/rm` 等) は受理しない。`\rm` / `env rm` / `sudo rm` も素通し。
+#
+# hooks.json 側の `if` gate は付けない。gate は token 境界照合のため `/bin/rm` を
+# 弾いてしまい、綴り違いで自動許可を失う (issue #361)。判定は本 script に一本化する。
 
 # jq 必須 (無ければ allow しない = fail-safe)
 command -v jq >/dev/null 2>&1 || exit 0
@@ -19,24 +27,27 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 [ -n "$COMMAND" ] || exit 0
 
 # --- G1: コマンド形状 ---
-# 先頭 (空白 trim 後) が "rm " であること。sudo rm / rmtrash / find 等を排除。
 trimmed=$(printf '%s' "$COMMAND" | sed 's/^[[:space:]]*//')
-case "$trimmed" in
-  rm\ *) : ;;
-  *) exit 0 ;;
-esac
 # 連結 / リダイレクト / 置換 / 変数 / glob / quote を含むなら素通し
 printf '%s' "$COMMAND" | grep -q '[|&;<>]' && exit 0   # パイプ/連結(&& ||)/リダイレクト
 printf '%s' "$COMMAND" | grep -q '[$`]'    && exit 0   # 変数展開 / コマンド置換
 printf '%s' "$COMMAND" | grep -q '[*?]'    && exit 0   # glob (* ?)
 printf '%s' "$COMMAND" | grep -q '\['      && exit 0   # glob ([...])
 printf '%s' "$COMMAND" | grep -q "['\"]"   && exit 0   # quote (tokenize 単純化)
+printf '%s' "$COMMAND" | grep -q '[\]'     && exit 0   # backslash (\rm / エスケープ)
 
-# --- G2: フラグ検査 + target 抽出 ---
-rest=$(printf '%s' "$trimmed" | sed 's/^rm[[:space:]]*//')
 set -f                       # glob 無効化 (二重防御)
 # shellcheck disable=SC2086
-set -- $rest                 # IFS 空白で token 分割 (quote/glob は G1 で排除済)
+set -- $trimmed              # IFS 空白で token 分割 (quote/glob は上で排除済)
+
+# 先頭 token が受理する rm の綴りであること。sudo rm / rmtrash / find 等を排除。
+[ "${1:-}" = "command" ] && shift
+case "${1:-}" in
+  rm|/bin/rm|/usr/bin/rm) shift ;;
+  *) exit 0 ;;
+esac
+
+# --- G2: フラグ検査 + target 抽出 ---
 
 targets=""
 afterdd=0

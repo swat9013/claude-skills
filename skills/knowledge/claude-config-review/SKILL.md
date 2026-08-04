@@ -33,7 +33,7 @@ git diff --name-only HEAD
 | パターン (glob) | type | type-specific reference |
 |---|---|---|
 | `**/SKILL.md` | skill | references/skill.md |
-| `**/hooks/hooks.json`, `**/hooks/*.sh` | hook | references/hook.md |
+| `**/hooks/hooks.json`, `**/hooks/**/*.sh`, `**/hooks/**/*.py` | hook | references/hook.md |
 | `**/CLAUDE.md`, `~/.claude/CLAUDE.md` | claude-md | references/claude-md.md |
 | `**/settings*.json` (含む `~/.claude/settings.json`) | settings | references/settings.md |
 | `**/.claude/rules/*.md`, `**/rules/*.md` | rules | references/rules.md |
@@ -41,14 +41,26 @@ git diff --name-only HEAD
 
 判定衝突時は CLAUDE.md / SKILL.md / hooks*.json / rules/ のファイル名固有パターンを優先し、settings*.json は汎用 fallback。
 
+hook パターンの補足:
+
+- `**` は 0 階層も含めて解釈する (`hooks/foo.sh` も `hooks/harness/foo.sh` も hook)。hook script の配置階層は repo ごとに違い、階層固定の pattern は実配置を取りこぼす
+- hook script は shell (`.sh`) と python (`.py`) の両方がある。片方だけを pattern に持つと、もう片方が丸ごと未レビューになる
+- `**/hooks/**/tests/**` は hook script の自動テストであり hook 設定そのものではないので skip する (hook 編集の diff には高確率で同居するが、hook.md の観点は適用できない)
+
 自己レビューについて: 本 skill 自身の `skills/knowledge/claude-config-review/SKILL.md` も `**/SKILL.md` に合致し対象化される (意図通り)。`references/*.md` はいずれの type パターンにも合致しないので skip される。
 
-全 type 共通参照 (絶対 path):
+全 type 共通参照:
 
-- `~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/architecture.md`
-- `~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/models.md`
-- `~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/sources.md`
-- `~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/references.md`
+- `${CLAUDE_SKILL_DIR}/references/architecture.md`
+- `${CLAUDE_SKILL_DIR}/references/models.md`
+- `${CLAUDE_SKILL_DIR}/references/sources.md`
+- `${CLAUDE_SKILL_DIR}/references/references.md`
+
+指示文を含む type (skill / claude-md / rules / hook) にのみ渡す参照:
+
+- `${CLAUDE_SKILL_DIR}/../prompting-principles/SKILL.md` — 指示文の文面規則の正本。settings は指示文を持たないので渡さない
+
+`${CLAUDE_SKILL_DIR}` は本 SKILL.md のロード時に skill ディレクトリの絶対 path へ展開される。install 形態 (symlink / marketplace plugin) を問わず解決されるので、展開後の絶対 path を本文に書き写さない。
 
 ## 実行フロー (per-type ad-hoc dispatch)
 
@@ -67,11 +79,12 @@ git diff --name-only HEAD
 あなたは Claude Code の <TYPE> コンポーネントのレビュアーです。
 
 参照する reference (絶対 path):
-- 共通: ~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/architecture.md
-- 共通: ~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/models.md
-- 共通: ~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/sources.md
-- 共通: ~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/references.md
-- type 別: ~/.claude/skills/swat-skills/skills/knowledge/claude-config-review/references/<TYPE>.md
+- 共通: ${CLAUDE_SKILL_DIR}/references/architecture.md
+- 共通: ${CLAUDE_SKILL_DIR}/references/models.md
+- 共通: ${CLAUDE_SKILL_DIR}/references/sources.md
+- 共通: ${CLAUDE_SKILL_DIR}/references/references.md
+- 指示文型 (skill / claude-md / rules / hook) のみ: ${CLAUDE_SKILL_DIR}/../prompting-principles/SKILL.md
+- type 別: ${CLAUDE_SKILL_DIR}/references/<TYPE>.md
 
 レビュー対象 (絶対 path):
 - <PATH_1>
@@ -82,7 +95,8 @@ git diff --name-only HEAD
 1. 上記 reference を Read で全部読む (architecture.md → type 別 → 共通の順)
 2. 各対象ファイルを Read
 3. reference に照らして違反 / 改善余地を抽出
-4. 以下の JSON schema に厳密に従い、結果のみを 1 つの JSON object として返す (前後にテキスト不要)
+4. prompting-principles/SKILL.md を渡されている場合は、本文の文面が対象モデル向けに書かれているかも照合する。対象モデルは skill なら frontmatter の `model:`、他の type はセッションモデル。どちらも未指定なら Opus 5 と仮定する。Fable 5 / Opus 5 / Sonnet 5 が確定したら ${CLAUDE_SKILL_DIR}/../prompting-principles/references/ の該当 1 本 (fable-5.md / opus-5.md / sonnet-5.md) を Read して差分規則まで見る。haiku には対応 reference がないので models.md の Haiku 節で照合する。逸脱は category `model` で報告する
+5. 以下の JSON schema に厳密に従い、結果のみを 1 つの JSON object として返す (前後にテキスト不要)
 
 {
   "type": "<TYPE>",
@@ -103,6 +117,8 @@ git diff --name-only HEAD
 Edit / Write は使わない。Read のみで分析を完結させる。
 
 `<TYPE>` と `<PATH_*>` は main agent が dispatch 時に埋めること。
+
+**`${CLAUDE_SKILL_DIR}` は本 SKILL.md をロードした時点で絶対 path へ置換済み**なので、main agent が読んでいる template には既に実 path が入っている。それを**そのまま**写す — 変数表記を復元して渡さない (subagent の prompt は string substitution を受けないので、`${CLAUDE_SKILL_DIR}` の literal を渡すと reference が 1 本も読めないまま「reference なしのレビュー」が黙って成立してしまう)。写した後の prompt に `${` が残っていないことを送信前に確認する。settings 型に dispatch するときは reference リストから prompting-principles の行だけを落とす (指示文を持たない type なので照合対象がない)。手順は 5 段のまま残し、手順 4 の条件節で skip させる — 手順を消すと番号が飛ぶ。
 
 ## 出力 schema (main agent 統合後)
 

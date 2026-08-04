@@ -10,7 +10,7 @@ Claude Code の permission 3 層 — **permission** (正規表現ベースの一
 
 3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は文章の具体化のみ**):
 
-1. **決定的観測**: `scripts/scan-permissions.py` が transcript を **stateless 全走査**し、両軸集計 + bypass 系列 + guard 逆引きを含む mart JSON を出力する
+1. **決定的観測**: `scan_permissions` tool が transcript を **stateless 全走査**し、両軸集計 + bypass 系列 + guard 逆引きを含む mart JSON を出力する
 2. **LLM 具体化 (このメインコンテキスト)**: mart JSON を読み、単位別に bucket 候補と根拠、具体 entry 案 (hook は要件文まで) を組み立てる。**判定はしない**
 3. **人間判定**: 削除/昇格/絞り込み/保持を選ぶのは常に人間。提示は確度で 2 層に分ける — **高確度候補** (手順 3 の 4 条件、revoke 限定) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む (project scope は worktree + PR、global scope は人間側操作)。**低確度候補**はレポート提示で止まる
 
@@ -36,33 +36,33 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 
 いずれも空振りしたら本 skill は保守的近似のまま進む (`exact_tool` / `exact_command` / `prefix` を `exact`、`glob` を `approx` として提示)。
 
-### 1. 観測 script 起動 (決定的)
+### 1. 観測 tool 起動 (決定的)
 
-```
-${CLAUDE_SKILL_DIR}/scripts/scan-permissions.py --section <引数>
-```
+`mcp__plugin_swat-skills_transcript-ops__scan_permissions` を `section` に引数を渡して呼ぶ。
 
-- `--section` 省略時 `project`。`global` / `all` は上表の通り
-- 直近 30 日 (`--days 30`) を集計 — 変更したければ `--days N`
-- stdout に **読む順の分割ファイル path 一覧** (`/tmp/inventory-permissions/run-<timestamp>/` 配下) が出る。ファイルの読む順・用途は `00-meta.json` の `contract.files` に従う
-- **script は bucket を出さない** (循環依存の回避)。sort 済みの match_count / outcome_breakdown / sample_matched / bypass 系列 / guard 逆引きを出す
+- `section` 省略時 `project`。`global` / `all` は上表の通り
+- 直近 30 日を集計 — 変更したければ `days` を渡す
+- 返り値の `paths` が **読む順の分割ファイル一覧** (`/tmp/inventory-permissions/run-<timestamp>/` 配下)。ファイルの読む順・用途は `00-meta.json` の `contract.files` に従う
+- **tool は bucket を出さない** (循環依存の回避)。sort 済みの match_count / outcome_breakdown / sample_matched / bypass 系列 / guard 逆引きを出す
+- **mart 本体は返らない**。返るのは path と件数 meta だけなので、中身は `paths` を Read する
 - 想定所要時間: project section 数秒 / global section 数十秒〜数分 (1.2 GB / 数百 project dir を線形 1 pass)
 
-出力に失敗したら (transcripts_dir が無い / settings が壊れている等) 空 mart が出るので `00-meta.json` の `meta.total_events` を確認する。0 なら「観測不能」を報告して終了。
+`meta.total_events` が 0 なら (transcript lake が無い / settings が壊れている等) 「観測不能」を報告して終了。
 
 ### 2. 分割ファイルを読む順に Read して bucket 候補を提示 (LLM)
 
-ファイルの読む順・用途・derived view の意味論は `00-meta.json` の `contract` (`files` / `views`) に従う (schema の正本は script 発の contract 一本)。**script の stdout が列挙した順にファイルを Read するだけで標準フローが完結する** (jq / inline python 不要)。読みながら bucket 候補に落とすときの視点:
+ファイルの読む順・用途・derived view の意味論は `00-meta.json` の `contract` (`files` / `views`) に従う (schema の正本は tool 発の contract 一本)。**tool が返した `paths` の順にファイルを Read するだけで標準フローが完結する** (jq / inline python 不要)。読みながら bucket 候補に落とすときの視点:
 
 - `meta.total_events` で判定可能性を分岐する (下記「判定可能性の分岐」)
 - `20-axis-a.json` が keep を含む全 entry の母集団。bucket 割当てはここを起点にする
 - `30-bypass-samples.json` の代表系列は `refine` の証拠としてレポートに転記する
+- `40-hooks.json` は **hook 軸** (下記「hook 観測の読み方」)。permission entry の bucket とは別枠で扱う
 
-`standard_flow: false` の `90-mart.json` は全量 (bypass_sequences / axis_b_actual_usage 含む) — 標準フローでは読まない。想定外の追加検査にだけ jq で単発参照し、恒常的に必要になった集計は script の分割出力拡張として提案する (inline python は環境によって hook で禁止される)。
+`standard_flow: false` の `90-mart.json` は全量 (bypass_sequences / axis_b_actual_usage 含む) — 標準フローでは読まない。想定外の追加検査にだけ jq で単発参照し、恒常的に必要になった集計は tool の分割出力拡張として提案する (inline python は環境によって hook で禁止される)。
 
 **判定可能性の分岐**: `meta.sufficient_for_relative_judgment == false` (総 event < 30) なら**全単位を `insufficient-data`** としてレポートヘッダで宣言し、以下は informational として並べる。個別 0 件でも全体母数が十分なら `revoke` として提示可。
 
-**bucket vocabulary** (script はこの語彙を知らない。ここで初めて割り当てる):
+**bucket vocabulary** (tool はこの語彙を知らない。ここで初めて割り当てる):
 
 | bucket | 証拠源 | 具体度 |
 |---|---|---|
@@ -72,16 +72,18 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-permissions.py --section <引数>
 | **sandbox** | 到達範囲を制限すべき系列 (例: shell が広く許可されているが実行内容は限定的) | `sandbox.excludedCommands` の具体 entry 案 or hook 要件 |
 | **keep** | `axis_a` で match_count > 0 かつ deny 少数 / 明示的に整合が取れている | 「保持」を明示的に記録 (次回の revoke 誤判定を防ぐ) |
 
-**bucket 割当ての制約 (script との責務分担)**:
+**bucket 割当ての制約 (tool との責務分担)**:
 - LLM は上表の**証拠源**に沿って割り当てる。証拠に紐づかない bucket 割当てはしない
 - bypass 系列は独立 bucket にしない — `refine` の証拠として扱う
 - guard 逆引き (`guard_reverse_lookup`) は refine / sandbox の証拠として使う (実装 hook の追加要件を書く)
-- hook の実装案は**要件文まで** (script は生成しない、実装しない)
+- hook の実装案は**要件文まで** (実装はしない)
 - deny / allow / sandbox は**コピペ可能な具体 entry 案**まで書く
 
 **revoke の絞り込み (match_count == 0 だけでは revoke にしない)**:
 - revoke に出すのは「未使用 **かつ** 副作用能力あり (remote 書き込み / process 起動 / 破壊的操作等)」の entry のみ。read-only で無害な未使用 entry は削除しても attack surface が減らず将来の permission ask 反復コストだけ増える — keep 側に「未使用だが無害」と明示する
 - 観測窓内に追加された entry / rare-by-design の entry (setup script・手動同期 script 等) は露出不足 — informational に **hold** として分離する。settings が git 管理下なら `git log -S '<entry>'` で追加時期を確認する手順をレポートに書く
+- **追加時期が窓外でも露出不足はありうる**。窓の作業内容が偏っていれば、その entry の capability を使う機会自体が発生していない (言語ツールチェーンの entry に対し当該言語の repo に一度も入っていない等)。追加時期を確認したら、次に窓内の cwd 分布 (`~/.claude/projects/` の project ディレクトリ、bypass sample の `cwd`) を見て**機会が実在したか**を判定する。機会が無ければ未使用ではなく hold
+- **同じ capability が別名で現役なら revoke ではなく refine**。tool / MCP server の改名で pattern だけが古くなった entry (`mcp__<old>__*` / 旧 tool 名) は「未使用」に見える。`match_count == 0` の tool 名 entry を revoke に出す前に、`axis_b_actual_usage` を当該 tool 名・`mcp__` で引いて別名の実績を確かめる
 - 同一 script の複数呼び出し形 (直接実行 / `python3 <path>` prefix 等) は **1 unit** として扱い、片側だけの revoke を提示しない。repo 側 README / commit 履歴に pair 規約の意図が残っていないか確認する
 - allow entry と対になる `sandbox.excludedCommands` entry があれば、連動削除の要否を候補に明記する
 
@@ -90,9 +92,21 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-permissions.py --section <引数>
 - built-in tool で deny_permission-rule 実績を持つ unit は path 系 deny rule の反射の可能性 — promote ではなく refine の証拠として扱う
 
 **確度注記の義務**:
-- `matcher_confidence: approx` の entry は「近似マッチ (glob) — 実 matcher と揺れる可能性」を **entry 表示に注記**する
+- **複合コマンド行の deny は entry 単位の証拠にならない**。1 行に allow 対象と deny 対象が混在すると call 全体が deny され、tool はその deny を**行内の全 entry へ計上する** (`grep -n ... || <deny 対象のコマンド>` の deny が `Bash(grep:*)` [allow] 側にも載る)。allow entry の高 deny 比率・deny entry への success 混在はまずこれを疑い、`sample_matched` と `bypass_sequences` の入力コマンドを読んで実因を特定してから bucket に落とす。実因が混在なら refine の対象は entry ではなく「複合行の組み立て方」で、entry 変更は不要
+- `matcher_confidence: approx` の entry は「近似マッチ (glob) — 実 matcher と揺れる可能性」を **entry 表示に注記**する。加えて **approx な path 形 entry の `match_count == 0` は未使用の証拠にならない** — 近似は `~` 展開と `**` 意味論を本体 matcher どおりには再現しないため、実際に発火している entry でも 0 になる。approx entry は revoke / keep の判定対象から外し informational へ置く
 - outcome の `deny_user-rejected` は Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive バグ影響下 — bucket 判定の**主根拠にしない** (count が主根拠)
 - `guard_reverse_lookup` に hook-deny (Claude Code の PreToolUse permissionDecision: deny) は原則含まれない (現状 `toolDenialKind` に emit されない)。automode-blocked / automode-unavailable のみを対象とする — 「hook 由来の deny は本 skill の観測範囲外」と明記する
+
+**hook 観測の読み方 (`40-hooks.json`)**:
+
+統治対象の 3 本目 (permission / sandbox / **guard hook**) に対する観測。`hook_activity.configured` が設定側の分母 (settings の `hooks` + plugin の `hooks.json`)、`observed_unlisted` が分母に無い fire 実績。
+
+- **`fire_count == 0` が主張できるのは `configured` の unit だけ**。`observed_unlisted` は分母に無いので 0 件になり得ない (=「fire していない hook」の候補にならない)
+- fire 0 の hook は **informational**。permission entry の revoke と違い、hook は「発火条件を満たす操作が窓内に無かっただけ」が常にありうる — 窓内の作業内容 (cwd 分布・tool 実績) と突き合わせて**機会が実在したか**を確かめてから所見を書く (revoke の hold と同じ判定)
+- **`key_collision: true` の unit は fire_count が同 key の他 unit との共有値**。「fire していない」は主張できるが「n 回動いた」は主張できない
+- **`nonzero_exit_count == 0` を「失敗していない」と読まない**。観測限界は同ファイルの `observability` が正本 (exitCode は `hook_success` にしか載らず、timeout は `hook_cancelled` の `timed_out` にしか出ない)
+- 遅い hook は `duration_ms` の `p95` / `max` / `total` で見る。全 hook の `total` は 1 セッションあたりの待ち時間そのものなので、体感の遅さを裏づける証拠として使える
+- **hook の反映先は本 skill の write 対象外**。settings の `hooks` 登録も plugin の `hooks.json` も entry 案までで、実装・配線は別作業として要件文で渡す
 
 ### 3. 高確度候補の抽出とセッション内提案
 
@@ -217,20 +231,24 @@ matcher confidence: exact 105 / approx 14
 
 | 症状 | 原因 | 対応 |
 |---|---|---|
-| unknown が多い | tool_result が transcript 末尾で truncate / 別セッションに分割された、または未完了 | mart の `outcome_totals.unknown` を「参考値」として扱い、bucket 判定は明示 outcome を主にする |
+| unknown が多い | tool_result が transcript 末尾で truncate / 別セッションに分割された、または未完了。`toolUseResult` も `is_error` も持たない result も unknown になる (判定不能を success に丸めない) | mart の `outcome_totals.unknown` を「参考値」として扱い、bucket 判定は明示 outcome を主にする |
 | deny_user-rejected が過大 | Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive バグ | user-reject の count は bucket 判定の主根拠にしない (permission-rule / automode / success が主) |
 | deny_hook が 0 | Claude Code が PreToolUse hook deny に `toolDenialKind: hook` を emit しないため、本 skill は明示 kind のみ信頼する保守設計 | hook 由来の deny は本 skill の観測範囲外。hook 追加要件は refine / sandbox の bucket に記述する |
+| fire 0 の hook を「死んでいる」と断じる | 発火条件を満たす操作が窓内に無かっただけの可能性を潰していない | 窓内の作業内容と突き合わせて機会の実在を確かめる。fire 0 は informational 止まりで、削除提案の主根拠にしない |
+| hook が「失敗していない」と読む | `nonzero_exit_count == 0` を成否の証拠にした | exitCode は `hook_success` にしか載らず、timeout は `hook_cancelled` にしか出ない。`observability` の注記を数値と並べて転記する |
+| hook の fire 回数を unit ごとに断定する | `key_collision: true` の共有値を単独実績と読んだ | 共有 key の unit は「fire していない」だけを主張する。回数は共有値である旨をレポートに明記する |
 | bypass 系列が過大 | 同 tool の後続 call を全て follow_up にするため、無関係な reuse も混入する | LLM 段階で「first follow_up が success かつ input が似ている」ものだけ refine 候補にする。低 gap の系列を優先 |
-| project section で event_count が 0 | 現 cwd と event.cwd が別 (worktree 内で実行、transcript は親 repo path で保存等) | `--repo-root <parent>` で親を指定するか、`--section all` で対象範囲を広げる |
+| project section で event_count が 0 | 現 cwd と event.cwd が別 (worktree 内で実行、transcript は親 repo path で保存等) | `repo_root` に親を渡すか、`section: "all"` で対象範囲を広げる |
 | matcher_confidence: approx の entry で match_count がぶれる | `**/*.env` 等の glob を fnmatch で近似しているため、本体 matcher と揺れる余地あり | approx の entry は entry 表示に「近似マッチ」注記を付ける。判断は人間に |
-| bucket を script に埋め込みたくなる | 循環依存 (script が bucket を知ると LLM が再判定できなくなる) | script は生集計のみ。bucket 判定は LLM 段階で mart を読んでから |
-| revoke 候補が過大になる | match_count == 0 を機械的に revoke へ割り当てた | 「未使用 かつ 副作用能力あり」に絞る (手順 2 の絞り込み)。実例: 2026-07-18 の初回棚卸しで 23 entry 提示 → 人間判定で 4 entry に縮小された |
+| approx な path 形 entry が match_count 0 で「死んでいる」ように見える | 近似が `~` 展開と `**` 意味論を再現しないため、発火中の entry でも 0 が出る | approx entry の 0 を未使用の証拠にしない。revoke / keep の判定対象から外し informational へ置く |
+| allow entry の deny 比率が高い / deny entry に success が混じる | 複合コマンド行の deny を、その行に登場する全 entry へ計上している | entry ではなく入力コマンドを読む。allow と deny の混在が実因なら refine の対象は「複合行の組み立て方」で entry 変更は不要 |
+| 現役の capability を revoke に出す | tool / MCP server の改名で pattern だけが古くなり「未使用」に見える | `axis_b_actual_usage` を当該 tool 名・`mcp__` で引いて別名の実績を確かめる。あれば revoke ではなく refine (pattern の書き換え) |
+| bucket を観測 tool に埋め込みたくなる | 循環依存 (tool が bucket を知ると LLM が再判定できなくなる) | tool は生集計のみ。bucket 判定は LLM 段階で mart を読んでから |
+| revoke 候補が過大になる | match_count == 0 を機械的に revoke へ割り当てた | 「未使用 かつ 副作用能力あり」に絞る (手順 2 の絞り込み) |
 | pair 規約・sandbox 連動の見落とし | entry 単位で独立判定した | 同一 script の複数呼び出し形と対応する `sandbox.excludedCommands` を 1 unit として提示する |
-| 分割ファイル以外の集計が欲しくなる | 標準フロー外の検査 (90-mart.json は数 MB 級、inline python は hook 禁止の環境あり) | 90-mart.json への jq は単発に留める。恒常的に必要なら script の分割出力拡張 (split_outputs / derived_views) を提案 — LLM 段階の手集計を既定にしない |
+| 分割ファイル以外の集計が欲しくなる | 標準フロー外の検査 (90-mart.json は数 MB 級、inline python は hook 禁止の環境あり) | 90-mart.json への jq は単発に留める。恒常的に必要なら tool の分割出力拡張 (split_outputs / derived_views) を提案 — LLM 段階の手集計を既定にしない |
 | 高確度基準を満たさない候補をセッション内提案したくなる | 「approx でもほぼ確実」「count 1 だし」等の緩和誘惑 | 手順 3 の 4 条件を満たさないもの (approx entry / hold / revoke 以外の bucket) は必ずレポート側に落とす (基準の緩和は本 SKILL.md の改訂として行う) |
 
 ## 参照
 
-- 仕様確定: [issue #213 コメント](https://github.com/swat9013/swat-skills/issues/213#issuecomment-4998014561)
-- 上位 map: [issue #209](https://github.com/swat9013/swat-skills/issues/209)
 - 関連 skill: inventory-skill-mcp (別軸: skill / MCP の実績集計 — 本 skill は permission 3 層)

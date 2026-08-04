@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-worktree-escape.py"
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/warn-worktree-bloat.py"
           }
         ]
       }
@@ -49,8 +53,11 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/allow-tmp-delete.sh",
-            "if": "Bash(rm:*)"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-rm-force.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/allow-tmp-delete.sh"
           },
           {
             "type": "command",

@@ -1,6 +1,6 @@
 # Presets カタログ
 
-frontend-refine の Prep phase で Claude が借り物 preset を選ぶための一次リファレンス。すべて MIT/ISC/Apache 2.0 で商用利用可。
+Prep phase の default (SKILL.md の「Default 選定」表が正本) から外れる preset を選ぶときに Read するカタログ。default のままなら本書は不要。すべて MIT/ISC/Apache 2.0 で商用利用可。
 
 ## Color palette
 

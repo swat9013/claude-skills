@@ -1,17 +1,13 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = []
-# ///
-"""inventory-project-values の観測 script (data mart 生成)。
+"""`scan_prompts` tool の実装 (inventory-project-values / -engineering-values 向け mart)。
 
 transcript (~/.claude/projects/<cwd-hash>/<sid>.jsonl) を data lake として、直近
 N 日 (--days、default 30) の **ユーザーが手入力したプロンプト**だけを抽出し、
 session_id / repo / timestamp の証拠 anchor 付きの生 mart JSON を出力する。
 
-script の責務は決定的な抽出まで — **「どれがフィードバックか」「どれが価値観か」の
+本 tool の責務は決定的な抽出まで — **「どれがフィードバックか」「どれが価値観か」の
 判定は一切行わない**。bucket を知らない生データだけを出し、判断は棚卸し実行時の
-人間、文章の具体化のみ LLM が担う (docs/steering.md §1 の 3 段階モデル)。
+人間、文章の具体化のみ LLM が担う (3 段階モデル。運用正本は plugin repo の
+docs/steering.md §1 — https://github.com/swat9013/swat-skills/blob/main/docs/steering.md)。
 
 **採用条件は 2 系統の gate の AND** で、除外は record ごとに 1 理由へ確定させる
 (EXCLUSION_REASONS の順に評価)。集計 `excluded` と採用件数の和は走査した user
@@ -25,7 +21,11 @@ record 総数に一致する (totality 不変条件、テストで固定)。
 `no_prompt_source` として除外し件数を meta に出すので、CLI 側の schema 変更で観測が
 劣化したときは mart 上で顕在化する (silent zero にはならない)。
 
-出力: --output-dir に mart-<timestamp>.json を書き、path を stdout に print する。
+出力: output_dir に mart-<timestamp>.json を書き、**path だけを返す** (mart 本体は
+context に載せない)。
+
+`parse_args` / `main(argv)` を残してあるのは、mart schema を固定するテストが CLI
+形の entrypoint を通して観測契約を検査しているため。tool 側の入口は `run()`。
 """
 
 from __future__ import annotations
@@ -39,14 +39,14 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from _transcript_lib import (  # noqa: E402
+from adapter.transcript import (
     _iter_jsonl,
+    is_slash_expansion_record,
     resolve_now,
     truncate,
     walk_transcripts,
 )
-from _transcript_lib import resolve_repo_at as _resolve_repo_at  # noqa: E402
+from adapter.transcript import resolve_repo_at as _resolve_repo_at
 
 # --- 定数 --------------------------------------------------------------------
 
@@ -76,12 +76,9 @@ HUMAN_ORIGIN_KIND = "human"
 # 判断する。仕様正本は本コメント (参照先 doc / script は現存しない)。
 RULE_PREFIX = "#rule "
 
-# slash command 呼出しは `<command-message>` / `<command-name>` で**始まる**展開
-# record として transcript に残る。人間の手入力そのものではないため除外する。
-# 部分一致にしないのは、これらの tag を本文中に引用しただけの手入力 prompt を
-# 巻き込まないため (同種の false positive は scan-invocations.py が実 transcript で
-# 観測済み)。`<command-args>` の有無は条件にしない — 引数なし呼出しには付かない。
-SLASH_COMMAND_TAGS = ("<command-name>", "<command-message>")
+# slash 展開 record の判定 (`is_slash_expansion_record`) は adapter.transcript にある。
+# 「手入力 prompt から除外する」側と「呼出しとして計上する」側が同じ record に同じ
+# 答えを出す必要があるため、行頭一致の規則を本 module で再定義しない。
 
 # 採用を表す reason。excluded 集計と同じ Counter に載せて totality を保つ。
 ACCEPTED = "accepted"
@@ -99,6 +96,48 @@ EXCLUSION_REASONS = (
     "non_human_origin",         # origin.kind が human 以外
     "empty_text",               # 抽出結果が空
 )
+
+# --- steering pattern (発話型の決定的 lexical 分類) --------------------------
+# 手入力 prompt を 4 型に分ける。**判定ではなく観測** — 「この発話が規範か」は
+# 依然として人間が決める。分類の値打ちは `correct` (訂正) にあり、訂正 prompt は
+# **規範とのずれが露出した瞬間**なので、候補の優先帯として使える (#478 P3)。
+#
+# **この順で評価する** (prompt ごとに 1 型へ確定させるため順序が仕様)。correct を
+# 先に見るのは、訂正発話が疑問形・命令形の外見を取ることが多いため
+# (「なぜ勝手に消した?」は question の形をした correct)。
+STEERING_PATTERNS = ("correct", "question", "instruct", "steer")
+
+# 訂正語を探す範囲 (先頭 N 字)。**全文を見ると長文の task brief が correct に化ける** —
+# 実測 (直近 5 日 / 270 prompt) で、issue 実行の定型 brief 6 件が本文中の「ではなく」
+# 「するな」に反応して correct になり、優先帯が定型で埋まった。訂正は冒頭で述べられる
+# ので先頭だけを見る。120 字だと実在の訂正 2 件を取り落とし、200 字で定型 0 件・
+# 実訂正 5 件になった。
+CORRECT_HEAD_CHARS = 200
+
+# 直前の出力を**否定・差し戻す**表現。ここに挙げるのは「既に起きたこと」への
+# 反応語だけで、単なる否定語 (「ない」等) は入れない (通常の説明文に頻出するため)。
+CORRECT_MARKERS = (
+    "ではなく", "じゃなく", "ではなくて", "そうじゃない", "違う", "違います",
+    "間違", "やめて", "やめろ", "戻して", "元に戻", "勝手に", "余計な",
+    "しないで", "するな", "ダメ", "駄目", "why did you", "don't ", "do not ",
+    "revert", "undo", "that's wrong", "incorrect",
+)
+
+# 問いの形。文末の疑問符と、文中に現れる日本語の疑問終助詞。
+QUESTION_MARKERS = ("ですか", "でしょうか", "ますか", "どう思う")
+QUESTION_SUFFIXES = ("?", "？")
+
+# 依頼・命令の形。文中に現れる依頼語と、文末に来る命令形。
+INSTRUCT_MARKERS = (
+    "してください", "して下さい", "してほしい", "して欲しい", "してくれ",
+    "お願いします", "please ",
+)
+# 末尾の `て` は日本語の依頼形 (「書いて」「直して」) を広く拾う。instruct と steer の
+# 取り違えは優先帯 (correct のみ) に影響しないので、広めに取ってよい。
+INSTRUCT_SUFFIXES = ("て", "しろ", "せよ", "ください", "下さい")
+
+# 文末判定の前に落とす句読点。`?` は question 側で見るのでここに入れない。
+SENTENCE_END_PUNCTUATION = "。．.!！"
 
 # repo をどこから解決したか。cwd 直接か、消えた worktree の実在祖先経由か。
 REPO_SOURCE_CWD = "cwd"
@@ -131,6 +170,7 @@ class Prompt:
     text: str
     text_chars: int
     truncated: bool
+    steering_pattern: str
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -159,12 +199,12 @@ def within_window(ts_str: str, cutoff: dt.datetime) -> bool:
 
     walk_transcripts の mtime filter だけでは長寿命 session の古い record を
     落とせないため、record 単位でも判定する。timestamp 欠損・不正は保守的に
-    窓内扱いにする (inventory-skill-mcp の `_within_window` と同挙動)。
+    窓内扱いにする (scan_invocations の `_within_window` と同挙動)。
 
-    **`_transcript_lib` へは昇格させない** (#295 で判断)。窓の解釈 (欠損 record を
-    どちらに倒すか) は各 scanner の観測契約に属し、共有すると片方の契約変更が
+    **`adapter.transcript` へは昇格させない** (#295 で判断)。窓の解釈 (欠損 record を
+    どちらに倒すか) は各 tool の観測契約に属し、共有すると片方の契約変更が
     もう片方の mart を黙って変える。extract 層を共有しない判断と同じ線
-    ([ADR 0013](../../../docs/adr/0013-intra-subsystem-implementation-sharing.md))。
+    ([ADR 0013](https://github.com/swat9013/swat-skills/blob/main/docs/adr/0013-intra-subsystem-implementation-sharing.md))。
     """
     try:
         rec_ts = dt.datetime.fromisoformat(
@@ -220,13 +260,35 @@ def is_rule_capture_prompt(text: str) -> bool:
     return total > 0 and matched == total
 
 
+def classify_steering_pattern(text: str) -> str:
+    """手入力 prompt 1 件の発話型 (`STEERING_PATTERNS` の順に評価)。
+
+    表層語だけを見る決定的分類で、**意味の判定はしない**。取りこぼし
+    (訂正なのに correct と出ない) はあるが、誤検知を増やさない側に倒してある —
+    優先帯は候補の**並べ替え**にしか使わないので、漏れは順位が下がるだけで
+    候補から消えることはない。
+    """
+    lowered = text.lower()
+    if any(marker in lowered[:CORRECT_HEAD_CHARS] for marker in CORRECT_MARKERS):
+        return "correct"
+    stripped = text.rstrip()
+    if stripped.endswith(QUESTION_SUFFIXES) or any(
+            marker in text for marker in QUESTION_MARKERS):
+        return "question"
+    tail = stripped.rstrip(SENTENCE_END_PUNCTUATION)
+    if tail.endswith(INSTRUCT_SUFFIXES) or any(
+            marker in lowered for marker in INSTRUCT_MARKERS):
+        return "instruct"
+    return "steer"
+
+
 def classify_user_record(rec: dict) -> Classification:
     """user record 1 件を採用 / 除外理由へ確定させる (EXCLUSION_REASONS の順)。"""
     text, has_tool_result = collect_text((rec.get("message") or {}).get("content"))
 
     if has_tool_result:
         return Classification("tool_result", "")
-    if text.lstrip().startswith(SLASH_COMMAND_TAGS):
+    if is_slash_expansion_record(text):
         return Classification("slash_command_expansion", "")
     if is_rule_capture_prompt(text):
         return Classification("rule_capture", "")
@@ -257,8 +319,8 @@ def classify_user_record(rec: dict) -> Classification:
 def resolve_repo(cwd: str) -> tuple[str | None, str | None]:
     """cwd から repo 識別子を解決し、(repo, 解決元) を返す。
 
-    1 ディレクトリの解決は `_transcript_lib.resolve_repo_at` (origin remote URL →
-    git-common-dir の親) に委ねる。select-candidates.py の `--repo` 既定解決も同じ
+    1 ディレクトリの解決は `adapter.transcript.resolve_repo_at` (origin remote URL →
+    git-common-dir の親) に委ねる。select_candidates の repo 既定解決も同じ
     関数を呼ぶため、mart の `repo` 値と絞り込みキーの表現一致が構造的に保証される。
     remote が付いていない repo でも path 表現に落ちるため、絞り込みが空にならない。
 
@@ -327,6 +389,8 @@ def extract_prompts(
                     text=truncate(text, text_limit),
                     text_chars=len(text),
                     truncated=len(text) > text_limit,
+                    # 分類は truncate 前の全文で行う (末尾の命令形が切れると型が変わる)
+                    steering_pattern=classify_steering_pattern(text),
                 ))
     except OSError:
         return [], collections.Counter()
@@ -382,6 +446,10 @@ def build_mart(
             "distinct_repos": len({prompt.repo for prompt in prompts if prompt.repo}),
             "scanned_user_records": sum(verdicts.values()),
             "excluded": excluded,
+            "steering_patterns": {
+                pattern: sum(1 for p in prompts if p.steering_pattern == pattern)
+                for pattern in STEERING_PATTERNS
+            },
             "repo_resolution": {
                 "resolved": resolved,
                 "unresolved": len(prompts) - resolved,
@@ -424,6 +492,56 @@ def collect(
     return build_mart(args, prompts, verdicts, cutoff, now)
 
 
+def emit(mart: dict, args: argparse.Namespace) -> str:
+    """mart-<timestamp>.json を書いて path を返す。
+
+    stamp は mart の `generated_at` から起こす — `resolve_now` を引き直すと
+    mart 内の時刻とファイル名が秒境界でずれる。
+    """
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    generated = dt.datetime.fromisoformat(mart["meta"]["generated_at"])
+    out = args.output_dir / f"mart-{generated.strftime('%Y%m%dT%H%M%SZ')}.json"
+    out.write_text(
+        json.dumps(mart, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return str(out)
+
+
+def run(
+    days: int = DEFAULT_DAYS,
+    output_dir: str = str(DEFAULT_OUTPUT_DIR),
+    transcripts_dir: str = str(DEFAULT_TRANSCRIPTS_DIR),
+    text_limit: int = DEFAULT_TEXT_LIMIT,
+    now: str | None = None,
+) -> dict:
+    """tool 側の入口。mart は返さず、書いた path と観測劣化の meta だけを返す。"""
+    args = parse_args([])
+    args.days = days
+    args.output_dir = Path(output_dir)
+    args.transcripts_dir = Path(transcripts_dir)
+    args.text_limit = text_limit
+    args.now = now
+
+    mart = collect(args)
+    meta = mart["meta"]
+    return {
+        "path": emit(mart, args),
+        "meta": {
+            "window_start": meta["window_start"],
+            "window_end": meta["window_end"],
+            "days": meta["days"],
+            "total_prompts": meta["total_prompts"],
+            "distinct_sessions": meta["distinct_sessions"],
+            "distinct_repos": meta["distinct_repos"],
+            "scanned_user_records": meta["scanned_user_records"],
+            "excluded": meta["excluded"],
+            "steering_patterns": meta["steering_patterns"],
+            "repo_resolution": meta["repo_resolution"],
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     mart = collect(args)
@@ -431,14 +549,7 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(mart, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
         return 0
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = resolve_now(args.now).strftime("%Y%m%dT%H%M%SZ")
-    out = args.output_dir / f"mart-{stamp}.json"
-    out.write_text(
-        json.dumps(mart, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(str(out))
+    print(emit(mart, args))
     return 0
 
 

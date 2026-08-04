@@ -103,7 +103,10 @@ if find "$ROOT/.claude/agents" "$ROOT/agents" -maxdepth 1 -type f -name '*.md' 2
 
 # ---- Lv.5 ----
 if find "$ROOT/docs/adr" "$ROOT/adr" "$ROOT/docs/decisions" "$ROOT/docs/architecture/decisions" -maxdepth 1 -type f -name '*.md' 2>/dev/null | grep -qE '/[0-9]{3,}[-_]'; then echo "L5.ADR_DIR pass"; else echo "L5.ADR_DIR fail"; fi
-if find "$ROOT" \( -name node_modules -o -name vendor -o -name .git \) -prune -o -type f -name 'SKILL.md' -exec grep -lE '^(user-invocable|disable-model-invocation)[[:space:]]*:' {} + 2>/dev/null | grep -q .; then echo "L5.SKILLS_FRONTMATTER pass"; else echo "L5.SKILLS_FRONTMATTER fail"; fi
+# ここだけ find を使わない: find の -exec は先頭 token が find のままコマンドを起動でき、
+# permission 層の照合を素通りするため多くの環境で deny される (本 plugin の guard-find.sh も deny)。
+# git grep は追跡下のみを見るので node_modules / vendor / .git の prune も同時に不要になる。
+if git -C "$ROOT" grep -lE '^(user-invocable|disable-model-invocation)[[:space:]]*:' -- '*SKILL.md' 2>/dev/null | grep -q .; then echo "L5.SKILLS_FRONTMATTER pass"; else echo "L5.SKILLS_FRONTMATTER fail"; fi
 if [ -f "$ROOT/CONTRIBUTING.md" ] || [ -f "$ROOT/CONTRIBUTING.rst" ] || [ -f "$ROOT/docs/CONTRIBUTING.md" ]; then echo "L5.CONTRIBUTING pass"; else echo "L5.CONTRIBUTING fail"; fi
 if grep -qEr '(pytest|npm test|yarn test|pnpm test|cargo test|go test|jest|vitest|mvn test|gradle test|make test|rspec|tox|minitest|rails test|rake test)' "$ROOT/.github/workflows" "$ROOT/.circleci" 2>/dev/null || cat "$ROOT/.gitlab-ci.yml" "$ROOT/Jenkinsfile" "$ROOT/.travis.yml" "$ROOT/buildkite.yml" 2>/dev/null | grep -qE '(pytest|npm test|yarn test|pnpm test|cargo test|go test|jest|vitest|mvn test|gradle test|make test|rspec|tox|minitest|rails test|rake test)'; then echo "L5.CI_HAS_TEST pass"; else echo "L5.CI_HAS_TEST fail"; fi
 ```

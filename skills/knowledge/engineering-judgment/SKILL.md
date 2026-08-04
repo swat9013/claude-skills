@@ -29,6 +29,7 @@ user-invocable: false
 - **DRY の対象は「知識」でありコード行ではない** (Hunt & Thomas『The Pragmatic Programmer』)。異なる理由で変わる似たコードは重複のまま残す。共通化がモジュール間結合を生むなら重複を許容する。
 - **deletability を重視する** (tef "Write code that is easy to delete, not easy to extend")。AI で機能実装コストは下がったため、「拡張しやすさ」より「変更影響が波及しない・機能単位で捨てられる」構造を選ぶ。※12-factor の Disposability (プロセスの起動終了) とは別概念。
 - **捨てるときは歴史を残す**: 撤退・移行を決めたら削除して終わりにせず、戻れる記録 (ADR / アーカイブ) と再検討トリガー条件 (どうなったら戻すか) を残す。deletability の対。
+- **撤去は実績を起点に決める**: 導入したものは利用実績 (呼び出し回数・使用実績) を定期的に観測し、使われていないものを削除する側にも追加と同じ頻度で回す。撤去の根拠は「不要そう」という印象ではなく実測値。※上記が「捨てると決めた後に何を残すか」なのに対し、本規則は「いつ捨てると決めるか」。
 - **結合は排除ではなくバランスさせる** (Khononov『Balancing Coupling in Software Design』)。integration strength (知識共有度) / distance (距離) / volatility (変更頻度) の 3 次元で評価し、変更頻度が高い箇所ほど弱い結合にする。
 
 ## 品質 vs 速度
@@ -59,7 +60,7 @@ user-invocable: false
 ## 運用
 
 - **You Build It, You Run It** (Vogels, ACM Queue 2006)。運用性 (可観測性・デプロイ容易性) を初期設計に組み込む。
-- **投資順序は Monitoring が先** (known-unknowns の閾値検知)、**Observability が次** (unknown-unknowns の探索的診断 — Majors)。
+- **投資順序は Monitoring が先** (known-unknowns の閾値検知)、**Observability が次** (unknown-unknowns の探索的診断)。
 - **Error budget は挑戦を許容する予算** (Google SRE Book)。予算が残っているなら、それを使う攻めの判断を提案してよい。
 
 ## セキュリティ
@@ -83,6 +84,7 @@ user-invocable: false
 
 - **AI-navigable codebase を積極目標にする**。AI に読みやすい構造・命名・ドキュメントは人にも読みやすい。
 - **AI は補助的活用**。設計判断の確定はユーザーが行う (メタ規則 3 と同一)。
+- **委譲は AFK 境界で切り、引き渡し形式まで決める**。自律実行させる前に「人間が張り付かずに進めてよい範囲」と「人間に返す範囲」を分ける。返すときは停止理由・そこまでに残した成果・次に人間が実行する手順の checklist を添える (無言の終了は失敗扱い)。手戻り・影響が大きい箇所は自律判断せず問う。境界を「設計判断か否か」だけで引くと、設計判断ではないが人手でしか解けない作業が宙に浮く。
 
 ## 根拠 (正本)
 

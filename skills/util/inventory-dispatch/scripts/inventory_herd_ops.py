@@ -51,11 +51,15 @@ subcommand:
   pane 不在は {"removed": false, "reason": "not_found"} の正常データ (exit 0) —
   「既に消えている」は close の期待結果と同値。
 
-issue-dispatch の herdr_ops.py と subprocess helper / preflight 検査 / agent poll が
-同型だが共有 module 化はしない: 既存 tests/test_herdr_ops.py は `mod.run_command` の
-monkeypatch を test seam にしており、共有 lib 内部からの呼び出しは patch を素通り
-するため既存テストの前提を壊す。両 script 間で一致が構造的に要る定数も無い
-(label 語彙 `i<番号>` / `inv-<target>` と prompt template は意図的に別物)。
+herdr CLI 境界 (HerdrError / run_command / resolve_claude_bin / _run_herdr / _pane_of /
+_require_env) と 3 段 preflight は pure module `skills/util/_herdr_lib.py` が正本で、
+本 script は whole-module import で呼ぶ (#389。当初は issue-dispatch の herdr_ops.py と
+の共有だったが、そちらは #408 で撤去され現在の消費側は本 script のみ)。
+かつてここには「test seam (`mod.run_command` の monkeypatch) が共有 lib 内部の呼び出しを
+素通りするので共有化しない」と書いてあったが、消費側を whole-module import に揃えれば
+patch は共有 module の属性に当てられるため、この論拠は成立しない。
+一方 label 語彙 (`i<番号>` / `inv-<target>`)・prompt template・agent 検出 poll は
+意図的に別物なので共有しない (preflight の label 語彙依存は引数で渡す)。
 
 本 script は herdr を subprocess 起動するため sandbox 内では動かない (socket connect
 が PermissionDenied で遮断される)。settings の `sandbox.excludedCommands` に登録して
@@ -71,10 +75,19 @@ import json
 import os
 import re
 import shlex
-import shutil
-import subprocess
 import sys
 import time
+
+# skills/util/ 直下の共有 module (issue-dispatch と共有する herdr 境界)。CLI 直接実行
+# (sys.path[0]=script dir) と importlib load の両方で解決させる
+_UTIL_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _UTIL_DIR not in sys.path:
+    sys.path.insert(0, _UTIL_DIR)
+# whole-module import で読む — `from _herdr_lib import run_command` にすると、テストが
+# 本 module へ当てた monkeypatch が共有 module 内部の呼び出しを素通りして実 herdr CLI に
+# 落ちる (しかも緑のまま通る)。HerdrError は patch 対象でない例外クラスなので from-import 可
+import _herdr_lib  # noqa: E402
+from _herdr_lib import HerdrError  # noqa: E402
 
 # target → 呼び出す inventory skill 名。pane label は `inv-<target>`、
 # レポート dir は REPORT_BASE/<skill 名> (各 inventory skill の SKILL.md が正本)。
@@ -84,11 +97,11 @@ TARGET_SKILLS = {
     "skill-mcp": "inventory-skill-mcp",
 }
 INV_LABEL = re.compile(r"^inv-(permissions|claude-md|skill-mcp)$")
-HOOK_CURRENT = re.compile(r"^claude: current", re.MULTILINE)
 SELF_RENAME_TO = "inv-dispatch"
+# agent 検出 poll の定数。poll ループは各 script 固有の seam (`_sleep`) を持つため
+# 共有 module へは上げない (#389 の共有範囲外)
 POLL_ATTEMPTS = 5
 POLL_INTERVAL_SEC = 2
-SUBPROCESS_TIMEOUT_SEC = 60
 # 各 inventory skill のレポート出力先の親 dir (テストで monkeypatch する)
 REPORT_BASE = "/tmp"
 
@@ -101,47 +114,6 @@ PROMPT_TEMPLATE = (
 
 _sleep = time.sleep
 _now = time.time
-
-
-class HerdrError(Exception):
-    """herdr CLI の失敗 (非 0 exit / 出力 parse 不能) と前提不成立。"""
-
-
-def run_command(argv, timeout=SUBPROCESS_TIMEOUT_SEC):
-    """subprocess 境界。stdout と stderr を分離したまま返す (テストで monkeypatch する)。"""
-    proc = subprocess.run(
-        argv, capture_output=True, text=True, timeout=timeout, check=False
-    )
-    return proc.returncode, proc.stdout, proc.stderr
-
-
-def resolve_claude_bin():
-    """claude binary の絶対パス解決 (テストで monkeypatch する)。"""
-    return shutil.which("claude")
-
-
-def _run_herdr(args):
-    """herdr subcommand を実行して JSON body を返す。成功時 body 空 (pane run 等) は None。"""
-    rc, out, err = run_command(["herdr", *args])
-    if rc != 0:
-        raise HerdrError(f"herdr {args[0]} failed (exit {rc}): {err.strip()}")
-    if not out.strip():
-        return None
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError as exc:
-        raise HerdrError(f"herdr {args[0]} returned non-JSON stdout: {exc}") from exc
-
-
-def _pane_of(payload):
-    return (payload or {}).get("result", {}).get("pane", {})
-
-
-def _require_env(name):
-    value = os.environ.get(name)
-    if not value:
-        raise HerdrError(f"{name} が未設定 (herdr session 外か)")
-    return value
 
 
 def label_for(target):
@@ -159,42 +131,13 @@ def build_prompt(target):
 
 
 def preflight():
-    """3 段検査を順に通し、自 pane の残骸 label (`inv-<target>`) を正規化する。
+    """3 段検査 + 自 pane の残骸 label (`inv-<target>`) 正規化 (実体は共有 module)。
 
-    最初の失敗で止めて failed に検査名を返す (fail-closed)。skill 側は failed の
-    値に応じて user への修正依頼文を選ぶ (issue-dispatch と同じ 3 種)。
+    本 script の label 語彙 (`inv-<target>` / rename 先 `inv-dispatch`) を共有
+    preflight に与えるだけの薄い層。残骸 label を剥がすのは、当該 target が稼働中と
+    誤判定され spawn が duplicate で弾かれるため。
     """
-    result = {"ok": False, "failed": None, "checks": {}, "self": None, "workspace": None}
-
-    result["checks"]["herdr_env"] = os.environ.get("HERDR_ENV") == "1"
-    if not result["checks"]["herdr_env"]:
-        result["failed"] = "herdr_env"
-        return result
-
-    rc, out, _err = run_command(["herdr", "integration", "status"])
-    result["checks"]["hook"] = rc == 0 and bool(HOOK_CURRENT.search(out))
-    if not result["checks"]["hook"]:
-        result["failed"] = "hook"
-        return result
-
-    rc, _out, _err = run_command(["herdr", "status"])
-    result["checks"]["socket"] = rc == 0
-    if not result["checks"]["socket"]:
-        result["failed"] = "socket"
-        return result
-
-    self_id = _require_env("HERDR_PANE_ID")
-    result["workspace"] = _require_env("HERDR_WORKSPACE_ID")
-    pane = _pane_of(_run_herdr(["pane", "get", self_id]))
-    label = pane.get("label")
-    renamed_from = None
-    if label and INV_LABEL.match(label):
-        # 前回 dispatch の残骸 label: 当該 target が稼働中と誤判定され spawn が duplicate で弾かれる
-        pane = _pane_of(_run_herdr(["pane", "rename", self_id, SELF_RENAME_TO]))
-        renamed_from, label = label, pane.get("label")
-    result["self"] = {"pane_id": self_id, "label": label, "renamed_from": renamed_from}
-    result["ok"] = True
-    return result
+    return _herdr_lib.preflight(INV_LABEL, SELF_RENAME_TO)
 
 
 # --- pane 追跡 ------------------------------------------------------------------
@@ -215,9 +158,9 @@ def tracked_from_panes(panes, self_pane):
 
 
 def _list_tracked():
-    workspace = _require_env("HERDR_WORKSPACE_ID")
+    workspace = _herdr_lib._require_env("HERDR_WORKSPACE_ID")
     self_pane = os.environ.get("HERDR_PANE_ID")
-    payload = _run_herdr(["pane", "list", "--workspace", workspace])
+    payload = _herdr_lib._run_herdr(["pane", "list", "--workspace", workspace])
     return tracked_from_panes((payload or {}).get("result", {}).get("panes", []), self_pane)
 
 
@@ -286,7 +229,7 @@ def _observe_panes():
     observed = []
     for entry in _list_tracked():
         try:
-            pane = _pane_of(_run_herdr(["pane", "get", entry["pane_id"]]))
+            pane = _herdr_lib._pane_of(_herdr_lib._run_herdr(["pane", "get", entry["pane_id"]]))
         except HerdrError:
             if any(p["pane_id"] == entry["pane_id"] for p in _list_tracked()):
                 raise
@@ -337,23 +280,23 @@ def spawn(target, cwd):
             "label": existing["label"],
             "ts": ts,
         }
-    claude_bin = resolve_claude_bin()
+    claude_bin = _herdr_lib.resolve_claude_bin()
     if not claude_bin:
         raise HerdrError("claude binary が PATH に見つからない")
     command = " ".join(shlex.quote(part) for part in [claude_bin, build_prompt(target)])
     label = label_for(target)
 
-    pane = _pane_of(
-        _run_herdr(["pane", "split", "--current", "--direction", "right", "--no-focus", "--cwd", cwd])
+    pane = _herdr_lib._pane_of(
+        _herdr_lib._run_herdr(["pane", "split", "--current", "--direction", "right", "--no-focus", "--cwd", cwd])
     )
     pane_id = pane["pane_id"]
-    _run_herdr(["pane", "rename", pane_id, label])
-    _run_herdr(["pane", "run", pane_id, command])
+    _herdr_lib._run_herdr(["pane", "rename", pane_id, label])
+    _herdr_lib._run_herdr(["pane", "run", pane_id, command])
 
     agent = None
     for _attempt in range(POLL_ATTEMPTS):
         _sleep(POLL_INTERVAL_SEC)
-        agent = _pane_of(_run_herdr(["pane", "get", pane_id])).get("agent")
+        agent = _herdr_lib._pane_of(_herdr_lib._run_herdr(["pane", "get", pane_id])).get("agent")
         if agent == "claude":
             break
     return {
@@ -376,8 +319,8 @@ def send(target, text):
     pane = _find_pane(target)
     if pane is None:
         return {"ok": False, "target": target, "reason": "not_found"}
-    _run_herdr(["pane", "send-text", pane["pane_id"], text])
-    _run_herdr(["pane", "send-keys", pane["pane_id"], "enter"])
+    _herdr_lib._run_herdr(["pane", "send-text", pane["pane_id"], text])
+    _herdr_lib._run_herdr(["pane", "send-keys", pane["pane_id"], "enter"])
     return {"ok": True, "target": target, "pane_id": pane["pane_id"], "chars": len(text)}
 
 
@@ -386,7 +329,7 @@ def close(target):
     pane = _find_pane(target)
     if pane is None:
         return {"removed": False, "target": target, "reason": "not_found"}
-    _run_herdr(["pane", "close", pane["pane_id"]])
+    _herdr_lib._run_herdr(["pane", "close", pane["pane_id"]])
     return {"removed": True, "target": target, "pane_id": pane["pane_id"]}
 
 

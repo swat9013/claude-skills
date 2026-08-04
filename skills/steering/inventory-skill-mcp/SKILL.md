@@ -10,7 +10,7 @@ install 済みの skill / MCP を **transcript の tool_use 実績**と突合し
 
 3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は文章の具体化のみ**):
 
-1. **決定的観測**: `scripts/scan-invocations.py` が transcript walk + 分母列挙 + 抜粋 sampling を実行し、bucket を知らない生の mart JSON を出力する
+1. **決定的観測**: `scan_invocations` tool が transcript walk + 分母列挙 + 抜粋 sampling を実行し、bucket を知らない生の mart JSON を出力する
 2. **LLM 具体化 (このメインコンテキスト)**: mart JSON を読み、単位別に bucket 候補と根拠 1-2 行、および証拠 anchor 付き Markdown レポートを組み立てる。**判定はしない**
 3. **人間判定**: 削除/見直し/保持を選ぶのは常に人間。提示は確度で 2 層に分ける — **高確度候補** (手順 3 の 4 条件) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む。**低確度候補**はレポート提示で止まる。適用の実施形は単位別分岐に従う (swat-skills 分は worktree + PR、他 plugin は `/plugin` 操作、MCP は config 編集、claude.ai connectors は claude.ai 側)
 
@@ -20,26 +20,26 @@ install 済みの skill / MCP を **transcript の tool_use 実績**と突合し
 
 ## 手順
 
-### 1. 観測 script 起動 (決定的)
+### 1. 観測 tool 起動 (決定的)
 
-```
-${CLAUDE_SKILL_DIR}/scripts/scan-invocations.py
-```
+`mcp__plugin_swat-skills_transcript-ops__scan_invocations` を引数なしで呼ぶ。
 
-- 引数なしで直近 30 日 (`--days 30`) を集計する。stdout に mart JSON path (`/tmp/inventory-skill-mcp/mart-<timestamp>.json`) が出る
-- `--days N` で観測窓を上書き。`--repo-root PATH` で分母源 project を切替 (省略時 cwd)
-- script は **bucket を出さない** (循環依存の回避)。sort 済みの count / share / rank / percentile / outcome breakdown / 抜粋 max 3 件 + 分母 (`config` / `session-observed` タグ付き) を出す
+- 既定で直近 30 日を集計する。返り値の `path` に mart JSON (`/tmp/inventory-skill-mcp/mart-<timestamp>.json`) が出るので、それを Read する (**mart 本体は返らない**)
+- `days` で観測窓を上書き。`repo_root` で分母源 project を切替 (省略時は server プロセスの cwd)
+- tool は **bucket を出さない** (循環依存の回避)。sort 済みの count / share / rank / percentile / outcome breakdown / 抜粋 max 3 件 + 分母 (`config` / `session-observed` タグ付き) を出す
 - 想定所要時間は 1.2 GB / 224 project dir で数十秒 (mtime filter + 線形 1 pass)
 - **skill unit の count は 3 channel の合算**: `channels: {skill_tool, command, read}` の内訳が同 unit の下に付く (`skill_tool` = Skill tool_use / `command` = `<command-name>/xxx</command-name>` slash / `read` = SKILL.md path への Read tool_use)。built-in slash (`/model` `/compact` `/clear` 等) と非 SKILL.md path への Read は count 対象外
-- **session-level 生データ**: mart 末尾に `sessions: [{session_id, loaded_skills, has_code_edit, has_plan_mode}]` が出る (skill load を 1 度以上持つ session のみ)。coverage 判定の材料 (どの skill を「思想系」として扱うかは LLM 段階で決める。script は判定語彙を持たない)
+- **session-level 生データ**: mart 末尾に `sessions: [{session_id, loaded_skills, has_code_edit, has_plan_mode}]` が出る (skill load を 1 度以上持つ session のみ)。coverage 判定の材料 (どの skill を「思想系」として扱うかは LLM 段階で決める。tool は判定語彙を持たない)
+- **提示分母**: `presented.units` に unit 型別 (skill / mcp_server / agent / deferred_tool) の `{id, sessions_presented, sessions_invoked}` が出る。**install 済み一覧 (`denominators`) とは別物**で、その session に実際に載っていた分母
+- **token 経済**: `usage.by_skill` に `attributionSkill` 由来の turn 別合計 (output / cache_creation 等) が出る。`usage.totals` は全 turn の合計
 
-出力に失敗したら (transcripts_dir が無い / config が壊れている等) 空 mart が出るので `meta.total_invocations` を確認する。0 なら「観測不能」を報告して終了。
+返り値の `meta.total_invocations` が 0 なら (transcript lake が無い / config が壊れている等) 「観測不能」を報告して終了。
 
 ### 2. mart JSON を読んで単位別に bucket 候補を提示 (LLM)
 
-mart の schema は script docstring 参照。上位から順に各 unit を評価する。
+mart の schema は tool の説明文を参照。上位から順に各 unit を評価する。
 
-**単位別 bucket vocabulary** (script はこの語彙を知らない。ここで初めて割り当てる):
+**単位別 bucket vocabulary** (tool はこの語彙を知らない。ここで初めて割り当てる):
 
 | 単位 | bucket |
 |---|---|
@@ -52,21 +52,33 @@ mart の schema は script docstring 参照。上位から順に各 unit を評�
 
 **「推測:」prefix 分離の義務**: mart の証拠 (count / share / rank / 抜粋の user_prompt / tool_input / outcome) に紐づく記述には prefix を付けない。証拠に紐づかない一般論 (「この skill は typically ...」等) は `推測: ` prefix を付ける。証拠ゼロで根拠を書かない選択肢もある — 埋めるために推測で埋めない。
 
-**分母補完 (`session-observed` タグ) の使い方**: mart の `denominators.skills[].source` が `config` でなく `session-observed` の unit は、ローカル config に出ないが実行時 session には現れたもの (claude.ai connectors / built-in skill が典型)。**LLM 段階でここに追加補完**する — 実行中セッションの available skill / MCP 一覧を思い出し、mart の分母に無いが存在するものを `session-observed` タグ (「LLM による転記」の意味) で report に載せる。**判断ではなく転記**なので原則と矛盾しない (script が config を読めない領域を補うだけ)。
+**分母補完 (`session-observed` タグ) の使い方**: mart の `denominators.skills[].source` が `config` でなく `session-observed` の unit は、ローカル config に出ないが実行時 session には現れたもの (claude.ai connectors / built-in skill が典型)。**LLM 段階でここに追加補完**する — 実行中セッションの available skill / MCP 一覧を思い出し、mart の分母に無いが存在するものを `session-observed` タグ (「LLM による転記」の意味) で report に載せる。**判断ではなく転記**なので原則と矛盾しない (tool が config を読めない領域を補うだけ)。
 
 **channels 内訳と coverage の使い方** (思想系 skill の判定を歪めないための補正):
 
 - 「session 開始で 1 度 load → 以降 session 全体で暗黙適用」型の skill (`coding-principles` / `engineering-judgment` / `test-strategy` / `pr-quality` 等) は count 単独では実適用回数を過小評価する。`units[skill][].channels.command + .read > 0` の unit は「1 session 1 load 型」の可能性が高いと解釈する
 - coverage を評価するときは `sessions[]` を絞り込む: コード編集の思想系なら `has_code_edit == true` を分母、その中で loaded_skills に対象 skill を含む session を分子とする。設計議論系 (engineering-judgment 等) なら `has_plan_mode == true` あるいは brainstorming skill を loaded_skills に含む session を分母とする
-- どの skill を「思想系」とし coverage を評価するかは LLM 判断。script は語彙を持たない (bucket 判定を script に埋めないのと同型の circular 回避)
-- **coverage を出す前に「誘導機構の稼働開始日」と観測窓を突き合わせる**。invoke を促す機構 (SessionStart 注入 hook 等) が観測窓の途中で導入されていると、既定の 30 日窓は導入前後を混ぜて coverage を過小評価する。機構の導入日は repo の `git log` で確認し、ずれていれば `--days N` で稼働期間に合わせて再スキャンしてから判定する。狭めた窓は母数が落ちるので、割合ではなく **分子/分母を n 付きで併記**する (実例: `hooks/harness/inject-skill-guide.py` の導入は 2026-07-24。30 日窓では `coding-principles` の coverage 5.2% (13/248) だが、導入後 4 日窓で再スキャンすると 42.1% (8/19) で、注入は効いていた)
+- どの skill を「思想系」とし coverage を評価するかは LLM 判断。tool は語彙を持たない (bucket 判定を tool に埋めないのと同型の circular 回避)
+- **coverage を出す前に「誘導機構の稼働開始日」と観測窓を突き合わせる**。invoke を促す機構 (SessionStart 注入 hook 等) が観測窓の途中で導入されていると、既定の 30 日窓は導入前後を混ぜて coverage を過小評価する。機構の導入日は repo の `git log` で確認し、ずれていれば `days` を稼働期間に合わせて再スキャンしてから判定する。狭めた窓は母数が落ちるので、割合ではなく **分子/分母を n 付きで併記**する
+
+**提示分母 (`presented`) の使い方**:
+
+- `count 0` の unit を `delete-candidate` にする前に `presented.units` を引く。**`sessions_presented > 0` かつ `sessions_invoked == 0`** が「載っているのに使われていない」の証拠で、これが本 skill の主張したい形。`sessions_presented == 0` は「そもそも提示されていない」= 別の話 (plugin 無効化・環境差) なので delete の根拠にしない
+- `deferred_tool` は `units` に対応する unit 型が無く、分子は生の tool_use 名から取る。MCP tool 単位の情報なので **informational 扱い** (個別 on/off は Claude Code に無い)
+- 分母が薄い (`presented.sessions_with_skill_listing` が小さい) ときは、相対判定と同じく観測不足として扱う
+
+**token 経済 (`usage`) の使い方**:
+
+- `usage.by_skill` は「呼ばれているが重い skill」を count と独立に見るための軸。count が低くても `output_tokens` / `cache_creation_input_tokens` が突出する unit は `review-candidate` の根拠になる (削除ではなく**縮小**の候補)
+- **`by_skill` は下限**。`attributionSkill` が付いた turn だけの合計で、skill 適用後の turn は帰属が外れる。「この skill が消費させた総量」とは読まない
+- 帰属の付かない turn は `usage.totals` にのみ入る。`attributed_turns / assistant_turns` の比が小さいときは、by_skill の比較自体が薄い分母の上に載っていると読む
 
 ### 3. 高確度候補の抽出とセッション内提案
 
 bucket 候補割り当て後、以下の **4 条件をすべて満たす** unit だけを高確度候補として抽出する:
 
 1. mart header の `distribution.sufficient_for_relative_judgment == true`
-2. 該当 unit の count 0 (観測窓内 invocation ゼロ)
+2. 該当 unit の count 0 (観測窓内 invocation ゼロ) **かつ `presented.units` で `sessions_presented > 0`** (提示されていた上で呼ばれていない)
 3. 分母 source が `config` (session-observed 補完でなく config から確実に列挙されたもの)
 4. 依存関係の巻き込みなし (例: plugin の skill が 3/3 未使用でも、同 plugin の MCP tool が使われているケース〈claude-mem が典型〉は除外。plugin 単位なら配下 skill と MCP 両方が count 0 のときのみ)
 
@@ -151,18 +163,19 @@ bucket 候補割り当て後、以下の **4 条件をすべて満たす** unit 
 | 症状 | 原因 | 対応 |
 |---|---|---|
 | user-reject が error に混ざる | `is_error=true` の tool_result content から user-reject 文言を best-effort で判定するが、Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive バグを完全に無効化できない | outcome breakdown を「参考値」として扱い、bucket 判定の主根拠にしない (count が主根拠) |
+| outcome が unknown | `toolUseResult` も `is_error` も無い tool_result (tool_use と result が別 session に割れた場合等)。判定不能を success に丸めない設計 | unknown は「観測できなかった」であり失敗ではない。bucket 判定は success / error の実数で行う |
 | claude.ai connectors が分母に出ない | ローカル config に出現しない | 手順 2 の「分母補完」で LLM が `session-observed` タグ付きで転記 |
-| 他 project scoped の skill/MCP が分母不明 | 現 project 以外の `.claude/skills` / `.mcp.json` は script が読まない | `denominator-unknown` として報告し、棚卸しを project ごとに回す運用でカバー |
+| 他 project scoped の skill/MCP が分母不明 | 現 project 以外の `.claude/skills` / `.mcp.json` は tool が読まない | `denominator-unknown` として報告し、棚卸しを project ごとに回す運用でカバー |
 | 総 invocation が閾値未満 | 新規 install / 長期休止後の初回等 | 全 unit を `insufficient-data` としてヘッダ宣言、informational 提示のみ |
-| 思想系 skill の coverage が異常に低い | 観測窓が invoke 誘導機構 (SessionStart 注入 hook 等) の導入日をまたぎ、導入前の期間が分母を膨らませている | 機構の導入日を `git log` で確認し `--days N` で稼働期間に再スキャンして比較する。両方の窓の値を n 付きで併記し、旧窓の値は破棄しない |
+| 思想系 skill の coverage が異常に低い | 観測窓が invoke 誘導機構 (SessionStart 注入 hook 等) の導入日をまたぎ、導入前の期間が分母を膨らませている | 機構の導入日を `git log` で確認し `days` を稼働期間に合わせて再スキャンして比較する。両方の窓の値を n 付きで併記し、旧窓の値は破棄しない |
 | 実体の無い skill id が「参照元に旧名が残っている」ように見える | 観測窓が skill の rename / 削除日をまたぎ、旧名での**正常だった**呼び出しが窓内に残っているだけ | rename / 削除の commit 日 (`git log --diff-filter=D`) と invocation の timestamp を突き合わせる。invocation が rename 前なら参照元の修正は不要 (ADR / plan / 変更履歴の旧名は記録であり書き換えない) |
 | 抜粋の user_prompt が空 | tool_use が assistant turn 開始直後で先行 user turn が meta tag のみ | 空文字を許容。抜粋 anchor (session_id + timestamp) で生 transcript を読めば復元可 |
-| Skill 呼出が二重カウントに見える | queue-operation record と user turn record への二重記録は本 script では**発生しない** (session id + tool_use.id で dedupe されている) | 単位 (count) は tool_use.id 単一化済み。session 内複数呼び出しは正しく累計される |
-| bucket を script に埋め込みたくなる | 循環依存 (script が bucket を知ると LLM が再判定できなくなる) | script は生集計のみ。bucket 判定は LLM 段階で mart を読んでから |
+| Skill 呼出が二重カウントに見える | queue-operation record と user turn record への二重記録は本 tool では**発生しない** (session id + tool_use.id で dedupe されている) | 単位 (count) は tool_use.id 単一化済み。session 内複数呼び出しは正しく累計される |
+| bucket を観測 tool に埋め込みたくなる | 循環依存 (tool が bucket を知ると LLM が再判定できなくなる) | tool は生集計のみ。bucket 判定は LLM 段階で mart を読んでから |
+| 提示すらされていない unit を delete-candidate にする | count 0 だけを見て `presented` を引かなかった | `sessions_presented == 0` は「提示されていない」であって不使用ではない (plugin 無効化・環境差)。delete の根拠にしない |
+| 重い skill を token だけで削除候補にする | `usage.by_skill` を実消費の総量と読んだ | by_skill は帰属 turn だけの下限。重さは削除でなく**縮小** (review-candidate) の根拠として扱う |
 | 高確度基準を満たさない候補をセッション内提案したくなる | 「count 1 だしほぼ確実」等の緩和誘惑 | 手順 3 の 4 条件を満たさないものは必ずレポート側に落とす (基準の緩和は本 SKILL.md の改訂として行う) |
 
 ## 参照
 
-- 仕様確定: [issue #215 コメント](https://github.com/swat9013/swat-skills/issues/215#issuecomment-4998006482)
-- 上位 map: [issue #209](https://github.com/swat9013/swat-skills/issues/209)
 - 関連 skill (相互参照はしない): skill-usage-audit (SKILL.md の実装と実挙動の乖離を監査) は別軸の監査。棚卸しは「使われているか」、audit は「書かれた仕様どおり動いたか」

@@ -18,14 +18,27 @@ SYNTAX_CHECK_TILDE="~/.claude/scripts/syntax-check.sh"
 SYNTAX_CHECK_BIN="${SHELL_SYNTAX_CHECK_BIN:-$HOME/${SYNTAX_CHECK_TILDE#\~/}}"
 
 # 以下 2 つの allow 分岐は「単一コマンドである」ことを前提にする。区切り (`;` `&` `|`) /
-# 置換 (`$(` backtick) / リダイレクト / subshell を含む場合は rewrite も allow もせず、
-# 下の deny 判定へ落とす。`bash -n a.sh;whoami` のような追い焚きを 1 つの allow で
-# 通さないため (allow は permission 評価をスキップさせるので、ここが最後の砦になる)。
+# 置換 (`$(` backtick) / リダイレクト / subshell を含む場合は allow せず、下の複合行 rewrite
+# または deny 判定へ落とす。`bash -n a.sh;whoami` のような追い焚きを 1 つの allow で通さない
+# ため。hook の allow は deny / ask rule までは越えない (公式 permissions: "Claude Code
+# evaluates deny and ask rules regardless of what a PreToolUse hook returns") が、どちらの
+# rule も持たないコマンドは素通りするので、allow を出す範囲は単一コマンドに絞る。
 # shellcheck disable=SC2016  # 展開させない: `$` `` ` `` は検出対象の文字そのもの
 if printf '%s\n' "$COMMAND" | grep -q '[;&|<>`$()]'; then
   SINGLE_COMMAND=0
 else
   SINGLE_COMMAND=1
+fi
+
+# 置換・リダイレクトの有無だけを別に見る (区切り `;` `&` `|` は含めない)。下の複合行 rewrite は
+# 区切りを許容するが、置換 (`$(` backtick) とリダイレクトは許容しない — 引数の中に紛れ込むと
+# 書き換え後も残り、permission 層が読めない位置でコマンドが走るため
+# (`bash -n 'a.sh`whoami`'` のような綴り)。
+# shellcheck disable=SC2016  # 展開させない: `$` `` ` `` は検出対象の文字そのもの
+if printf '%s\n' "$COMMAND" | grep -q '[<>`$()]'; then
+  HAS_SUBSTITUTION=1
+else
+  HAS_SUBSTITUTION=0
 fi
 
 if [ "$SINGLE_COMMAND" = 1 ] && printf '%s\n' "$COMMAND" | grep -qE '^(bash|sh|zsh) -n [^ ]+$'; then
@@ -38,6 +51,27 @@ if [ "$SINGLE_COMMAND" = 1 ] && printf '%s\n' "$COMMAND" | grep -qE '^(bash|sh|z
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"bash/sh/zsh -n は構文チェックのみで実行しないため許可"}}\n'
   fi
   exit 0
+fi
+
+# 複合行に混ざった `<shell> -n <file>` も wrapper 形へ書き換える。`bash -n a.sh && shellcheck a.sh`
+# のように構文チェックを他の検査と 1 行に繋ぐのはモデルの自然な綴りだが、上の単一コマンド分岐は
+# 区切りを含む行を対象外にするため deny へ落ちていた (観測窓 30 日で bash -n 36 件 / zsh -n 12 件)。
+# 構文チェックは実行を伴わないので、複合行だからといって危険にはならない — 危険だったのは
+# 「1 つの allow で行全体を通す」ことのほうなので、ここでは **allow を返さず rewrite だけ返す**。
+# permission 評価は書き換え後の行に対して通常どおり走り、同居する他の sub-command
+# (`shellcheck a.sh` / `whoami` 等) はそれぞれの rule で従来どおり評価される。
+#
+# 書き換え後に interpreter の直接起動が残る場合 (`bash -n a.sh && bash deploy.sh` 等) は
+# rewrite せず下の deny へ落とす。wrapper 不在環境も同様 — 書き換え先が無い以上、deny を
+# 回避する手段が無い (hook の allow は permission の deny を越えられない)。
+if [ "$SINGLE_COMMAND" = 0 ] && [ "$HAS_SUBSTITUTION" = 0 ] && [ -x "$SYNTAX_CHECK_BIN" ] && \
+   printf '%s\n' "$COMMAND" | grep -qE '(^|[;&|])[[:space:]]*(bash|sh|zsh) -n [^ ;&|]+'; then
+  REWRITTEN=$(printf '%s\n' "$COMMAND" | sed -E "s#(^|[;&|][[:space:]]*)(bash|sh|zsh) -n #\\1${SYNTAX_CHECK_TILDE} \\2 #g")
+  if ! printf '%s\n' "$REWRITTEN" | grep -qE '(^|[;&|({`])[[:space:]]*([^[:space:];&|()]*/)?(bash|sh|zsh)([^[:alnum:]_.-]|$)'; then
+    jq -nc --arg cmd "$REWRITTEN" \
+      '{hookSpecificOutput:{hookEventName:"PreToolUse",updatedInput:{command:$cmd}}}'
+    exit 0
+  fi
 fi
 
 # bash/sh/zsh <script> で「絶対パス (/) または明示相対 (./ ../) のスクリプトファイル」を実行

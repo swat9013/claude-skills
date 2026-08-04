@@ -2,38 +2,53 @@
 
 ## このドキュメントの目的
 
-Claude の主要モデル (opus / sonnet / haiku) の特性を明文化し、skill の `model:` frontmatter 選定と、本文 prompt の書き方の判断軸を提供する。
+Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化し、skill の `model:` frontmatter 選定と、本文 prompt の書き方の判断軸を提供する。
 
 ## モデル一覧と現行 ID
 
+上位から並べる。
+
 | モデル | ID (執筆時点) | 強み | 主な向き先 |
 |---|---|---|---|
-| Opus 5 | `claude-opus-5` | 推論深度 / 長文脈処理 / 複雑な意思決定 | 設計 / 仕様検討 / 多段推論 / 創造的タスク |
+| Fable 5 | `claude-fable-5` | 最高能力 (frontier)。長時間の自律実行で計画を切り替え・自己チェックできる / vision (図表・スクリーンショットからの構造抽出) | 数時間〜数日規模の agentic タスク / 大規模移行 / 前例のない複雑さ・曖昧さを持つ問題 |
+| Opus 5 | `claude-opus-5` | Fable に迫る推論深度を約半額で。**公式が推す既定の上位選択** | 設計 / 仕様検討 / 多段推論 / 創造的タスク |
 | Sonnet 5 | `claude-sonnet-5` | バランス (速度 × 推論 × コスト) | 通常の実装 / レビュー / 中程度の推論 |
-| Fable 5 | `claude-fable-5` | — | — |
 | Haiku 4.5 | `claude-haiku-4-5-20251001` | 高速 / 低コスト | 機械的判定 / 軽い分類 / 高頻度呼び出し |
 
-モデル ID は変更されうる。最新 ID は `claude-code-guide` subagent で確認する ([sources](./sources.md))。
+**単価の段差** (選定判断に効くのは絶対額でなく比): **Fable ≒ Opus × 2** (2026-07 時点の公式 pricing)。以下は 1 段下がるごとにおおむね 2〜4 倍安くなる。絶対額は改定されるので本表に書かない ([sources](./sources.md) 経由で確認する)。
 
-## モデル別 prompt 設計指針
+**context window / max output は Fable と Opus で同等** (1M / 128k)。両者の差は「扱える長さの上限」ではなく、能力と単価にある — 長い入力を読ませたいだけなら Fable に上げる理由にならない。
+
+モデル ID は変更されうる。最新 ID は `claude-code-guide` subagent で確認する ([sources](./sources.md))。本節と以降の特性・使い分けは 2026-07-30 に公式一次情報 (anthropic.com のモデル発表 / platform.claude.com の choosing-a-model・pricing・effort・prompting ガイド) で確認した。
+
+## モデル別の向き先と避ける帯
+
+梯子は **haiku → sonnet → opus → fable の 4 段**。既定は sonnet、深い推論が要るなら opus、opus でも届かない規模・曖昧さに限って fable。1 段ずつ上げ、上げる根拠 (下位で何が落ちるか) を言えないなら上げない。
+
+**prompt 本文の書き方 (文面) の正本は [prompting-principles](../../prompting-principles/SKILL.md) skill** — 共通原則を本文に、Fable 5 / Opus 5 / Sonnet 5 の差分を同 skill の `references/` に置いた。本節は「どのモデルを選ぶか」に効く特性だけを扱い、文面の規則は書かない (二重管理を避ける)。
+
+### Fable
+
+- **thinking は常時 on** (無効化不可)。深さは `effort` で制御する → 「thinking budget の使いどころ」。
+- **Opus 向け prompt をそのまま流用できない**: 内部推論の再現を要求する指示が refusal を誘発するため、上げるときは既存 prompt / skill の文面監査がコストとして付く (監査対象は prompting-principles の Fable reference)。互換範囲は公式が明示しておらず、それ以外は実測で確かめる。
+- **避ける**: 短時間で終わる定型作業。単価が Opus の約 2 倍で、差が出るのは長時間・高曖昧性の帯に限られる。
 
 ### Opus
 
-- **多段推論を引き出す書き方**: 前提を宣言し、反証を検討させ、代替案を要求する。
 - **長い文脈を活かす**: 関連ファイル群を Read したうえで整合性を取らせるタスクが向く。
-- **避ける**: 単純な穴埋めや lint チェックだけのタスク (コスト過剰)。
+- **迷ったときの上位選択はここ**: 公式も「不確実ならまず Opus」と位置づける。ベンチマークによっては Opus が Fable の最良結果を約 1/3 のコストで上回る。
+- **避ける**: 下方向は単純な穴埋めや lint チェックだけのタスク (コスト過剰)。上方向は数時間〜数日の自律実行や前例のない複雑さ (Fable の領分であり、Opus に投げても計画の切り替えが続かない)。
 
 ### Sonnet
 
-- **構造化指示 + 少数例示 + 出力フォーマット指定**を組み合わせる。
-- **役割宣言**は短く 1〜2 行で済ませる (opus ほど長文の前置きを必要としない)。
 - 一般的な実装・レビュー作業はまず sonnet から検討する。
+- **思考不足は上げる理由にならない場合がある**: sonnet は effort を厳密に守るため、浅い推論は model を上げる前に effort を上げて解消するか判断する。
 
 ### Haiku
 
-- **単純指示 + チェックリスト + 厳密な出力フォーマット**が最も効く。
+- **単純指示 + チェックリスト + 厳密な出力フォーマット**が最も効く (公式のモデル別 prompting ガイドが存在しない帯なので、haiku の文面要点はここが正本)。
 - **推論誘導テンプレートは逆効果**: 「まず考えてから」「複数案を出して」のような思考誘導は、応答時間とコストを悪化させる割に効果が薄い。
-- 1 段の判定 / 分類 / 抽出に絞る。複雑になりそうなら sonnet に上げる。
+- 1 段の判定 / 分類 / 抽出に絞る。複雑になりそうなら sonnet に上げる (梯子は 1 段ずつ。haiku から直接 opus / fable へ飛ばさない)。
 
 ## `model:` frontmatter 選定基準
 
@@ -41,20 +56,26 @@ Claude の主要モデル (opus / sonnet / haiku) の特性を明文化し、ski
 
 | タスク類型 | 推奨モデル | 理由 |
 |---|---|---|
-| 仕様検討 / アーキテクチャ判断 | opus | 推論深度。低頻度 × 高価値で総コスト許容 |
+| 数時間〜数日の自律実行 / 大規模移行 / 前例のない曖昧さ | fable | 長時間の計画切り替え・部分委譲・自己チェックが前提。ここだけが opus で届かない帯 |
+| 下位で読み違えた図表・画面の再挑戦 | fable | vision 精度 (図から数値を正確に読む / 画面からソースを再構成する水準)。ただし opus が落ちる証拠を得てから上げる — 画像を扱うだけでは根拠にならない |
+| 仕様検討 / アーキテクチャ判断 | opus | 推論深度。低頻度 × 高価値で総コスト許容。fable に迫る性能を約半額で出す |
+| 創造的設計 / 複数案比較 | opus | 思考の幅 |
 | 実装 / 通常レビュー | sonnet | バランス。デフォルト選択 |
 | コードフォーマット判定 / 軽い分類 | haiku | 高速・低コスト。高頻度呼び出しでも採算合う |
-| 大量ファイルの構造的検査 (機械的) | haiku | 並列・反復で sonnet/opus はコスト過剰 |
-| 創造的設計 / 複数案比較 | opus | 思考の幅 |
+| 大量ファイルの構造的検査 (機械的) | haiku | 並列・反復で上位モデルはコスト過剰 |
 
-skill 単位で `model:` を固定するときは「最も負荷が高いケース」に合わせる。例: 通常は sonnet で十分でも、エッジケースで opus 級の判断が要るなら opus を指定する。
+最重量帯を機械的に fable へ寄せない。**単発の重い推論は opus、実行が長く伸びて計画の組み替えが要るものが fable** という分け方をする (公式も不確実なら opus を既定に置く)。
+
+skill 単位で `model:` を固定するときは「最も負荷が高いケース」に合わせる。例: 通常は sonnet で十分でも、エッジケースで opus 級の判断が要るなら opus を指定する。梯子の天井は fable だが、1 段上げるコストは単価差そのものなので、上げる根拠を書けないなら上げない。
 
 ## thinking budget の使いどころ
 
 - **厚く** (extended thinking 有効): 仕様検討 / 設計判断 / 複雑な debug。
 - **薄く** (デフォルト): 機械的タスク / 既定パターンの実装 / 1 段判定。
 
-extended thinking は opus / sonnet で意味が大きく、haiku では費用対効果が低い。
+extended thinking は fable / opus / sonnet で意味が大きく、haiku では費用対効果が低い。
+
+fable は例外で **thinking を無効化できない** (adaptive thinking が常時 on)。深さは `effort` で調整する。「thinking を切って安く回す」が fable では選択肢にならないので、薄く回したい用途なら model 自体を 1 段下げる。
 
 ## コンテキスト管理 (Inferential コンポーネントの設計制約)
 
@@ -98,18 +119,20 @@ token 数の増加に伴い signal-to-noise 比が下がり、関連情報が他
 ## アンチパターン
 
 - **haiku に多段推論を強要**: 「step by step で考えて」「複数案を比較して」を haiku に流すと、応答が冗長になり推論精度も上がらない。
-- **opus に rote な lint チェックだけさせる**: コスト過剰。haiku か sonnet で十分な作業に opus を使わない。
+- **上位モデルに rote な lint チェックだけさせる**: コスト過剰。haiku か sonnet で十分な作業に opus / fable を使わない。
+- **「上位ほど良い」で fable を既定にする**: fable は opus の約 2 倍単価で、差が出るのは長時間・高曖昧性の帯に限られる。上位側の既定は opus に置き、fable は帯を名指しできるときだけ選ぶ。
 - **モデル ID をハードコードして放置**: skill の `model:` に書いた ID が deprecated になっても気付かない。定期的に `claude-code-guide` で確認する ([sources](./sources.md))。
-- **プロンプトと指定モデルのミスマッチ**: opus 用に書いた多段推論プロンプトを haiku モデルで動かしても効かない。本文と `model:` は常にペアで設計する。
+- **プロンプトと指定モデルのミスマッチ**: opus 用に書いた多段推論プロンプトを haiku モデルで動かしても効かない。逆に opus 向けの推論誘導を fable にそのまま流すと refusal を踏む。本文と `model:` は常にペアで設計する (文面側の規則は [prompting-principles](../../prompting-principles/SKILL.md))。
 
 ## 更新トリガー
 
 以下のいずれかが発生したら本ドキュメントを更新する。
 
 - 新モデルの発表 (世代が上がったら本表の ID を差し替える。`skill.md` の `model` 行にも同じ ID 一覧があるので対で直す)
+- **tier の増減** (既存の上位/下位に新しい段が入る)。この場合は ID 差し替えでは済まず、「モデル別 prompt 設計指針」「`model:` 選定基準」「thinking budget」「アンチパターン」の各節に書かれた**梯子の記述をすべて組み替える**。特性が未確認のまま一覧行だけ足すのは未更新と同義 (2026-07 の Fable 5 追加で踏んだ穴)
 - 既存モデルの ID 変更
 - 既存モデルの deprecation 通知
-- 公式 prompt engineering ガイドの大きな更新
+- 公式 prompt engineering ガイドの大きな更新 (文面の正本は prompting-principles 側なので、本書と同 skill を対で見直す)
 - Long-context 挙動 (Lost in the Middle / context dilution 等) に関する主要研究 / ベンダー doc の更新
 
 確認方法: `claude-code-guide` subagent → 不足あれば `web-research` ([sources](./sources.md))。
