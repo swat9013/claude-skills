@@ -11,7 +11,7 @@ skill は Claude Code が特定タスクに対して引き出すべき手順・�
 - **目的**: 高頻度の意思決定パターン / 仕様暗黙知 / 反復チェックを再利用可能な形で外出しする。
 - **proactive (I/Guide)**: `description` の trigger 語彙から自動起動し、事前に手順をロードする用途。
 - **evaluative (I/Sensor)**: `disable-model-invocation: true` + 手動呼び出し or hook 連動で、行動後に semantic 評価を返す用途。slot 判断の根拠は [architecture](./architecture.md) を参照。
-- **並列実行を伴う skill の実装基盤**: skill 内で複数の skill を並列起動する設計 (例: `observe-and-reflect`) は Agent Teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) を前提とする。Task tool subagent は Skill ツールを invoke できず、`claude -p` は 2026-06-15 以降 subscription の separate monthly credit を消費する。Skill を介さない並列処理 (大量 grep 集計 / ファイル I/O fan-out 等) は引き続き Task tool subagent / `dispatching-parallel-agents` を使う。判断軸の根拠は 2026-05-27 `observe-and-reflect` PoC。
+- **並列実行を伴う skill の実装基盤**: skill 内で複数の skill を並列起動する設計 (例: `observe-and-reflect`) は Agent Teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) を前提とする。Task tool subagent は Skill ツールを invoke できず、`claude -p` は 2026-06-15 以降 subscription の separate monthly credit を消費する。Skill を介さない並列処理 (大量 grep 集計 / ファイル I/O fan-out 等) は引き続き Task tool subagent を使う。判断軸の根拠は 2026-05-27 `observe-and-reflect` PoC。
 - **対象外**: 1 回限りのタスク (skill 化のオーバーヘッドが回収できない)、自動実行 (それは hook の責務 → [hook](./hook.md))。
 
 ## 仕様

@@ -10,7 +10,7 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/warn-worktree-bloat.py"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/inject-skill-guide.py"
           }
         ]
       }

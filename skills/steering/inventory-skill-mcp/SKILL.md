@@ -57,7 +57,7 @@ mart の schema は tool の説明文を参照。上位から順に各 unit を�
 **channels 内訳と coverage の使い方** (思想系 skill の判定を歪めないための補正):
 
 - 「session 開始で 1 度 load → 以降 session 全体で暗黙適用」型の skill (`coding-principles` / `engineering-judgment` / `test-strategy` / `pr-quality` 等) は count 単独では実適用回数を過小評価する。`units[skill][].channels.command + .read > 0` の unit は「1 session 1 load 型」の可能性が高いと解釈する
-- coverage を評価するときは `sessions[]` を絞り込む: コード編集の思想系なら `has_code_edit == true` を分母、その中で loaded_skills に対象 skill を含む session を分子とする。設計議論系 (engineering-judgment 等) なら `has_plan_mode == true` あるいは brainstorming skill を loaded_skills に含む session を分母とする
+- coverage を評価するときは `sessions[]` を絞り込む: コード編集の思想系なら `has_code_edit == true` を分母、その中で loaded_skills に対象 skill を含む session を分子とする。設計議論系 (engineering-judgment 等) なら `has_plan_mode == true` の session を分母とする
 - どの skill を「思想系」とし coverage を評価するかは LLM 判断。tool は語彙を持たない (bucket 判定を tool に埋めないのと同型の circular 回避)
 - **coverage を出す前に「誘導機構の稼働開始日」と観測窓を突き合わせる**。invoke を促す機構 (SessionStart 注入 hook 等) が観測窓の途中で導入されていると、既定の 30 日窓は導入前後を混ぜて coverage を過小評価する。機構の導入日は repo の `git log` で確認し、ずれていれば `days` を稼働期間に合わせて再スキャンしてから判定する。狭めた窓は母数が落ちるので、割合ではなく **分子/分母を n 付きで併記**する
 
@@ -127,12 +127,12 @@ bucket 候補割り当て後、以下の **4 条件をすべて満たす** unit 
 
 ## delete-candidate
 
-### 1. superpowers:handoff
+### 1. <plugin-a>:<skill-x>
 - count 0 / share 0% / rank 47 / percentile 0.0
 - bucket: delete-candidate
 - 証拠: なし (0 呼び出し)
 - 提案: 30 日で 1 度も呼ばれていない。install 除去を検討
-- 適用手順: `/plugin` 操作で superpowers plugin から skills 配列を...
+- 適用手順: `/plugin` 操作で該当 plugin から skills 配列を...
 
 ## review-candidate
 
@@ -146,7 +146,7 @@ bucket 候補割り当て後、以下の **4 条件をすべて満たす** unit 
 
 | # | bucket | 対象 | 単位 | セッション内提案 |
 |---|---|---|---|---|
-| 1 | delete-candidate | superpowers:handoff | skill | 提案済み (承認 → 適用) |
+| 1 | delete-candidate | <plugin-a>:<skill-x> | skill | 提案済み (承認 → 適用) |
 | 2 | review-candidate | swat-skills:apm-skill-add | skill | - (低確度) |
 | ... |
 ```
