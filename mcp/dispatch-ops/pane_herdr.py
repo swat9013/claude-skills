@@ -3,12 +3,11 @@
 `pane.PanePort` の継ぎ目 method を herdr CLI への shell out で実装する。認証も接続も
 CLI に委譲し、本 module は「呼び出しと応答の写像」だけを持つ (spec §2)。
 
-`skills/util/_herdr_lib.py` とは**共有しない** (issue #404 / spec §8)。同じ CLI 境界を
-2 箇所に持つのは重複だが、旧 CLI (`skills/util/issue-dispatch/scripts/herdr_ops.py`) は
-#408 まで併存し、その間 inventory-dispatch も同じ共有 module を使っている。撤去前に
-共有すると「server 側の都合で inventory-dispatch が壊れる」結合を、撤去のためだけに
-作ることになる (ADR 0013 の共有可基準: 変更時に全消費者の同時更新が必須なもの、に
-当たらない — 本 server は自分の都合だけで境界を変えたい側)。
+本 server は herdr CLI 境界を**自前で持つ** (issue #404 / spec §8)。かつて skill 側に
+同じ境界を持つ共有 module があり、それと共有しない判断を採った — ADR 0013 の共有可基準
+(変更時に全消費者の同時更新が必須なもの) に当たらず、本 server は自分の都合だけで境界を
+変えたい側だったため。旧 CLI と共有 module はいずれも撤去済みで、現在の消費者は本 server
+のみ。
 
 herdr CLI の失敗 (非 0 exit / 非 JSON 応答) は `PaneError` として即座に表面化させる。
 「CLI の実行失敗」を「pane 無し」「agent 終了」と誤読させると、全 pane を誤って回収し
@@ -94,12 +93,17 @@ class HerdrAdapter(pane.PanePort):
     # --- 前提検査 -----------------------------------------------------------------
 
     def ensure_ready(self):
-        """3 段検査 + 自 pane の残骸 label 正規化 (プロセス内で 1 回だけ通す)。
+        """4 段検査 + 自 pane の残骸 label 正規化 (プロセス内で 1 回だけ通す)。
 
         検査は (1) `HERDR_ENV=1` (2) `herdr integration status` に `claude: current` 行
-        (3) `herdr status` の socket 疎通、の順に行い最初の失敗で止める (fail-closed)。
-        順序は「環境変数 → hook の版 → 実際の疎通」と原因の粒度が粗い側から並べてあり、
-        呼び出し側が failed の値だけで直し方を選べる。
+        (3) `herdr status` の socket 疎通 (4) 自セッションの受信可否、の順に行い最初の
+        失敗で止める (fail-closed)。順序は「環境変数 → hook の版 → 実際の疎通」と原因の
+        粒度が粗い側から並べてあり、呼び出し側が failed の値だけで直し方を選べる。
+
+        (4) だけ herdr と無関係な検査 (自セッションが cross-session messaging を受信
+        できるか) なので、判定は backend 非依存の `pane.require_messaging_receivable` に
+        置いてある。残骸 label の付け直し (唯一の副作用) より前に置くのは、起動を止める
+        判断が確定してから状態を触るため。
         """
         if self._ready is not None:
             return self._ready
@@ -117,6 +121,7 @@ class HerdrAdapter(pane.PanePort):
         rc, _out, err = run_command(["herdr", "status"])
         if rc != 0:
             raise pane.PaneError(f"herdr status が失敗 (socket に届かない): {err.strip()}")
+        messaging_socket = pane.require_messaging_receivable()
 
         self_id = require_env("HERDR_PANE_ID")
         workspace = require_env("HERDR_WORKSPACE_ID")
@@ -132,6 +137,9 @@ class HerdrAdapter(pane.PanePort):
             "self_pane_id": self_id,
             "self_label": label,
             "renamed_from": renamed_from,
+            # 検査を通した socket。worker のイベントがどのセッションへ届く構成かを
+            # 事後に読み取れるようにする (pid 由来なので orchestrator の同定に使える)
+            "messaging_socket": messaging_socket,
         }
         return self._ready
 
@@ -184,13 +192,19 @@ class HerdrAdapter(pane.PanePort):
 
         agent が検出できなくても例外にしない — pane は既に在るので、呼び出し側が
         pane_id を診断 (と後始末) に使えるほうが安い。
+
+        分割元は `--current` ではなく `$HERDR_PANE_ID` を明示する。`--current` の解決先は
+        command ごとに割れ (`pane current` だけが `caller_pane_id` を受け取り、他は UI
+        フォーカス中の pane に落ちる)、フォーカスが別 workspace にあると worker が
+        observe_panes の観測窓 (`pane list --workspace`) の外へ出る。
         """
         created = pane_of(
             run_herdr(
                 [
                     "pane",
                     "split",
-                    "--current",
+                    "--pane",
+                    require_env("HERDR_PANE_ID"),
                     "--direction",
                     "right",
                     "--no-focus",

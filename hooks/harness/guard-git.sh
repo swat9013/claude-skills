@@ -15,10 +15,10 @@ deny() {
 
 # 先頭の空白を許容するため `^[[:space:]]*git` を共通プレフィクスにする。
 
-# git add . / -A 禁止
-if printf '%s\n' "$COMMAND" | grep -qE '^[[:space:]]*git add (-A|--all|\.)( |$)'; then
-  deny "git add . / -A は禁止。ファイルを個別に指定してください"
-fi
+# `git add` の一括指定は guard-bulk-stage.sh が担う。本 hook は hooks.json 側の
+# `if: "Bash(git:*)"` gate で先頭 token が git のときしか起動せず、判定も行頭アンカーだった
+# ため `echo x && git add -A` / `git status --short && git add -A` を取り逃していた
+# (gate を外すと下の非アンカー判定が全 Bash にかかって誤爆するので、判定ごと移した)。
 
 # 破壊的 git 操作
 if printf '%s\n' "$COMMAND" | grep -qE 'git reset.*--hard|git clean.*(--force|-f)'; then

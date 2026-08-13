@@ -1,7 +1,12 @@
 #!/bin/sh
 # インラインコード組み立て実行を遮断する PreToolUse guard。
-# python -c / python3 -c / bash -c / sh -c / zsh -c / perl -e / ruby -e / node -e を対象とする。
+# bash -c / sh -c / zsh -c / perl -e / ruby -e / node -e を対象とする。
 # LLM が任意コードを生成・実行する経路を塞ぐ（Computational First / プロンプトインジェクション対策）。
+#
+# python の inline (`-c` / stdin の `-`) は guard-bulk-stage.sh が担う。
+# 同じ系統を 2 hook が deny すると、どちらの message が届くかが仕様化されていないため、
+# 代替形つきの message を持つ側へ一本化した (env 代入つきの綴り `env FOO=1 python3 -c` も
+# 向こうの head 判定が読み飛ばして捕捉する)。
 #
 # スコープ外（Feedback で捕捉しない領域）:
 # - `print('hypothesis')` など「仮説メモを Python ソースに埋め込む」用法は構文的に区別不能なため対象外。
@@ -10,12 +15,6 @@
 
 INPUT=$(cat)
 COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
-
-# python -c / python3.x -c など
-if printf '%s\n' "$COMMAND" | grep -qE '(^|[; &|]|env [A-Z0-9_=]+ )(python|python3)(\.[0-9]+)? +-c( |$)'; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"python -c / python3 -c のインライン実行は禁止。決定論的処理はスクリプトファイルに統合し、追加集計が必要な場合はスクリプト拡張提案として報告してください"}}\n'
-  exit 0
-fi
 
 # bash -c / sh -c / zsh -c
 if printf '%s\n' "$COMMAND" | grep -qE '(^|[; &|])(bash|sh|zsh) +-c( |$)'; then

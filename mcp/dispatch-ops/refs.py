@@ -33,6 +33,10 @@ PR_PATTERNS = {
 # あり、それは「1 repo = 1 tracker」を知っている呼び出し側 (server) の責務。
 ISSUE_SLUG = re.compile(r"^i(?P<number>[1-9][0-9]*)$")
 
+# issue に紐づかない pane を指す label (`inv-permissions` 等)。issue slug と同じ場所
+# (pane label) を使うので、両者が衝突しない綴りかをここで一括して決める
+FREE_LABEL = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
 
 class RefError(ValueError):
     """ref の書式が中立形式に合わない。"""
@@ -121,6 +125,22 @@ def parse_issue_slug(slug):
     """
     matched = ISSUE_SLUG.match(slug or "")
     return int(matched.group("number")) if matched else None
+
+
+def require_free_label(label):
+    """issue に紐づかない pane label を検証して返す (`i<N>` 表記は予約)。
+
+    `i<N>` を許すと `parse_issue_slug` がそれを issue 番号として読み戻し、issue 由来で
+    ない pane が追跡対象・worktree 回収対象として扱われる。綴りを絞るのも同じ理由で、
+    空白や大文字混じりの label は backend 側の一覧照合で同一性が崩れる。
+    """
+    if not isinstance(label, str) or not FREE_LABEL.match(label):
+        raise RefError(
+            f"不正な pane label: {label!r} (形式: 英小文字・数字・ハイフン、先頭は英数字)"
+        )
+    if parse_issue_slug(label) is not None:
+        raise RefError(f"{label!r} は issue slug 表記 (`i<N>`) なので label には使えない")
+    return label
 
 
 def _require_import_time_consistency():

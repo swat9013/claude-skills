@@ -66,8 +66,8 @@ ADR・コミットメッセージ・フロントエンドなど、成果物を�
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
-| `inventory-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-skill-mcp) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動し、レポート完成を監視して要約を user に提示、承認された候補の適用指示を pane へ送る一括棚卸し dispatcher。 |
-| `issue-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、着手可能な open issue を選んで Claude Code セッションを分割 pane として起動し、監視ループで回収・駐機・補充を回す dispatcher。 |
+| `inventory-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-project-values) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動する launcher。 |
+| `issue-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、着手可能な open issue を選んで Claude Code セッションを分割 pane として起動し、worker が節目 (質問 / PR 到達 / 完了・断念) に送ってくるメッセージで回収・駐機・補充を回す常駐 orchestrator。 |
 <!-- /generated:skills -->
 
 ## 同梱している subagent

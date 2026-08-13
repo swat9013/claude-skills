@@ -21,10 +21,16 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
   実績側 (どの file が何 session に注入されたか) は transcript-ops の
   `scan_overhead` が出し、突合は LLM 段階が行う (#478 P2)。
 
-原則 (map #209 / #214): **観測・集計は決定的に、判断は人間に、LLM は文章の具体化
-のみ**。script は bucket (keep-inline / move-to-path-scoped / move-to-skill /
-move-to-lint / delete / merge) を割り当てない。bucket 判定は SKILL.md 手順の LLM
-段階で observation JSON を読んでから行う (循環依存の回避)。
+原則 (map #209 / #214): **決定的にできる推論は script へ、意味判断だけを LLM へ、
+判定は人間に**。script は bucket (keep-inline / move-to-path-scoped /
+move-to-skill / move-to-lint / delete / merge) を割り当てない。
+
+**本 domain は ADR 0032 の決定的ルール層の対象外**。既存 CLAUDE.md 行の bucket 判定は
+すべて内容判断であり、count 0 / 完全一致のような「mart の列だけで評価でき自然言語の
+解釈を要さない述語」が存在しないため (permissions / invocations / engineering-values の
+3 系統だけが rule 層を持つ非対称は、ADR 0032 が「正しい形」として維持すると決めた)。
+決定的シグナルが現れたら、ここに rule を足すのではなく ADR 0032 の移行判定基準に
+当てて判断する。
 
 出力: --output-dir に observation-<timestamp>.json を書き、path を stdout に
 print する。Markdown レポートは LLM 段階の成果物で、本 script は生成しない。

@@ -470,39 +470,52 @@ def observe_issues(
 
 @server.tool()
 def pane_spawn(
-    issue_ref: str,
     prompt: str,
+    issue_ref: str | None = None,
+    label: str | None = None,
     worktree: str | None = None,
     cwd: str | None = None,
     model: str | None = None,
     effort: str | None = None,
 ) -> dict[str, Any]:
-    """issue 用の pane を割って agent セッションを起動する。
+    """pane を割って agent セッションを起動する。
 
     Args:
-        issue_ref: 中立 issue ref (gh#386 / glab#12)。pane label `i<N>` の由来になる
         prompt: 起動セッションへ渡す初期指示 (**文面は呼び出し側が決める**)
+        issue_ref: 中立 issue ref (gh#386 / glab#12)。pane label `i<N>` の由来になる
+        label: issue に紐づかない起動での pane label (issue_ref とは排他)。
+            英小文字・数字・ハイフンのみ。`i<N>` 表記は issue slug の予約なので弾く
         worktree: 新しい作業ツリーを作って隔離する場合の名前 (例: `i386`)
         cwd: 既存の駐機 worktree へ再入する場合のパス (worktree とは排他)
         model: 起動モデル。未指定なら session default を継承
         effort: reasoning effort。未指定なら session default を継承
+
+    `issue_ref` と `label` はどちらか一方だけを渡す。label 起動の pane は台帳にも
+    `tracked` にも載らない — 記帳・監視・回収の対象は issue 由来の pane だけで、label
+    起動は「起動して手を離す」用途 (棚卸し skill の並列実行など) を想定している。
 
     worktree / cwd の組み合わせで 3 通りに分岐し、どれを実行したかは返り値の `mode` で
     返る: どちらも無し = `plain` (repo root でそのまま起動) / worktree = `created`
     (新規ツリーへ隔離) / cwd = `reentered` (既存ツリーへ再入)。再入で新しいツリーを
     作らないのは、直したい成果と別のツリーで作業してしまうため。
 
-    同じ label の pane が既にあるときは起動しない (同一 issue に 2 セッションを入れると
+    同じ label の pane が既にあるときは起動しない (同じ作業対象に 2 セッションを入れると
     同じ作業ツリーへ並列書き込みして成果が壊れる)。
 
+    起動セッションには pane label と同じ表示名を `--name` で与える (返り値の `command` に
+    出る)。名前でしか相手を指せない経路 (ListAgents) から worker を引くための印で、宛先の
+    主経路は初回コンタクトの返信アドレスのまま。
+
     agent を検出できずに `ok: false` で返ったときは **pane が残ったまま label を占有する**
-    ので、そのままだと同じ issue の再 dispatch が以後ずっと撥ねられる。`pane_close` で
-    畳んでから `ledger_transition` で `spawn_failed` へ送る (再試行は新規 entry)。
+    ので、そのままだと同じ label の再 dispatch が以後ずっと撥ねられる。`pane_close` で
+    畳む (issue 由来なら併せて `ledger_transition` で `spawn_failed` へ送る。再試行は
+    新規 entry)。
     """
     return get_pane().pane_spawn(
-        issue_ref,
         prompt,
         repo_root(),
+        issue_ref=issue_ref,
+        label=label,
         worktree=worktree,
         cwd=cwd,
         model=model,

@@ -36,6 +36,7 @@ description: 実行中の project の標準 transcript から、ユーザーが�
 - `days` で観測窓を上書き (省略時 30 日)
 - 返り値の `path` に mart JSON (`/tmp/inventory-values/mart-<timestamp>.json`) が出る。**mart 本体は返らない**
 - **mart は生データ** — bucket も発話型も持たない。返り値の `meta.excluded` に除外理由別の内訳が出るので、`no_prompt_source` が急増していたら CLI schema 変更を疑う (観測の劣化が silent zero にならない設計)。**「急増」の判定には前回 mart が要る**。手元に無ければ `total_prompts` との比を劣化判定の代用にせず、レポートに「前回 mart が無く判定不能」と書く
+- **`meta.store` は観測の劣化シグナル**。`broken_lines` (壊れた行) / `unreadable_files` (読めなかった file) / `skipped_nested_files` (観測範囲外の subagent transcript) が 0 でなければ**分母が欠けている** — その数だけ「観測されなかった prompt」があるので、手順 6 のレポートヘッダへ転記する
 
 `meta.total_prompts` が 0 なら「観測不能」を報告して終了する (推測での穴埋めをしない)。
 
@@ -185,7 +186,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 `/tmp/inventory-values/report-<timestamp>.md` に mart / slice と並置で書く。以下の**固定 schema**:
 
-1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数
+1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (`meta.store` の 0 でない項目。すべて 0 なら「劣化なし」と明記)
 2. **除外の明示**: slice の `meta.excluded` (`below_min_chars` / `other_repo` / `boilerplate`) と `meta.band_histogram` を転記し、「短文帯 N 件・他 repo N 件・定型 N 件を意図的に対象外にした」ことを明記する。`meta.truncated_by_limit` が非 0 ならその件数も出す
 3. **定型一覧**: `boilerplate_forms` を件数付きで転記し、拾い戻した候補があればどれかを書く (拾い戻しゼロならその旨を書く。読んだことが復元できる形にする)
 4. **候補 section** (器の分類別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 規範の言い換え / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / 保留)

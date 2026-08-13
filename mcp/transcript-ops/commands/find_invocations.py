@@ -48,6 +48,7 @@ from adapter.transcript import (
     session_id_of,
     truncate,
 )
+from artifacts import prepare_output_dir
 
 # --- 定数 --------------------------------------------------------------------
 
@@ -361,6 +362,15 @@ def build_slice(
             "read_order": (
                 "scope (repo or cwd) ごとの最新 1 件を先取り → 残りを mtime 降順"
             ),
+            # 読み方の注記は slice 側に持つ (tool docstring は全利用セッションの
+            # context に常駐するが、注記が要るのは slice を読む段階だけ。ADR 0031)
+            "notes": [
+                "判定は record 構造 (assistant の Skill tool_use / user の slash 展開) で"
+                "行い行 grep はしない。計上されなかった件数は excluded に理由別で残る",
+                "total_invocations が呼出回数、matched_files は file 数 (混同しない)",
+                "観測窓を持たない — 監査対象は「最後に呼ばれた n 件」であって期間ではない。"
+                "matched_files が 0 なら実呼出なしで監査は成立しない",
+            ],
         },
         "transcripts": [
             {
@@ -428,9 +438,9 @@ def collect(args: argparse.Namespace) -> dict:
 
 def emit(slice_json: dict, args: argparse.Namespace) -> str:
     """invocations-<timestamp>.json を書いて path を返す。"""
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = prepare_output_dir(args.output_dir)
     generated = dt.datetime.fromisoformat(slice_json["meta"]["generated_at"])
-    out = args.output_dir / f"invocations-{generated.strftime('%Y%m%dT%H%M%SZ')}.json"
+    out = output_dir / f"invocations-{generated.strftime('%Y%m%dT%H%M%SZ')}.json"
     out.write_text(
         json.dumps(slice_json, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

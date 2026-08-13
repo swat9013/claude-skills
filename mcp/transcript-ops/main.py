@@ -5,22 +5,35 @@
 # ///
 """transcript-ops MCP server の entry point (stdio transport)。
 
-決定は [ADR 0029](../../docs/adr/0029-transcript-ops-consolidation.md)。steering の
-inventory 系が使う transcript 観測を一元化し、**on-disk 形式を知るのは `adapter/` だけ**
-にする (format isolation)。tool 1 本 = `commands/` の module 1 本で、mart schema
-(観測契約) は tool 単位に保つ。
+決定は [ADR 0029](../../docs/adr/0029-transcript-ops-consolidation.md) と、それを
+更新した [ADR 0031](../../docs/adr/0031-transcript-store-elt.md) (store 中心 ELT)。
+steering の inventory 系が使う transcript 観測を一元化し、**on-disk 形式を知るのは
+`store/` + `adapter/` だけ**にする (format isolation)。mart schema (観測契約) は
+tool 単位に保つ。
 
-**server はポリシーを持たない** — 抽出・集計だけを行い、bucket 判定 (revoke /
-delete-candidate / 器の分類) も候補の採否も知らない。判断は人間、文章の具体化は
-各 SKILL.md の LLM 段階 (ADR 0011 の 3 層分離)。
+構成: 観測契約を持つ 5 tool (`scan_permissions` / `scan_prompts` /
+`select_candidates` / `scan_invocations` / `scan_overhead`) は store への query
+(`marts/`)、`find_invocations` (直読み残置) と `query` (read-only ad-hoc) は
+`commands/`。
+
+**server は bucket を確定しない** — 決定的ルール (`marts/*/rules.py`) は評価するが、
+出すのは候補 (`bucket_candidate`) と導出過程 (`rule_fired` / `rule_inputs`) と
+未判定条件 (`open_predicates`) までで、bucket の確定は LLM 段階、最終採否は人間
+([ADR 0032](../../docs/adr/0032-policy-free-refinement-deterministic-rules.md) の
+出力契約 / ADR 0011 の 3 層分離)。
 
 **mart を context に返さない**: 各 tool は `/tmp` 配下に mart / slice を書き、返すのは
 出力 path と件数 meta だけ。「大きく出して絞って読む + PR 証拠として残す」消費パターンを
 維持するためで、返り値に本体を載せると窓が即死する。
 
-**本 module が持つのは配線だけ** — tool 関数は commands の `run()` へ 1 式で委譲する。
-手続きがここに溜まると、LLM 向け interface (docstring) の module に振る舞いが乗り、
-commands 単体では検証できない合成が生まれる。
+**docstring は Args と 1 行の役割だけに絞る** — docstring は全利用セッションの
+context に常駐するコストを払う一方、mart の読み方が要るのは mart を読む段階だけ
+なので、注記の置き場は mart 側の contract (`00-meta.json` の `contract.notes` /
+mart の `contract.notes`) にする (ADR 0031: context 常駐コストの削減)。
+
+**本 module が持つのは配線だけ** — tool 関数は commands / marts の `run()` へ 1 式で
+委譲する。手続きがここに溜まると、LLM 向け interface (docstring) の module に
+振る舞いが乗り、実装単体では検証できない合成が生まれる。
 
 配布・登録は plugin root の `.mcp.json`。server 名 `transcript-ops`、tool 完全名は
 `mcp__plugin_swat-skills_transcript-ops__<tool>`。
@@ -40,11 +53,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server import MCPServer  # noqa: E402
 
 from commands import find_invocations as find_invocations_mod  # noqa: E402
-from commands import scan_invocations as scan_invocations_mod  # noqa: E402
-from commands import scan_overhead as scan_overhead_mod  # noqa: E402
-from commands import scan_permissions as scan_permissions_mod  # noqa: E402
-from commands import scan_prompts as scan_prompts_mod  # noqa: E402
-from commands import select_candidates as select_candidates_mod  # noqa: E402
+from commands import query as query_mod  # noqa: E402
+from marts.invocations import present as invocations_mart  # noqa: E402
+from marts.overhead import present as overhead_mart  # noqa: E402
+from marts.permissions import present as permissions_mart  # noqa: E402
+from marts.prompts import present as prompts_mart  # noqa: E402
 
 SERVER_NAME = "transcript-ops"
 SERVER_VERSION = "0.1.0"
@@ -52,12 +65,13 @@ SERVER_VERSION = "0.1.0"
 # 手順は各 SKILL.md が持つ。ここは全利用セッションの context に常駐するので、
 # 「返り値の読み方」だけに絞る (ADR 0029: context 常駐コストの圧縮)。
 INSTRUCTIONS = """\
-標準 transcript (~/.claude/projects) の観測を一元化する policy-free な server。
+標準 transcript (~/.claude/projects) の観測を一元化する server。
 
 - どの tool も mart / slice を /tmp 配下に書き、返すのは path と件数 meta だけ。
   中身が要るなら返ってきた path を Read する
-- bucket 判定 (revoke / delete-candidate / 器の分類) は tool の責務外。手順は
-  呼び出し元の SKILL.md が持つ
+- 読み方の注記・rule カタログは mart 側の `contract` が正本 (docstring には無い)
+- **bucket は tool が確定しない**。`rule_candidates` が出すのは候補と導出過程と
+  未判定条件 (`open_predicates`) までで、確定と採否は呼び出し元の SKILL.md 手順
 """
 
 server = MCPServer(name=SERVER_NAME, version=SERVER_VERSION, instructions=INSTRUCTIONS)
@@ -66,12 +80,12 @@ server = MCPServer(name=SERVER_NAME, version=SERVER_VERSION, instructions=INSTRU
 @server.tool()
 def scan_permissions(
     section: str = "project",
-    days: int = scan_permissions_mod.DEFAULT_DAYS,
+    days: int = permissions_mart.DEFAULT_DAYS,
     repo_root: str | None = None,
-    output_dir: str = str(scan_permissions_mod.DEFAULT_OUTPUT_DIR),
-    transcripts_dir: str = str(scan_permissions_mod.DEFAULT_TRANSCRIPTS_DIR),
-    global_settings: str = str(scan_permissions_mod.DEFAULT_GLOBAL_SETTINGS),
-    config_dir: str = str(scan_permissions_mod.DEFAULT_CONFIG_DIR),
+    output_dir: str = str(permissions_mart.DEFAULT_OUTPUT_DIR),
+    transcripts_dir: str = str(permissions_mart.DEFAULT_TRANSCRIPTS_DIR),
+    global_settings: str = str(permissions_mart.DEFAULT_GLOBAL_SETTINGS),
+    config_dir: str = str(permissions_mart.DEFAULT_CONFIG_DIR),
     now: str | None = None,
 ) -> dict[str, Any]:
     """permission entry / hook 設定 × 実績の両軸 mart を書き、読む順の path を返す。
@@ -87,20 +101,10 @@ def scan_permissions(
         config_dir: Claude Code config dir (plugin hooks の分母源)。既定 ~/.claude
         now: ISO timestamp。観測窓の起点を固定する (再現用)
 
-    `paths` は読む順に並ぶ (`00-meta` → `10-derived-views` → `20-axis-a` →
-    `30-bypass-samples` → `40-hooks` → `90-mart`)。**`90-mart.json` は標準フローでは
-    読まない** — 数 MB 級の全量で、想定外の追加検査にだけ使う。各ファイルの用途は
-    `00-meta.json` の `contract` が正本。
-
-    `meta.sufficient_for_relative_judgment` が false なら相対判定 (未使用の
-    entry を「使われていない」と読む) は成立しない — 観測不足であって不使用の
-    証拠ではない。
-
-    `40-hooks.json` の `hook_activity` は hook 設定 (settings + plugin hooks.json) と
-    fire 実績の突合で、section (cwd scope) では絞らない。**`nonzero_exit_count` を
-    「失敗していない」と読まない** — 観測限界は同ファイルの `observability` が正本。
+    `paths` は読む順に並ぶ。各ファイルの用途・derived view の意味論・rule カタログ・
+    読み方の注記は **`00-meta.json` の `contract` が正本**。
     """
-    return scan_permissions_mod.run(
+    return permissions_mart.run(
         section=section,
         days=days,
         repo_root=repo_root,
@@ -114,12 +118,12 @@ def scan_permissions(
 
 @server.tool()
 def scan_invocations(
-    days: int = scan_invocations_mod.DEFAULT_DAYS,
+    days: int = invocations_mart.DEFAULT_DAYS,
     repo_root: str | None = None,
-    output_dir: str = str(scan_invocations_mod.DEFAULT_OUTPUT_DIR),
-    transcripts_dir: str = str(scan_invocations_mod.DEFAULT_TRANSCRIPTS_DIR),
-    config_dir: str = str(scan_invocations_mod.DEFAULT_CONFIG_DIR),
-    claude_json: str = str(scan_invocations_mod.DEFAULT_CLAUDE_JSON),
+    output_dir: str = str(invocations_mart.DEFAULT_OUTPUT_DIR),
+    transcripts_dir: str = str(invocations_mart.DEFAULT_TRANSCRIPTS_DIR),
+    config_dir: str = str(invocations_mart.DEFAULT_CONFIG_DIR),
+    claude_json: str = str(invocations_mart.DEFAULT_CLAUDE_JSON),
     now: str | None = None,
 ) -> dict[str, Any]:
     """skill / agent / MCP tool の invocation 実績 mart を書き、path を返す。
@@ -134,12 +138,9 @@ def scan_invocations(
         claude_json: MCP server 分母源。既定 ~/.claude.json
         now: ISO timestamp。観測窓の起点を固定する (再現用)
 
-    skill unit の count は 3 channel (Skill tool_use / slash command / SKILL.md への
-    Read) の合算で、内訳は mart の `channels` に出る。分母に無い id は
-    `source: session-observed` で補完されるが、これは**観測分の下限保証**であって
-    install 済み一覧ではない (claude.ai connectors 等はローカル config に出ない)。
+    読み方の注記と rule カタログは **mart の `contract` が正本**。
     """
-    return scan_invocations_mod.run(
+    return invocations_mart.run(
         days=days,
         repo_root=repo_root,
         output_dir=output_dir,
@@ -152,10 +153,10 @@ def scan_invocations(
 
 @server.tool()
 def scan_prompts(
-    days: int = scan_prompts_mod.DEFAULT_DAYS,
-    output_dir: str = str(scan_prompts_mod.DEFAULT_OUTPUT_DIR),
-    transcripts_dir: str = str(scan_prompts_mod.DEFAULT_TRANSCRIPTS_DIR),
-    text_limit: int = scan_prompts_mod.DEFAULT_TEXT_LIMIT,
+    days: int = prompts_mart.DEFAULT_DAYS,
+    output_dir: str = str(prompts_mart.DEFAULT_OUTPUT_DIR),
+    transcripts_dir: str = str(prompts_mart.DEFAULT_TRANSCRIPTS_DIR),
+    text_limit: int = prompts_mart.DEFAULT_TEXT_LIMIT,
     now: str | None = None,
 ) -> dict[str, Any]:
     """人間が手入力した prompt だけの mart を書き、path を返す。
@@ -165,14 +166,13 @@ def scan_prompts(
         output_dir: 出力先。既定 /tmp/inventory-values。分母の違う棚卸し
             (engineering-values) は別 dir に分ける
         transcripts_dir: transcript lake。既定 ~/.claude/projects
-        text_limit: 1 prompt あたりの保存文字数上限。既定 4000
+        text_limit: 1 prompt あたりの mart 保存文字数上限。既定 4000
+            (store は全文を持つ。`select_candidates` の候補は切り詰めない)
         now: ISO timestamp。観測窓の起点を固定する (再現用)
 
-    mart は**全 project 横断**で作る。repo での絞り込みは `select_candidates` の
-    領分。`meta.excluded.no_prompt_source` が急増していたら CLI の schema 変更で
-    観測が劣化した疑い (silent zero にはならない設計)。
+    読み方の注記は **mart の `contract` が正本**。
     """
-    return scan_prompts_mod.run(
+    return prompts_mart.run_scan_prompts(
         days=days,
         output_dir=output_dir,
         transcripts_dir=transcripts_dir,
@@ -183,37 +183,37 @@ def scan_prompts(
 
 @server.tool()
 def select_candidates(
-    mart: str,
-    min_chars: int = select_candidates_mod.DEFAULT_MIN_CHARS,
+    mart: str | None = None,
+    min_chars: int = prompts_mart.DEFAULT_MIN_CHARS,
     repo: str | None = None,
     all_repos: bool = False,
     limit: int | None = None,
-    output_dir: str = str(select_candidates_mod.DEFAULT_OUTPUT_DIR),
+    output_dir: str = str(prompts_mart.DEFAULT_OUTPUT_DIR),
     repo_root: str | None = None,
+    days: int = prompts_mart.DEFAULT_DAYS,
+    transcripts_dir: str = str(prompts_mart.DEFAULT_TRANSCRIPTS_DIR),
     now: str | None = None,
 ) -> dict[str, Any]:
-    """mart を長さ / repo / 正規形で絞り、読み順を確定した slice を書いて path を返す。
+    """store を長さ / repo / 正規形で絞り、読み順を確定した slice を書いて path を返す。
 
     Args:
-        mart: `scan_prompts` が返した mart JSON の path
+        mart: provenance。`scan_prompts` が返した mart JSON の path を渡すと、
+            その観測窓 (`days` 相当) を再利用して候補を絞る。省略時は `days` から
+            窓を作る (既定 30) — mart の事前生成は不要
         min_chars: 候補に含める text_chars の下限。既定 60
-        repo: mart の repo field と完全一致で絞る
+        repo: 完全一致で絞る repo 識別子
         all_repos: repo 絞り込みを外して全 project 横断で見る
         limit: 出力件数の上限。打ち切りは `meta.truncated_by_limit` に出る
         output_dir: 出力先。既定 /tmp/inventory-values
         repo_root: repo 既定解決の起点。省略時は server プロセスの cwd
+        days: `mart` 省略時の観測窓 (日)。既定 30 (`mart` を渡した場合は無視され、
+            その meta の窓を使う)
+        transcripts_dir: transcript lake。既定 ~/.claude/projects
         now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
 
-    `repo` も `all_repos` も渡さないと `repo_root` (既定 cwd) の git remote に
-    解決する。**解決できないときは全 repo へ倒さず失敗する** — 他 project の
-    prompt を黙って slice に載せないことが既定解決の目的そのものだから。
-
-    読み順は `text_chars` 降順の全順序 (`rank` 昇順)。長さは絞り込みの入口であって
-    判定材料ではない。除外は `meta.excluded` / `meta.band_histogram` に出し、
-    定型と判定した正規形は slice の `boilerplate_forms` に残す (**逐語反復された
-    規範がここに落ちる**ので、拾い戻しの候補源として読む)。
+    読み方の注記と rule カタログは **slice の `contract` が正本**。
     """
-    return select_candidates_mod.run(
+    return prompts_mart.run_select_candidates(
         mart=mart,
         min_chars=min_chars,
         repo=repo,
@@ -221,17 +221,19 @@ def select_candidates(
         limit=limit,
         output_dir=output_dir,
         repo_root=repo_root,
+        days=days,
+        transcripts_dir=transcripts_dir,
         now=now,
     )
 
 
 @server.tool()
 def scan_overhead(
-    days: int = scan_overhead_mod.DEFAULT_DAYS,
+    days: int = overhead_mart.DEFAULT_DAYS,
     repo_root: str | None = None,
     all_repos: bool = False,
-    output_dir: str = str(scan_overhead_mod.DEFAULT_OUTPUT_DIR),
-    transcripts_dir: str = str(scan_overhead_mod.DEFAULT_TRANSCRIPTS_DIR),
+    output_dir: str = str(overhead_mart.DEFAULT_OUTPUT_DIR),
+    transcripts_dir: str = str(overhead_mart.DEFAULT_TRANSCRIPTS_DIR),
     now: str | None = None,
 ) -> dict[str, Any]:
     """静的コンテキストの実測コスト × 実績 (注入 session 数 / compaction) を書く。
@@ -244,16 +246,9 @@ def scan_overhead(
         transcripts_dir: transcript lake。既定 ~/.claude/projects
         now: ISO timestamp。観測窓の起点を固定する (再現用)
 
-    `memory_files[]` は `.claude/rules/` / CLAUDE.md が**実際に注入された session 数**
-    で、`paths:` で絞った規範が届いているかの実測になる。path は worktree 断片を
-    畳んである。`compaction` は捨てられた token (`cumulative_dropped_tokens` は
-    session ごとの最大値。boundary をまたいで足さない)。
-
-    **token 数はすべて概算** (`meta.token_estimator`)。桁の比較にだけ使う。実績が
-    決定的なのは **file 粒度まで**で、行単位の静的コストは repo static 側
-    (`scan-claude-md.py` の `token_cost`) が出す。
+    読み方の注記は **mart の `meta.notes` / `meta.token_estimator` が正本**。
     """
-    return scan_overhead_mod.run(
+    return overhead_mart.run(
         days=days,
         repo_root=repo_root,
         all_repos=all_repos,
@@ -280,17 +275,42 @@ def find_invocations(
         output_dir: 出力先。既定 /tmp/skill-usage-audit
         now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
 
-    判定は **record 構造** (assistant の `Skill` tool_use / user の slash 展開) で
-    行い、行 grep はしない。そのため queue-operation の二重記録・wrapper
-    transcript・literal 引用は呼出しに計上されず、件数だけが `meta.excluded` に
-    理由別で残る。**`meta.total_invocations` が呼出回数**で、`matched_files` は
-    file 数 (両者を混同しない)。
-
-    観測窓は持たない — 監査対象は「最後に呼ばれた n 件」であって期間ではない。
-    `meta.matched_files` が 0 なら実呼出なしで、監査は成立しない。
+    読み方の注記は **slice の `meta.notes` が正本**。
     """
     return find_invocations_mod.run(
         skill=skill,
+        limit=limit,
+        transcripts_dir=transcripts_dir,
+        output_dir=output_dir,
+        now=now,
+    )
+
+
+@server.tool()
+def query(
+    sql: str,
+    limit: int = query_mod.DEFAULT_ROW_LIMIT,
+    transcripts_dir: str = str(query_mod.DEFAULT_TRANSCRIPTS_DIR),
+    output_dir: str = str(query_mod.DEFAULT_OUTPUT_DIR),
+    now: str | None = None,
+) -> dict[str, Any]:
+    """store へ read-only の ad-hoc query を投げ、結果を書いて path を返す。
+
+    Args:
+        sql: 単一の SELECT / WITH 文。複数文・`PRAGMA` / `ATTACH` は拒否する
+        limit: 行数 cap。既定 500 / 上限 10,000。打ち切りは
+            `meta.truncated_by_limit` に出る
+        transcripts_dir: transcript lake。既定 ~/.claude/projects
+        output_dir: 出力先。既定 /tmp/transcript-ops-query
+        now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
+
+    **想定外の追加検査だけに使う。** 恒常的に必要になった集計は mart の分割出力 /
+    derived view の拡張として提案する — ad-hoc query を手順に埋めると、観測契約を
+    持たない集計が棚卸しの既定経路になる。schema は
+    `SELECT sql FROM sqlite_master` で引ける。
+    """
+    return query_mod.run(
+        sql=sql,
         limit=limit,
         transcripts_dir=transcripts_dir,
         output_dir=output_dir,

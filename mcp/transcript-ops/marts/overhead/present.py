@@ -1,12 +1,15 @@
 """`scan_overhead` tool の実装 (configured vs actual の overhead 観測)。
 
+ADR 0031 の store 移行 (#498)。transcript の直読みではなく、store への query
+(`query.sql`) から静的コンテキストの実測コスト・memory file 注入実績・compaction
+実害を組み立てる。mart の出力契約は移行前の `commands/scan_overhead.py` と同一に
+保つ (`tests/test_mart_schema_freeze.py` が固定する)。
+
 session の開始時点で**無条件に載る静的コンテキスト** (memory file / skill listing /
 MCP instructions / deferred tool 一覧) を実測し、それが実際に何をもたらしたか
 (注入された session 数 / compaction で捨てられた token) と並べて出す。
 
-消費者は inventory-claude-md (ツール 3)。同 skill はこれまで repo static だけを見て
-おり、**閾値解釈の余地がない決定的シグナルを 1 つも持っていなかった** (SKILL.md の
-「確度による 2 層化は持たない」の根拠)。本 tool が供給するのは 2 つ:
+消費者は inventory-claude-md (ツール 3)。
 
 - **memory file の注入実績**: `.claude/rules/<topic>.md` のような path-scoped file が
   観測窓で何 session に実際に注入されたか。`paths:` で絞ったつもりの規範が 0 session
@@ -18,8 +21,8 @@ MCP instructions / deferred tool 一覧) を実測し、それが実際に何を
 repo static 側 (`scan-claude-md.py` の `token_cost`) が出し、両者の突合は LLM 段階が
 行う — transcript には「どの行が効いたか」の record が存在しないため。
 
-token 数はすべて **概算** (`adapter.transcript.estimate_tokens`)。tokenizer を持ち
-込まないので桁の比較にしか使えず、bucket 判定の単独根拠にはしない。
+token 数はすべて **概算** (query 層の UDF `estimate_tokens_from_counts`)。tokenizer を
+持ち込まないので桁の比較にしか使えず、bucket 判定の単独根拠にはしない。
 
 出力: output_dir に overhead-<timestamp>.json を書き、**path だけを返す**。
 
@@ -33,7 +36,7 @@ import argparse
 import collections
 import datetime as dt
 import json
-import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -41,18 +44,16 @@ from adapter.transcript import (
     MEMORY_ATTACHMENT_TYPE,
     STATIC_PAYLOAD_FIELDS,
     TOKEN_ESTIMATOR,
-    MemoryInjection,
-    _iter_jsonl,
-    attachment_of,
-    attachment_text_of,
-    compact_boundary_of,
-    estimate_tokens,
-    memory_injection_of,
     resolve_now,
     resolve_repo_at,
-    session_id_of,
-    walk_transcripts,
 )
+from artifacts import prepare_output_dir
+from marts import load_statements
+from store import ingest
+
+from . import udf
+
+QUERY_PATH = Path(__file__).resolve().parent / "query.sql"
 
 # --- 定数 --------------------------------------------------------------------
 
@@ -75,8 +76,8 @@ STATIC_SOURCE_NAMES = tuple(name for name, _ in STATIC_SOURCE_TYPES)
 # memory file の source 名 (静的コストに加えて注入実績も出す唯一の source)。
 MEMORY_SOURCE = "memory_file"
 
-# 本文 field を引いて token を数える経路の対応表。memory file は入れ子構造が違い
-# 専用経路 (`memory_injection_of`) を通るのでここから外す。
+# on-disk attachment type → mart の source 名。memory file は入れ子構造が違い
+# 専用経路 (`memory_injection` 表) を通るのでここから外す。
 SOURCE_BY_ATTACHMENT_TYPE = {atype: name for name, atype in STATIC_SOURCE_TYPES
                              if atype != MEMORY_ATTACHMENT_TYPE}
 if set(SOURCE_BY_ATTACHMENT_TYPE) - set(STATIC_PAYLOAD_FIELDS):
@@ -84,11 +85,6 @@ if set(SOURCE_BY_ATTACHMENT_TYPE) - set(STATIC_PAYLOAD_FIELDS):
         "本文 field を持たない attachment type を静的コストに数えようとしている: "
         f"{sorted(set(SOURCE_BY_ATTACHMENT_TYPE) - set(STATIC_PAYLOAD_FIELDS))}"
     )
-
-# harness が作る worktree の path 断片。同一 memory file が worktree ごとに別 path で
-# 現れるため、注入実績を数える前に畳む (畳まないと 1 file の実績が worktree 数だけ
-# 分散し、「めったに注入されない file」に見える)。
-WORKTREE_SEGMENT_RE = re.compile(r"/\.claude/worktrees/[^/]+")
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -112,39 +108,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-# --- 正規化 ------------------------------------------------------------------
-
-def normalize_memory_path(path: str) -> str:
-    """worktree 断片を畳んだ memory file の path。
-
-    `<repo>/.claude/worktrees/i478/.claude/rules/x.md` → `<repo>/.claude/rules/x.md`。
-    worktree は harness が作る一時的な複製なので、同じ規範が別 file として散ると
-    「注入実績が薄い file」に見えてしまう。
-    """
-    return WORKTREE_SEGMENT_RE.sub("", path)
-
-
-def memory_key(path: str) -> str:
-    """注入実績を数える単位 = **repo 相対の path**。
-
-    絶対 path のままだと、同じ repo を 2 箇所に checkout している環境
-    (relocate 前後 / ghq と作業用) で 1 file が 2 行に割れる。突合相手の
-    `scan-claude-md.py` が出すのも repo 相対 path なので、ここで揃えておく。
-
-    `.claude/` 配下はそこから、それ以外は末尾 2 セグメント (`docs/CLAUDE.md` と
-    root の `CLAUDE.md` を潰さないため)。
-    """
-    normalized = normalize_memory_path(path)
-    idx = normalized.rfind("/.claude/")
-    if idx >= 0:
-        return normalized[idx + 1:]
-    return "/".join(normalized.rsplit("/", 2)[-2:])
-
-
-# --- 抽出 --------------------------------------------------------------------
+# --- 観測の accumulator -------------------------------------------------------
 
 class OverheadObservation:
-    """走査中の accumulator。session 単位と memory file 単位の 2 系統を持つ。"""
+    """query 結果を畳み込む accumulator。session 単位と memory file 単位の 2 系統を持つ。"""
 
     def __init__(self) -> None:
         self.session_cost: dict[str, dict[str, int]] = collections.defaultdict(
@@ -156,44 +123,36 @@ class OverheadObservation:
     def note_static(self, session_id: str, source: str, tokens: int) -> None:
         self.session_cost[session_id][source] += tokens
 
-    def note_memory_file(self, injection: MemoryInjection, session_id: str,
-                         timestamp: str) -> None:
+    def note_memory_file(self, *, path: str, display_path: str, memory_type: str,
+                         globs: list[str], tokens: int, chars: int, lines: int,
+                         differs_from_disk: bool, session_id: str, timestamp: str,
+                         memory_key_value: str) -> None:
         """memory file 1 回の注入を畳み込む (静的コストの計上も本 method が行う)。
 
-        字数・行数・disk 差分まで**ここで閉じる**。呼び元が `memory_files` を直接
-        書き換える形だと、同じ 1 注入の更新が 2 箇所に散り、片方だけ条件が付いた
-        ときに畳み込みの規則 (最大値を採る) が黙って崩れる。
+        `tokens` / `chars` / `lines` / `memory_key_value` は query 層 (UDF 込み) が
+        計算済みの値 — 呼び元が生 text を持ち込む必要はない。
         """
-        tokens = estimate_tokens(injection.text)
         self.note_static(session_id, MEMORY_SOURCE, tokens)
-        if not injection.path:
+        if not path:
             return
-        key = memory_key(injection.path)
-        entry = self.memory_files.get(key)
+        entry = self.memory_files.get(memory_key_value)
         if entry is None:
             entry = {
-                "path": key,
-                "display_path": injection.display_path,
-                "memory_type": injection.memory_type,
-                "globs": injection.globs,
-                "sessions": set(),
-                "observed_paths": set(),
-                "est_tokens": 0,
-                "chars": 0,
-                "lines": 0,
+                "path": memory_key_value, "display_path": display_path,
+                "memory_type": memory_type, "globs": globs,
+                "sessions": set(), "observed_paths": set(),
+                "est_tokens": 0, "chars": 0, "lines": 0,
                 "differs_from_disk_sessions": set(),
-                "first_injected_at": timestamp,
-                "last_injected_at": timestamp,
+                "first_injected_at": timestamp, "last_injected_at": timestamp,
             }
-            self.memory_files[key] = entry
+            self.memory_files[memory_key_value] = entry
         entry["sessions"].add(session_id)
-        entry["observed_paths"].add(injection.path)
+        entry["observed_paths"].add(path)
         # 同一 file が session ごとに別の長さで現れる (編集途中の注入) ので最大値を採る
         entry["est_tokens"] = max(entry["est_tokens"], tokens)
-        entry["chars"] = max(entry["chars"], len(injection.text))
-        entry["lines"] = max(
-            entry["lines"], injection.text.count("\n") + 1 if injection.text else 0)
-        if injection.differs_from_disk:
+        entry["chars"] = max(entry["chars"], chars)
+        entry["lines"] = max(entry["lines"], lines)
+        if differs_from_disk:
             entry["differs_from_disk_sessions"].add(session_id)
         if timestamp:
             entry["first_injected_at"] = min(
@@ -218,52 +177,38 @@ class OverheadObservation:
         entry["max_pre_tokens"] = max(entry["max_pre_tokens"], boundary["pre_tokens"])
 
 
-def extract_overhead(jsonl_path: Path, cutoff: dt.datetime,
-                     observation: OverheadObservation) -> None:
-    """1 transcript file から静的コンテキスト・memory file・compaction を集める。"""
-    try:
-        with jsonl_path.open("r", encoding="utf-8", errors="replace") as fp:
-            for rec in _iter_jsonl(fp):
-                timestamp = str(rec.get("timestamp") or "")
-                if not _within_window(timestamp, cutoff):
-                    continue
-                session_id = session_id_of(rec)
-                cwd = str(rec.get("cwd") or "")
-                if session_id and cwd:
-                    observation.session_cwd.setdefault(session_id, cwd)
+# --- store への問い合わせ ------------------------------------------------------
 
-                boundary = compact_boundary_of(rec)
-                if boundary is not None:
-                    observation.note_compaction(boundary)
-                    continue
+def collect_from_store(conn: sqlite3.Connection, statements: dict[str, str],
+                       cutoff_epoch: float) -> OverheadObservation:
+    """query.sql の結果を `OverheadObservation` へ畳み込む。"""
+    observation = OverheadObservation()
+    params = {"cutoff_epoch": cutoff_epoch}
 
-                injection = memory_injection_of(rec)
-                if injection is not None:
-                    observation.note_memory_file(injection, session_id, timestamp)
-                    continue
+    for row in conn.execute(statements["static_source_costs"], params):
+        source = SOURCE_BY_ATTACHMENT_TYPE.get(row["attachment_type"])
+        if source is None:
+            continue
+        observation.note_static(str(row["session_id"]), source, row["tokens"])
 
-                body = attachment_of(rec)
-                if body is None:
-                    continue
-                atype = str(body.get("type") or "")
-                source = SOURCE_BY_ATTACHMENT_TYPE.get(atype)
-                if source is None:
-                    continue
-                text = attachment_text_of(body, STATIC_PAYLOAD_FIELDS[atype])
-                observation.note_static(session_id, source, estimate_tokens(text))
-    except OSError:
-        return
+    for row in conn.execute(statements["memory_injection_rows"], params):
+        globs = json.loads(row["globs"]) if row["globs"] else []
+        observation.note_memory_file(
+            path=row["path"], display_path=row["display_path"],
+            memory_type=row["memory_type"], globs=globs, tokens=row["tokens"],
+            chars=row["chars"], lines=row["lines"],
+            differs_from_disk=bool(row["differs_from_disk"]),
+            session_id=str(row["session_id"]), timestamp=row["ts"],
+            memory_key_value=row["memory_key"],
+        )
 
+    for row in conn.execute(statements["compact_boundaries"], params):
+        observation.note_compaction(dict(row))
 
-def _within_window(ts_str: str, cutoff: dt.datetime) -> bool:
-    """timestamp 欠損は保守的に窓内扱い (他 tool の窓判定と同挙動)。"""
-    try:
-        rec_ts = dt.datetime.fromisoformat(
-            ts_str.replace("Z", "+00:00")
-        ).astimezone(dt.timezone.utc)
-    except (ValueError, AttributeError):
-        return True
-    return rec_ts >= cutoff
+    for row in conn.execute(statements["session_cwd_events"], params):
+        observation.session_cwd.setdefault(str(row["session_id"]), row["cwd"])
+
+    return observation
 
 
 # --- 集計 --------------------------------------------------------------------
@@ -414,6 +359,10 @@ def build_mart(args: argparse.Namespace, observation: OverheadObservation,
             "token_estimator": TOKEN_ESTIMATOR,
             "notes": [
                 "token 数はすべて概算。桁の比較にだけ使い、bucket 判定の単独根拠にしない",
+                "memory_files[] の sessions_injected は .claude/rules/ や CLAUDE.md が"
+                "**実際に注入された session 数**で、paths: で絞った規範が届いているかの実測",
+                "compaction.dropped_tokens の cumulative_dropped_tokens は session ごとの"
+                "最大値。boundary をまたいで足さない",
                 "注入実績が決定的なのは file 粒度まで。行粒度の実績は transcript に無く、"
                 "行単位の静的コストは scan-claude-md.py の token_cost が出す",
                 "memory file は repo 相対 path で数える (worktree・複数 checkout に"
@@ -441,14 +390,15 @@ class RepoScopeUnresolved(RuntimeError):
 
 
 def collect(args: argparse.Namespace) -> dict:
-    """ファイル出力を伴わない mart 構築まで (テスト用 entrypoint)。
+    """テスト用の純関数 entrypoint (I/O は store の差分 sync のみ)。
 
-    **scope の解決を walk より先に行う。** repo 解決は transcript を 1 行も読まずに
-    決まるのに、後に置くと解決不能時に lake 全量 (実測 1.2 GB) を走査してから
+    **scope の解決を store 問い合わせより先に行う。** repo 解決は transcript を
+    1 行も読まずに決まるので、後に置くと解決不能時に store 全量を sync してから
     失敗する。`select_candidates` の fail-closed と位置を揃える。
     """
     now = resolve_now(args.now)
     cutoff = now - dt.timedelta(days=args.days)
+    cutoff_epoch = cutoff.timestamp()
 
     repo = None
     if not args.all_repos:
@@ -459,17 +409,22 @@ def collect(args: argparse.Namespace) -> dict:
                 "他 repo の session を黙って混ぜないため、all_repos を明示する"
             )
 
-    observation = OverheadObservation()
-    for _project_dir, jsonl in walk_transcripts(args.transcripts_dir, cutoff):
-        extract_overhead(jsonl, cutoff, observation)
+    conn, _sync_report = ingest.open_synced(args.transcripts_dir, now=now)
+    try:
+        udf.register(conn)
+        statements = load_statements(QUERY_PATH)
+        observation = collect_from_store(conn, statements, cutoff_epoch)
+    finally:
+        conn.close()
+
     return build_mart(args, observation, repo, cutoff, now)
 
 
 def emit(mart: dict, args: argparse.Namespace) -> str:
     """overhead-<timestamp>.json を書いて path を返す。"""
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = prepare_output_dir(args.output_dir)
     generated = dt.datetime.fromisoformat(mart["meta"]["generated_at"])
-    out = args.output_dir / f"overhead-{generated.strftime('%Y%m%dT%H%M%SZ')}.json"
+    out = output_dir / f"overhead-{generated.strftime('%Y%m%dT%H%M%SZ')}.json"
     out.write_text(
         json.dumps(mart, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

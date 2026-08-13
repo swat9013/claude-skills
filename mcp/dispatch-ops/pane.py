@@ -20,11 +20,13 @@ tracker.py と同じく語彙の層が 2 つある:
 指示だけ送る」といった旧 `herdr_ops.py` の規則はすべて呼び出し側 (LLM / SKILL.md) の
 領分で、本 module は prompt / model / effort / text を受け取って実行するだけ。
 
-`skills/util/_herdr_lib.py` は共有しない (ADR 0013 基準 / spec §8)。旧 CLI は #408 まで
-併存し、共有すると「片方の都合で他方が壊れる」結合を撤去前に作ることになる。
+herdr CLI 境界は skill 側の共有 module と**共有しない**判断を採った (ADR 0013 基準 /
+spec §8) — 共有すると「片方の都合で他方が壊れる」結合を、当時まだ併存していた旧 CLI の
+撤去のためだけに作ることになるため。その共有 module は撤去済み。
 """
 
 import asyncio
+import os
 import shlex
 from pathlib import Path
 
@@ -34,6 +36,11 @@ import vocabulary
 # pane で起動する agent。model / effort は Claude Code の flag なので、本 port が
 # 起動対象として想定するのは Claude Code セッション (spec §4.4 の pane_spawn 引数)
 AGENT_BIN = "claude"
+
+# 自セッション (server プロセスを起動した Claude Code セッション) の受信 socket。
+# cross-session messaging で worker からのイベントが届く先で、未設定のセッションは
+# 送信はできても受信できない (ADR 0033 / 検証は docs/research/2026-08-11-*.md)
+MESSAGING_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
 
 # --- 内部語彙 (backend の生の agent_status) ------------------------------------
 
@@ -112,8 +119,12 @@ def classify_watch(baseline, current):
     return None
 
 
-def build_command(agent_bin, prompt, model=None, effort=None, worktree=None):
+def build_command(agent_bin, prompt, model=None, effort=None, worktree=None, name=None):
     """pane 内で起動する command 文字列を組み立てる。
+
+    `name` は起動セッションの表示名 (`--name`)。cross-session messaging の相手発見が
+    名前でしか行えない経路 (ListAgents) のために付ける — pane label と同じ文字列を渡す
+    ので、pane の見出しとセッション名が食い違わない (ADR 0033)。
 
     shlex.quote で組むのは、prompt の quote 崩れで pane の shell が引数を誤解釈する
     事故を塞ぐため (単引用符を含む prompt は日常的に来る)。
@@ -125,8 +136,31 @@ def build_command(agent_bin, prompt, model=None, effort=None, worktree=None):
         parts += ["--effort", effort]
     if worktree:
         parts += ["--worktree", worktree]
+    if name:
+        parts += ["--name", name]
     parts.append(prompt)
     return " ".join(shlex.quote(part) for part in parts)
+
+
+def require_messaging_receivable():
+    """自セッションが worker からのメッセージを受信できることを検査する (fail-closed)。
+
+    backend に依らない検査なので port 側に置き、adapter の前提検査から呼ぶ。
+
+    旧 binary の resume セッションは**送信できても受信できない**ことが実測されており、
+    その差は本 env の有無に出る (docs/research/2026-08-11-cross-session-messaging-
+    verification.md)。受信できないセッションから dispatch すると、worker は節目
+    (質問 / PR 到達 / 完了) を送るのに誰も受け取らず、監視が無言で止まる — 起動前に
+    止めるほうが安い。
+    """
+    socket = os.environ.get(MESSAGING_SOCKET_ENV)
+    if not socket:
+        raise PaneError(
+            f"{MESSAGING_SOCKET_ENV} が未設定 (worker からのイベントを受信できない"
+            "セッションで dispatch しようとしている。現行 binary で新規起動した "
+            "Claude Code セッションから起動し直す)"
+        )
+    return socket
 
 
 # --- port ---------------------------------------------------------------------------
@@ -259,23 +293,33 @@ class PanePort:
 
     def pane_spawn(
         self,
-        issue_ref,
         prompt,
         repo_root,
+        issue_ref=None,
+        label=None,
         worktree=None,
         cwd=None,
         model=None,
         effort=None,
     ):
-        """issue 用の pane を割って agent セッションを起動する (spec §4.4)。
+        """pane を割って agent セッションを起動する (spec §4.4)。
 
         Args:
-            issue_ref: 中立 issue ref。pane label `i<N>` の由来になる
             prompt: セッションの初期 prompt (**文面は呼び出し側が決める**)
             repo_root: 隔離しない / 新規隔離するときの cwd (main worktree root)
+            issue_ref: 中立 issue ref。pane label `i<N>` の由来になる
+            label: issue に紐づかない起動での pane label (`issue_ref` と排他)
             worktree: Claude Code 側 `--worktree` に渡す名前。新しい作業ツリーを作る
             cwd: 起動セッションの cwd。既存の駐機 worktree へ再入するときに渡す
             model / effort: 起動 flag。未指定なら session default を継承する
+
+        `issue_ref` と `label` はどちらか一方だけを渡す。issue を持たない起動 (棚卸し
+        skill の並列実行など) のために label を直接受けるが、`i<N>` 表記は予約で弾く —
+        許すと issue 由来でない pane が追跡・worktree 回収の対象に混ざる。
+
+        起動セッションには pane label と同じ文字列を `--name` で与える。名前でしか相手を
+        指せない経路 (ListAgents) から worker を引けるようにするためで、issue 由来かどうか
+        で分岐しない — pane の見出しとセッション名を 1 つの文字列に保つ (ADR 0033)。
 
         `worktree` と `cwd` は排他 (mode は返り値の `mode` で明示する):
 
@@ -289,18 +333,27 @@ class PanePort:
         直したい成果と別のツリーで作業することになるため。作業ツリーの作成は Claude
         Code 側に任せる (backend の worktree 機能を使うと二重管理になる)。
 
-        同じ label の pane が既にあるときは起動しない — 同一 issue に 2 セッションを
+        同じ label の pane が既にあるときは起動しない — 同じ作業対象に 2 セッションを
         入れると同じ作業ツリーへ並列書き込みして成果が壊れる。
 
         **agent を検出できなかった (`ok: false`) ときは pane が残る。** 残った pane は
-        label を占有するので、後始末をしないとその issue の再 dispatch が以後ずっと
+        label を占有するので、後始末をしないとその label の再 dispatch が以後ずっと
         「既にある」で撥ねられる。呼び出し側が `pane_close(pane_id)` してから
-        `ledger_transition(issue_ref, "spawn_failed")` する (再試行は新規 entry)。
+        (issue 由来なら `ledger_transition(issue_ref, "spawn_failed")` も) 始末する。
         本 port が勝手に閉じないのは、失敗した pane の中身が起動失敗の唯一の診断材料
         だから — 捨てるかどうかは判断であって機構ではない。
         """
-        issue = refs.parse_issue_ref(issue_ref)["ref"]
-        label = refs.format_issue_slug(issue)
+        if (issue_ref is None) == (label is None):
+            raise PaneError(
+                "issue_ref (issue 由来の起動) と label (issue に紐づかない起動) は"
+                "どちらか一方だけを渡す"
+            )
+        if issue_ref is not None:
+            issue = refs.parse_issue_ref(issue_ref)["ref"]
+            pane_label = refs.format_issue_slug(issue)
+        else:
+            issue = None
+            pane_label = refs.require_free_label(label)
         if not isinstance(prompt, str) or not prompt.strip():
             raise PaneError("prompt が空 (起動セッションへ渡す初期指示を文字列で渡す)")
         if worktree and cwd:
@@ -309,11 +362,11 @@ class PanePort:
             )
         self.ensure_ready()
 
-        existing = self._find_by_label(label)
+        existing = self._find_by_label(pane_label)
         if existing is not None:
             raise PaneError(
-                f"label {label} の pane が既にある (pane_id={existing['pane_id']})。"
-                "同じ issue に 2 セッションを入れると作業ツリーへ並列書き込みする"
+                f"label {pane_label} の pane が既にある (pane_id={existing['pane_id']})。"
+                "同じ作業対象に 2 セッションを入れると作業ツリーへ並列書き込みする"
             )
 
         agent_bin = self.resolve_agent_bin()
@@ -332,13 +385,15 @@ class PanePort:
             mode = MODE_CREATED if worktree else MODE_PLAIN
             worktree_flag = worktree or None
 
-        command = build_command(agent_bin, prompt, model, effort, worktree_flag)
-        pane_id, agent = self.launch_pane(command, str(launch_cwd), label)
+        command = build_command(
+            agent_bin, prompt, model, effort, worktree_flag, name=pane_label
+        )
+        pane_id, agent = self.launch_pane(command, str(launch_cwd), pane_label)
         return {
             "backend": self.backend,
             "issue_ref": issue,
             "pane_id": pane_id,
-            "label": label,
+            "label": pane_label,
             "mode": mode,
             "cwd": str(launch_cwd),
             "worktree": worktree_flag,

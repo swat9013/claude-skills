@@ -97,16 +97,34 @@ def truncate(s: str | None, limit: int) -> str:
 
 def git_output(cwd: Path, argv: list[str]) -> str:
     """`git -C <cwd> <argv>` の stdout。失敗・timeout・git 不在は空文字に潰す。"""
+    return git_output_with_cause(cwd, argv)[0]
+
+
+# 解決不能の理由。`git_output` は両方とも空文字に潰すため、旧来の呼び先
+# (`resolve_repo_at`) では「git が動かせない」と「git は動いたが repo でない」を
+# 区別できなかった (#496 からの繰り越しバグ)。区別が要る呼び先だけ
+# `resolve_repo_at_with_cause` を使う。
+GIT_UNAVAILABLE = "git_unavailable"
+NOT_A_REPO = "not_a_repo"
+
+
+def git_output_with_cause(cwd: Path, argv: list[str]) -> tuple[str, str | None]:
+    """`git -C <cwd> <argv>` の stdout と、失敗した場合の理由。
+
+    理由は `GIT_UNAVAILABLE` (git 自体を起動できない: 未インストール / timeout) と
+    `NOT_A_REPO` (git は起動できたが非 0 終了。典型は非 repo だが、argv 依存の
+    他の git 失敗も同じ枠に入る) の 2 種。成功時は理由 None。
+    """
     try:
         proc = subprocess.run(
             ["git", "-C", str(cwd), *argv],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC, check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return ""
+        return "", GIT_UNAVAILABLE
     if proc.returncode != 0:
-        return ""
-    return proc.stdout
+        return "", NOT_A_REPO
+    return proc.stdout, None
 
 
 def resolve_repo_at(dir_path: Path) -> str | None:
@@ -114,20 +132,37 @@ def resolve_repo_at(dir_path: Path) -> str | None:
 
     解決手順は origin remote URL → git-common-dir の親の順。worktree からでも
     git-common-dir が親 repo に寄るため、同一 repo の worktree は同じ識別子になる。
+
+    解決できない理由 (git 不在 / 非 repo) を要る呼び先は
+    `resolve_repo_at_with_cause` を使う — 本関数は理由を捨てる後方互換の薄い形。
     """
-    url = git_output(dir_path, ["remote", "get-url", "origin"]).strip()
+    repo, _cause = resolve_repo_at_with_cause(dir_path)
+    return repo
+
+
+def resolve_repo_at_with_cause(dir_path: Path) -> tuple[str | None, str | None]:
+    """`resolve_repo_at` と同じ解決だが、解決できないときの理由も返す。
+
+    理由は 2 手順目 (git-common-dir) の失敗種別を採る。1 手順目 (remote) が
+    `GIT_UNAVAILABLE` で失敗すれば 2 手順目も同じ理由で失敗するため、実質的には
+    「git 自体が動くか」で決まる。
+    """
+    url, remote_cause = git_output_with_cause(dir_path, ["remote", "get-url", "origin"])
+    url = url.strip()
     if url:
-        return url.splitlines()[0].strip()
-    common_dir = git_output(dir_path, ["rev-parse", "--git-common-dir"]).strip()
+        return url.splitlines()[0].strip(), None
+    common_dir, common_cause = git_output_with_cause(
+        dir_path, ["rev-parse", "--git-common-dir"])
+    common_dir = common_dir.strip()
     if not common_dir:
-        return None
+        return None, common_cause or remote_cause
     common_path = Path(common_dir)
     if not common_path.is_absolute():
         common_path = dir_path / common_path
     try:
-        return str(common_path.resolve().parent)
+        return str(common_path.resolve().parent), None
     except OSError:
-        return None
+        return None, NOT_A_REPO
 
 
 # --- outcome 判定 ------------------------------------------------------------
@@ -423,6 +458,37 @@ def stop_hook_durations_of(rec: dict) -> list[int]:
     return out
 
 
+def extract_user_text(content: Any) -> str:
+    """user turn の `message.content` から表示可能な text を取り出す。
+
+    tool_result / system tag (`<...>` 始まり、slash 展開 record を含む) 混入 turn は
+    空文字を返す (人間可読の prompt として扱わない)。ingest (`store.ingest`) と
+    scan_invocations の excerpt が同じ答えを要るため adapter に一本化する。
+    """
+    if isinstance(content, str):
+        if content.startswith("<"):
+            return ""
+        return content
+    if isinstance(content, list):
+        parts = []
+        has_tool_result = False
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_result":
+                has_tool_result = True
+                continue
+            if btype == "text":
+                txt = block.get("text", "")
+                if isinstance(txt, str) and not txt.startswith("<"):
+                    parts.append(txt)
+        if has_tool_result and not parts:
+            return ""
+        return " ".join(parts)
+    return ""
+
+
 def usage_of(rec: dict) -> dict[str, int] | None:
     """assistant record の `message.usage` を 4 項目へ正規化する。
 
@@ -472,17 +538,33 @@ def compact_boundary_of(rec: dict) -> dict | None:
     }
 
 
+def count_chars(text: str | None) -> tuple[int, int]:
+    """text の (cjk_chars, other_chars)。ingest が store へ永続化する粒度で、
+    query 層の UDF (`estimate_tokens_from_counts`) が token 数へ変換する。
+    """
+    if not text:
+        return 0, 0
+    cjk = len(CJK_RE.findall(text))
+    return cjk, len(text) - cjk
+
+
+def estimate_tokens_from_counts(cjk_chars: int, other_chars: int) -> int:
+    """(cjk_chars, other_chars) から token 数を概算する (`TOKEN_ESTIMATOR` の係数)。
+
+    `estimate_tokens` と計算式を共有する唯一の理由は、係数の単一ソースを
+    `adapter/transcript.py` に保つため (`scan-claude-md.py` との parity 制約)。
+    """
+    return math.ceil(cjk_chars / CJK_CHARS_PER_TOKEN + other_chars / ASCII_CHARS_PER_TOKEN)
+
+
 def estimate_tokens(text: str | None) -> int:
     """文字列の token 数を概算する (`TOKEN_ESTIMATOR` の係数)。
 
     tokenizer を持ち込まないのは、観測の決定性 (同じ入力に同じ数) と依存ゼロを
     優先するため。**桁の比較にだけ使える精度**で、bucket 判定の単独根拠にはしない。
     """
-    if not text:
-        return 0
-    cjk = len(CJK_RE.findall(text))
-    other = len(text) - cjk
-    return math.ceil(cjk / CJK_CHARS_PER_TOKEN + other / ASCII_CHARS_PER_TOKEN)
+    cjk, other = count_chars(text)
+    return estimate_tokens_from_counts(cjk, other)
 
 
 # --- slash command マーカー --------------------------------------------------

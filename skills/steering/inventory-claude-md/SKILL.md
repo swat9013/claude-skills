@@ -41,7 +41,7 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-claude-md.py --repo-root .
 
 - `--repo-root` 省略時 cwd
 - stdout に observation JSON path (`/tmp/inventory-claude-md/observation-<timestamp>.json`) が出る
-- **script は bucket を出さない** (循環依存の回避)。決定的観測 3 項目だけを出す
+- **script は bucket を出さない**。決定的観測 3 項目だけを出す — 本 domain には「count 0 / 完全一致」のような機械判定可能な述語が無く、[ADR 0032](https://github.com/swat9013/swat-skills/blob/main/docs/adr/0032-policy-free-refinement-deterministic-rules.md) の決定的ルール層の対象外だから (rule 層を持つのは permissions / invocations / engineering-values の 3 系統のみ)
 
 出力に失敗したら (repo に CLAUDE.md が無い等) `sources.claude_md.root.status = "missing"` が入る。**root と local (`sources.claude_md.local.status`) の両方が `missing` のときだけ**「観測不能」を報告して終了する。片方でも `present` なら棚卸し対象があるので続行する (`CLAUDE.local.md` だけが存在する repo は成立する)。
 
@@ -256,7 +256,7 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 | 参照実在 fail が過剰 | git worktree 内でルート相対 path が解決できない / 動的展開文字列を path として拾った | `observation.link_targets.check_mode` を確認し `fail-safe` 分は削除の主根拠にしない。レポート §4「観測範囲外」に集約 |
 | inline code span の path が参照実在に出ない | script の link 抽出は `[text](target)` と `@import` のみ。バッククォート内の path は拾わない (`docs/foo.md` 等) | 「参照実在検査の範囲外」を明記し、削除の主根拠にしない。レポート §4「観測範囲外」に集約 |
 | サブディレクトリ CLAUDE.md を root と混同 | root と subdir で規範が競合しても物理観測では区別できない | subdir CLAUDE.md は**読取対象に含めるが提案先には推奨しない** (rules/skill への昇華を提案する方向に倒す) |
-| bucket を script に埋め込みたくなる | 循環依存 (script が bucket を知ると LLM が再判定できなくなる) | script は生観測のみ。bucket 判定は LLM 段階で observation を読んでから |
+| bucket を script に埋め込みたくなる | 他 skill (permissions / skill-mcp) の tool が rule 層を持つのを見て対称化したくなる | 本 domain の bucket 判定はすべて内容判断で、機械判定可能な述語が存在しない。決定的シグナルが現れたら ADR 0032 の移行判定基準に当てて判断する (script に直接足さない) |
 | token コストで bucket を決める | 「重い行 = 移設」と閾値判定した | コストは同 bucket 内の**優先順位**の材料。bucket は内容判断で決める。概算である旨 (`estimator`) をレポートに転記する |
 | 行ごとの注入実績を期待する | `memory_files[]` を行単位の証拠と読んだ | 実績は file 粒度まで。行粒度の実績は transcript に存在しない (レポート §4「観測範囲外」に落とす) |
 | 注入 0 の rules file を `memory_files[]` から探す | mart に `sessions_injected: 0` の行があると思った | mart は観測した注入だけを載せる。0 件は**行の不在**として現れるので、`sources.rules[]` との差分で検出する |

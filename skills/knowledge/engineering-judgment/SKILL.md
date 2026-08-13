@@ -30,7 +30,7 @@ user-invocable: false
 - **deletability を重視する** (tef "Write code that is easy to delete, not easy to extend")。AI で機能実装コストは下がったため、「拡張しやすさ」より「変更影響が波及しない・機能単位で捨てられる」構造を選ぶ。※12-factor の Disposability (プロセスの起動終了) とは別概念。
 - **捨てるときは歴史を残す**: 撤退・移行を決めたら削除して終わりにせず、戻れる記録 (ADR / アーカイブ) と再検討トリガー条件 (どうなったら戻すか) を残す。deletability の対。
 - **撤去は実績を起点に決める**: 導入したものは利用実績 (呼び出し回数・使用実績) を定期的に観測し、使われていないものを削除する側にも追加と同じ頻度で回す。撤去の根拠は「不要そう」という印象ではなく実測値。※上記が「捨てると決めた後に何を残すか」なのに対し、本規則は「いつ捨てると決めるか」。
-- **結合は排除ではなくバランスさせる** (Khononov『Balancing Coupling in Software Design』)。integration strength (知識共有度) / distance (距離) / volatility (変更頻度) の 3 次元で評価し、変更頻度が高い箇所ほど弱い結合にする。
+- **結合は排除ではなくバランスさせる** (Khononov『Balancing Coupling in Software Design』)。integration strength (知識共有度) / distance (距離) / volatility (変更頻度) の 3 次元で評価し、変更頻度が高い箇所ほど弱い結合にする。**モジュール / サービス境界の分割・統合そのものを判断するときは `modularity:balanced-coupling` skill を参照する** (本節の詳細版。第三者 plugin `vladikk/modularity` 同梱で、未導入環境では本規則の 3 次元だけで判断する)。
 
 ## 品質 vs 速度
 
