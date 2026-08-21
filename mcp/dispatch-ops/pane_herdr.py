@@ -35,7 +35,7 @@ SUBPROCESS_TIMEOUT_SEC = 60
 # `herdr integration status` の出力に立つべき行 (hook が現行版であること)
 HOOK_CURRENT = re.compile(r"^claude: current", re.MULTILINE)
 
-# 自 pane に前回 dispatch の残骸 label (`i<N>`) が残っていたときの付け直し先。
+# 自 pane に前回 dispatch の残骸 label (issue slug) が残っていたときの付け直し先。
 # 残骸を放置すると、自分の pane が「issue N を作業中のセッション」として数えられ、
 # slot を 1 消費し当該 issue を二重に起動しない側へ倒す誤除外を同時に起こす
 SELF_RENAME_TO = "dispatch"
@@ -128,7 +128,7 @@ class HerdrAdapter(pane.PanePort):
         detail = pane_of(run_herdr(["pane", "get", self_id]))
         label = detail.get("label")
         renamed_from = None
-        if label and refs.parse_issue_slug(label) is not None:
+        if label and refs.parse_issue_label(label) is not None:
             detail = pane_of(run_herdr(["pane", "rename", self_id, SELF_RENAME_TO]))
             renamed_from, label = label, detail.get("label")
         self._ready = {

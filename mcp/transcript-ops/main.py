@@ -97,7 +97,9 @@ def scan_permissions(
         repo_root: project section の起点。省略時は server プロセスの cwd
         output_dir: 出力先。既定 /tmp/inventory-permissions
         transcripts_dir: transcript lake。既定 ~/.claude/projects
-        global_settings: global settings の path。既定 ~/.claude/settings.json
+        global_settings: global 層として読む settings の path (**この 1 本だけ**。
+            sibling の settings.local.json は Claude Code が読まない層なので足さ
+            ない)。既定 ~/.claude/settings.json
         config_dir: Claude Code config dir (plugin hooks の分母源)。既定 ~/.claude
         now: ISO timestamp。観測窓の起点を固定する (再現用)
 

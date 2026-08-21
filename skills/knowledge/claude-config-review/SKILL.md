@@ -28,6 +28,8 @@ git diff --name-only HEAD
 
 注: rename 表記 (`R  old -> new`) や path に space を含むファイルでは `awk '{print $2}'` での分割が破綻する。確実性を要する場合は args で path を明示渡しすること。
 
+union が 0 件でも即「対象なし」で終えない — 差分を commit 済みの worktree / branch では上記 2 コマンドはどちらも空になる。branch が main より進んでいる場合は `git diff --name-only $(git merge-base origin/main HEAD)..HEAD` (origin/main が無ければ main) の branch diff を対象化する。
+
 ## ファイル種類判定 (path パターン)
 
 | パターン (glob) | type | type-specific reference |
@@ -69,9 +71,10 @@ hook パターンの補足:
 3. skipped は warn ログを残し続行
 4. 残り bucket それぞれを Agent tool で **並列** dispatch (同一 message 内で複数 tool use)
    - `subagent_type: general-purpose` (read-only 制約は prompt で担保)
+   - **`name` を付けずに起動する** — name 付きは background (mailbox) 型になり、最終報告が tool_result で返らず idle 通知しか届かない (merge できないまま orphan agent が残る)。無名 dispatch なら結果を tool_result で同期回収できる。それでも結果が得られない場合は、main agent が reference を読んで代行レビューし、その旨を最終出力に明記する
    - prompt は下記 template
    - 1 bucket = 1 subagent (bucket 内ファイルは同 subagent が連続レビュー)
-5. 全 subagent 完了後、main agent が結果 JSON を merge → 最終 JSON を 1 つの fenced code block (```json) で stdout に書く。merge 時は各 subagent 返答の top-level `type` を、その subagent の各 finding に `type` フィールドとして付与してから配列に concat する。
+5. 全 subagent 完了後、main agent が結果 JSON を merge → 最終 JSON を 1 つの fenced code block (```json) で stdout に書く。merge 時は各 subagent 返答の top-level `type` を、その subagent の各 finding に `type` フィールドとして付与してから配列に concat する。最終 JSON は対話文脈でも必ず出力し、findings 配列を JSON block 内に置く (markdown 表で代替しない)。人間向け要約や、args に改善依頼が含まれる場合の適用報告は、JSON block の後に分離して書く。
 
 ### subagent prompt template (per-type)
 
@@ -117,6 +120,8 @@ hook パターンの補足:
 Edit / Write は使わない。Read のみで分析を完結させる。
 
 `<TYPE>` と `<PATH_*>` は main agent が dispatch 時に埋めること。
+
+対象の変更文脈 (diff の要点等) は prompt 末尾に追記してよい。ただし追記は command 出力等で検証済みの事実に限る — 未検証の推測を書くと誤事実が reviewer の判断に混入する。reference リストと手順 5 段は改変しない。
 
 **`${CLAUDE_SKILL_DIR}` は本 SKILL.md をロードした時点で絶対 path へ置換済み**なので、main agent が読んでいる template には既に実 path が入っている。それを**そのまま**写す — 変数表記を復元して渡さない (subagent の prompt は string substitution を受けないので、`${CLAUDE_SKILL_DIR}` の literal を渡すと reference が 1 本も読めないまま「reference なしのレビュー」が黙って成立してしまう)。写した後の prompt に `${` が残っていないことを送信前に確認する。settings 型に dispatch するときは reference リストから prompting-principles の行だけを落とす (指示文を持たない type なので照合対象がない)。手順は 5 段のまま残し、手順 4 の条件節で skip させる — 手順を消すと番号が飛ぶ。
 

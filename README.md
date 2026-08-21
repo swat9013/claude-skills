@@ -66,8 +66,10 @@ ADR・コミットメッセージ・フロントエンドなど、成果物を�
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
+| `dispatch-setup` | コマンド | dispatch 機構 (orchestrator / observer / dispatch-ops) を新しい project で使えるようにする初期設定ステップ。 |
 | `inventory-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-project-values) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動する launcher。 |
-| `issue-dispatch` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、着手可能な open issue を選んで Claude Code セッションを分割 pane として起動し、worker が節目 (質問 / PR 到達 / 完了・断念) に送ってくるメッセージで回収・駐機・補充を回す常駐 orchestrator。 |
+| `observer` | コマンド / 自動 | dispatch 機構の observer 本体。 |
+| `orchestrator` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、着手可能な open issue を選んで Claude Code セッションを分割 pane として起動し、worker の質問と observer の escalation で回収・駐機・補充を回す常駐 orchestrator。 |
 <!-- /generated:skills -->
 
 ## 同梱している subagent
@@ -90,6 +92,12 @@ hook は install した環境でそのまま動くが、以下を前提にして
 - **guard の方針は作者の運用に合わせて固定されている**。例: `git push --force` (`--force-with-lease` を除く) を deny、`bash`/`sh`/`zsh` の直接起動を deny、WebFetch は `guard-webfetch.sh` の `ALLOWLIST` に載るドメインのみ許可。合わない場合は該当 script を編集する
 - **protected branch の防御は hook では持たない**。main/master への直接 push の禁止は GitHub / GitLab の branch protection 側で設定する前提 (hook はローカルにしか効かないため)
 - **`guard-worktree-escape.py` は `~/.claude/state/worktree-guard/` に session ごとの作業 root を書く** (7 日で自動削除)。書けない環境では guard が無効化されるだけで、tool 実行は妨げない
+
+## dispatch 機構を使う場合の前提
+
+`orchestrator` / `observer` skill と同梱 MCP server `dispatch-ops` からなる **dispatch 機構** (issue を選んで Claude Code セッションへ配車し、PR まで自走させる仕組み) だけは、install しただけでは動かない。**herdr が必須** (tmux 非対応)、**適用先 project の settings に permission / sandbox の追記が要る**、**issue 置き場の宣言 config を環境ごとに置く**、の 3 点が前提になる。
+
+前提の全量と、満たされていないときにどう見えるか (黙って壊れるもの / 起動時に止まるもの) は [`skills/util/orchestrator/README.md`](skills/util/orchestrator/README.md) に書いてある。dispatch 以外の skill にはこの前提は掛からない。
 
 ## 更新
 

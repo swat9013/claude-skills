@@ -76,7 +76,17 @@ LOOPBACK_EXTRA = {"0.0.0.0", "::", "[::]"}
 
 
 def passthrough() -> None:
-    """出力なし exit 0 = 判定を settings (ask) に委ねる。"""
+    """判定を settings (ask) に委ねる。
+
+    判断は出さないが観測痕跡は残す (#587 / ADR 0043)。無出力の exit は transcript に
+    attachment を残さず、棚卸しで「壊れて死んだ hook」と「窓内に出番が無かった hook」が
+    同じ見え方になる。`permissionDecision` を持たない envelope は通常の permission フローへ
+    委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard
+    の一致を見る)。
+    """
+    sys.stdout.write(
+        '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
+    )
     sys.exit(0)
 
 

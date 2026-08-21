@@ -119,17 +119,51 @@ def classify_watch(baseline, current):
     return None
 
 
-def build_command(agent_bin, prompt, model=None, effort=None, worktree=None, name=None):
+def build_command(
+    agent_bin,
+    prompt,
+    model=None,
+    effort=None,
+    worktree=None,
+    name=None,
+    env=None,
+    remote_control=False,
+):
     """pane 内で起動する command 文字列を組み立てる。
 
     `name` は起動セッションの表示名 (`--name`)。cross-session messaging の相手発見が
     名前でしか行えない経路 (ListAgents) のために付ける — pane label と同じ文字列を渡す
     ので、pane の見出しとセッション名が食い違わない (ADR 0033)。
 
+    `env` は起動プロセスへ渡す環境変数 (`{名前: 値}`)。**本 module は中身を解釈しない** —
+    何を渡すかは呼び出し側 (tool 層) が決める。`env(1)` を前置するのは、shell の代入前置
+    (`K=V cmd`) が quote すると代入と認識されず command 名に落ちるため (`shlex.quote` を
+    掛ける以上こちらしか採れない)。順序は綴り順に固定する (返り値の `command` が
+    呼び出しごとに揺れない)。
+
+    `remote_control` は起動セッションで Remote Control を有効化するかの真偽値。真なら
+    `--remote-control <name>` を組む — **セッション名には `name` (= pane label) を
+    使い回す**。`--remote-control` の引数は任意なので、省くと直後の初期 prompt が
+    セッション名として食われる (repo root `README.md` の「dispatch の起動規約」節の
+    警告)。名前を別引数で受けずに `name` を使い回すのは、その事故と「pane の見出し ≠
+    セッション名」の食い違いを構造的に閉じるため (ADR 0044)。`name` の無い起動で真を
+    渡したら raise する — 引数を省いた `--remote-control` を組むのと同義だから。
+
+    有効化するかどうかの判断は**呼び出し側が持つ** (本 module は真偽値を解釈しない)。
+
     shlex.quote で組むのは、prompt の quote 崩れで pane の shell が引数を誤解釈する
     事故を塞ぐため (単引用符を含む prompt は日常的に来る)。
     """
-    parts = [agent_bin]
+    if remote_control and not name:
+        raise PaneError(
+            "remote_control には name (= pane label) が要る — 名前を省いた "
+            "--remote-control は直後の初期 prompt をセッション名として食う"
+        )
+    parts = []
+    if env:
+        parts.append("env")
+        parts += [f"{key}={value}" for key, value in sorted(env.items())]
+    parts.append(agent_bin)
     if model:
         parts += ["--model", model]
     if effort:
@@ -138,6 +172,8 @@ def build_command(agent_bin, prompt, model=None, effort=None, worktree=None, nam
         parts += ["--worktree", worktree]
     if name:
         parts += ["--name", name]
+    if remote_control:
+        parts += ["--remote-control", name]
     parts.append(prompt)
     return " ".join(shlex.quote(part) for part in parts)
 
@@ -225,7 +261,7 @@ class PanePort:
     def observe_panes(self):
         """pane 一覧を中立 schema で返す (spec §4.4)。
 
-        **全 pane を返す** — `i<N>` label の付いた追跡対象だけに絞らない。空き slot を
+        **全 pane を返す** — issue slug label の付いた追跡対象だけに絞らない。空き slot を
         いくつと見るか・どの pane を無視するかは LLM の判断で、server は一覧と
         「追跡対象か (`tracked`)」「自分か (`is_self`)」の機械的な印だけを付ける。
 
@@ -250,7 +286,7 @@ class PanePort:
         interval_sec=WATCH_DEFAULT_INTERVAL_SEC,
         progress=None,
     ):
-        """追跡 pane (`i<N>` label・自 pane 除く) の変化か timeout まで待つ (spec §4.4)。
+        """追跡 pane (issue slug label・自 pane 除く) の変化か timeout まで待つ (spec §4.4)。
 
         Args:
             timeout_sec: 最大待ち秒数 (既定 90 / 上限 110)
@@ -258,7 +294,7 @@ class PanePort:
             progress: `await progress(経過秒, timeout_sec)` で呼ばれる任意の callback。
                 MCP の progress notification へ繋ぐための継ぎ目 (spec §4.5)
 
-        絞り込みを `i<N>` label に閉じるのは policy ではない — その label を付けたのは
+        絞り込みを issue slug label に閉じるのは policy ではない — その label を付けたのは
         `pane_spawn` 自身なので、「自分が起動した pane の変化」を見る機構になる。
 
         timeout は失敗ではない (変化が無かったという観測)。長い監視は呼び出し側が本
@@ -301,21 +337,33 @@ class PanePort:
         cwd=None,
         model=None,
         effort=None,
+        env=None,
+        remote_control=False,
     ):
         """pane を割って agent セッションを起動する (spec §4.4)。
 
         Args:
             prompt: セッションの初期 prompt (**文面は呼び出し側が決める**)
-            repo_root: 隔離しない / 新規隔離するときの cwd (main worktree root)
-            issue_ref: 中立 issue ref。pane label `i<N>` の由来になる
+            repo_root: 隔離しない / 新規隔離するときの cwd。**どの clone の main worktree
+                root を渡すかは呼び出し側が決める** (server プロセスの cwd と同じ clone
+                とは限らない)。`worktree` を伴う起動では、作業ツリーはこの root の clone
+                に切られる
+            issue_ref: 中立 issue ref。pane label (issue slug) の由来になる
             label: issue に紐づかない起動での pane label (`issue_ref` と排他)
             worktree: Claude Code 側 `--worktree` に渡す名前。新しい作業ツリーを作る
             cwd: 起動セッションの cwd。既存の駐機 worktree へ再入するときに渡す
             model / effort: 起動 flag。未指定なら session default を継承する
+            env: 起動プロセスへ渡す環境変数 (`{名前: 値}`)。中身は解釈せず、返り値へ
+                そのまま載せる (何を渡したかを呼び出し側が事後に読めるようにする)
+            remote_control: 起動セッションで Remote Control を有効化するか。真なら
+                `--remote-control <pane label>` を組む。**有効化するかの判断は
+                呼び出し側が持つ** (本 port は真偽値を解釈せず、label 起動か issue 由来か
+                でも分岐しない)
 
         `issue_ref` と `label` はどちらか一方だけを渡す。issue を持たない起動 (棚卸し
-        skill の並列実行など) のために label を直接受けるが、`i<N>` 表記は予約で弾く —
-        許すと issue 由来でない pane が追跡・worktree 回収の対象に混ざる。
+        skill の並列実行など) のために label を直接受けるが、issue slug 表記 (`i<N>` /
+        `<project>-<N>`) は予約で弾く — 許すと issue 由来でない pane が追跡・worktree
+        回収の対象に混ざる。
 
         起動セッションには pane label と同じ文字列を `--name` で与える。名前でしか相手を
         指せない経路 (ListAgents) から worker を引けるようにするためで、issue 由来かどうか
@@ -386,7 +434,14 @@ class PanePort:
             worktree_flag = worktree or None
 
         command = build_command(
-            agent_bin, prompt, model, effort, worktree_flag, name=pane_label
+            agent_bin,
+            prompt,
+            model,
+            effort,
+            worktree_flag,
+            name=pane_label,
+            env=env,
+            remote_control=remote_control,
         )
         pane_id, agent = self.launch_pane(command, str(launch_cwd), pane_label)
         return {
@@ -395,8 +450,15 @@ class PanePort:
             "pane_id": pane_id,
             "label": pane_label,
             "mode": mode,
+            # 起動 cwd と、その基準にした clone root を両方返す (再入では両者が異なる)。
+            # どの clone で作業させたかは worktree 回収と再入がこの値を頼りにする
+            "repo_root": str(repo_root),
             "cwd": str(launch_cwd),
             "worktree": worktree_flag,
+            # Remote Control のセッション名は pane label と同じなので、真偽値だけ返せば
+            # 呼び出し側は `command` を parse せずに remote 一覧で探す名前を決められる
+            "remote_control": bool(remote_control),
+            "env": dict(env or {}),
             "agent": agent,
             "agent_status": neutral_agent_status(agent, UNKNOWN_RAW_STATUS),
             # 起動直後は agent の検出待ちがあるので、検出できなかったことを失敗にせず
@@ -484,15 +546,20 @@ class PanePort:
     def _neutral_pane(self, pane):
         """backend の pane dict → 中立 schema。"""
         label = pane.get("label") or ""
-        number = refs.parse_issue_slug(label)
+        slug = refs.parse_issue_label(label)
         raw = pane.get("agent_status_raw") or UNKNOWN_RAW_STATUS
         agent = pane.get("agent")
         return {
             "pane_id": pane.get("pane_id"),
             "label": label or None,
-            # slug は tracker を持てないので ref へは戻さない (join は resolve の責務)
-            "issue_number": number,
-            "tracked": number is not None,
+            # number slug (`i<N>`) は tracker を持てないので ref へは戻さない (join は
+            # resolve の責務)。key slug (jira) は逆に自己記述なので ref だけを返し、番号は
+            # 返さない — 別 tracker の番号空間に混ぜると同番号の `i<N>` と取り違える
+            "issue_number": slug["number"] if slug else None,
+            "issue_ref": slug["ref"] if slug else None,
+            # `tracked` は「issue 由来か」であって「番号で join できるか」ではない
+            # (jira の pane は tracked かつ issue_number が null)
+            "tracked": slug is not None,
             "is_self": pane.get("pane_id") == self.self_pane_id(),
             "agent": agent,
             "agent_status": neutral_agent_status(agent, raw),
@@ -500,13 +567,13 @@ class PanePort:
         }
 
     def _tracked_panes(self):
-        """追跡対象 (`i<N>` label かつ自 pane でない) の pane 一覧。"""
+        """追跡対象 (issue slug label かつ自 pane でない) の pane 一覧。"""
         self_id = self.self_pane_id()
         return [
             pane
             for pane in self.list_panes()
             if pane.get("pane_id") != self_id
-            and refs.parse_issue_slug(pane.get("label") or "") is not None
+            and refs.parse_issue_label(pane.get("label") or "") is not None
         ]
 
     def _find_by_label(self, label):
@@ -531,6 +598,12 @@ class PanePort:
         claude を起動していない素の shell pane が同居し、その応答には agent key ごと
         無い。全 pane に掛けると、そういう pane が 1 つ混じるだけで観測が丸ごと失敗する
         (追跡 pane は 1 つも壊れていないのに空き slot すら読めなくなる)。
+
+        **`pane_spawn` を経ない pane の label は予約検査が掛からない**。手で `editor-2` の
+        ような綴りを付けた素の shell pane は key slug と読めてしまい、この検査に入って
+        観測を丸ごと落とす。予約の徹底は backend 側に無く、復旧は当該 pane の rename か
+        `pane_close` — 稼働中 workspace の実測 (2026-08-14) では該当 pane は無かったので、
+        綴りを変えて衝突空間を潰す (`jira-` prefix 等) より現行の綴りの継続を採っている。
         """
         observed = []
         for pane in panes:

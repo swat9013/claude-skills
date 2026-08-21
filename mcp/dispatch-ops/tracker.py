@@ -1,8 +1,9 @@
 """TrackerPort — issue tracker (GitHub / GitLab) への観測・操作の継ぎ目。
 
 spec §2: **adapter の責務は語彙の写像のみ**。「conflict なら何をすべきか」は返さない。
-本 module は port (中立 API) と tracker 非依存の写像規則を持ち、tracker 固有の CLI 呼び出しは
-`tracker_gh` / `tracker_glab` が実装する。
+本 module は port (中立 API) と tracker 非依存の写像規則を持ち、tracker 固有の綴り
+(CLI 呼び出し・生値の解釈・remote host) は `tracker_gh` / `tracker_glab` が実装する。
+core が持つのは中立語彙の正本と、adapter を引く登録表 (`_ADAPTERS`) だけ。
 
 語彙の層が 2 つあるのが要点:
 
@@ -15,21 +16,23 @@ spec §2: **adapter の責務は語彙の写像のみ**。「conflict なら何�
 gh / glab CLI へ shell out し、認証は CLI へ委譲する (spec §4.2)。CLI の非 0 exit は
 `TrackerError` として即座に表面化させる — 「CLI の実行失敗」を「blocker 無し」「PR 無し」と
 誤読させないため (i217 誤 dispatch の真因)。
+
+観測・操作の対象 repo は公開 method の `repo` 引数で明示できる (ADR 0036)。**本 module は
+どの repo を見るかを決めない** — 識別子は受け取ったものをそのまま CLI の scope にするだけで、
+project の宣言 (どこに issue / PR が置いてあるか) を解決するのは `project` module の責務。
+未指定なら adapter は識別子を CLI へ足さず、対象 repo の推論を CLI (cwd の remote) へ委ねる。
 """
 
+import importlib
 import json
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 import proc
 import refs
 import vocabulary
 
 SUBPROCESS_TIMEOUT_SEC = 60
-
-# tracker 判定の第一正 (repo が明示する運用文書)。無ければ git remote の host で判定する
-TRACKER_DOC = Path("docs/agents/issue-tracker.md")
 
 # `Blocked by: #N` 行 (dependencies 機能を持たない repo の fallback)
 BLOCKED_LINE = re.compile(r"^\s*blocked[ -]?by\b[:\s]*(.*)$", re.IGNORECASE | re.MULTILINE)
@@ -38,10 +41,10 @@ BLOCKED_LINE = re.compile(r"^\s*blocked[ -]?by\b[:\s]*(.*)$", re.IGNORECASE | re
 
 _STATE_MAP = {"open": "OPEN", "opened": "OPEN", "closed": "CLOSED"}
 _PR_STATE_MAP = {"open": "OPEN", "opened": "OPEN", "closed": "CLOSED", "merged": "MERGED"}
-# GitHub の mergeable 語彙。GitLab 側もこの 3 値へ寄せる (tracker 差を status 導出まで持ち込まない)
+# mergeable の内部語彙。生値の綴りは tracker ごとに違う (gh は同名の enum 文字列、glab は
+# MR payload の複数 field) ので、**生値を読むのは adapter の責務**で core が持つのは 3 値の
+# 正本だけ。tracker 差を status 導出まで持ち込まない
 MERGEABLE_VALUES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN"})
-# GitLab が mergeability を計算し終えていない間の detailed_merge_status
-GLAB_UNSETTLED_MERGE_STATUS = frozenset({"checking", "unchecked"})
 
 # 内部 issue state → 中立語彙。vocabulary.ISSUE_STATES が正本
 _NEUTRAL_ISSUE_STATE = {"OPEN": "open", "CLOSED": "closed"}
@@ -125,20 +128,18 @@ def normalize_pr_state(raw):
     return state
 
 
-def normalize_gh_mergeable(raw):
-    """gh の mergeable → 3 値。未知語彙は UNKNOWN へ倒す (「conflict 無し」と読ませない側)。"""
-    value = str(raw or "").upper()
-    return value if value in MERGEABLE_VALUES else "UNKNOWN"
+def require_mergeable(value):
+    """adapter が返した mergeable が内部語彙の 3 値かを検査して返す。逸脱は TrackerError。
 
-
-def normalize_glab_mergeable(raw):
-    """glab の MR → 3 値。has_conflicts は計算完了後にしか信用できないので順に見る。"""
-    if str(raw.get("detailed_merge_status") or "").lower() in GLAB_UNSETTLED_MERGE_STATUS:
-        return "UNKNOWN"
-    conflicts = raw.get("has_conflicts")
-    if conflicts is None:
-        return "UNKNOWN"
-    return "CONFLICTING" if conflicts else "MERGEABLE"
+    生値の解釈は adapter が持つが、**綴りの正本は core** に置く。adapter が独自の綴りを
+    返すと梯子の `== "CONFLICTING"` が黙って外れ、conflict が open (= 人手不要) に見える。
+    """
+    if value not in MERGEABLE_VALUES:
+        raise TrackerError(
+            f"未知の mergeable: {value!r} "
+            f"(adapter が返せるのは {', '.join(sorted(MERGEABLE_VALUES))})"
+        )
+    return value
 
 
 def normalize_timestamp(value):
@@ -182,10 +183,13 @@ def derive_pr_status(prs):
     「conflict 無し」と報告する。
 
     引数の PR は内部語彙 (`state` = OPEN/MERGED/CLOSED、`mergeable` = 3 値)。
-    返り値は中立語彙 (`vocabulary.PR_STATUSES`)。
+    返り値は中立語彙 (`vocabulary.PR_STATUSES`)。mergeable は梯子を掛ける前に検査する —
+    生値を読むのは adapter なので、語彙の逸脱を落とせる最後の地点がここになる。
     """
     if not prs:
         return "none"
+    for pr in prs:
+        require_mergeable(pr["mergeable"])
     open_prs = [pr for pr in prs if pr["state"] == "OPEN"]
     if any(pr["mergeable"] == "CONFLICTING" for pr in open_prs):
         return "conflict"
@@ -203,25 +207,44 @@ def pr_status(pr):
     return derive_pr_status([pr])
 
 
-# --- tracker 判定 ---------------------------------------------------------------
+def derive_closes(neutral_prs):
+    """中立 PR の union → `role == "closes"` の部分列 (issue #608 の派生列)。
+
+    集約 `status` は closes 限定なのに `count` / `prs[]` は mention 込みの union なので、
+    呼び出し側は「status の根拠になった PR はどれか」を毎回 role で filter し直していた。
+    同じ filter を観測側で 1 度だけ行って**併記する** — union は削らないので「現実のまま
+    返す」原則は崩れず、集約 status と同じ母集団が列としても読める。
+
+    載せるのは判定に使う 3 列だけ (`resolve` の派生列と同じ射影)。観測をそのまま複製すると
+    同じ応答に PR が 2 度載るので、title / url が要る報告は `prs` を `ref` で引き直す。
+
+    role が定義されない経路 (issue 文脈の無い repo 全体の一覧) では呼ばない。`[]` を返すと
+    「closes が 1 件も無い」と読めるが、実際には役割を判定していない。
+    """
+    return [
+        {"ref": pr.get("ref"), "repo": pr.get("repo"), "status": pr.get("status")}
+        for pr in neutral_prs
+        if pr.get("role") == "closes"
+    ]
 
 
-def detect_tracker(root):
-    """docs/agents/issue-tracker.md の H1 が第一正。無ければ git remote の host で判定。"""
-    doc = Path(root) / TRACKER_DOC
-    if doc.is_file():
-        h1 = doc.read_text(encoding="utf-8").splitlines()[0] if doc.stat().st_size else ""
-        if "GitHub" in h1:
-            return "gh"
-        if "GitLab" in h1:
-            return "glab"
-    rc, out, _err = run_command(["git", "-C", str(root), "remote", "-v"])
-    if rc == 0:
-        if "github.com" in out:
-            return "gh"
-        if "gitlab" in out:
-            return "glab"
-    return None
+# --- adapter の登録 -------------------------------------------------------------
+#
+# **どの源の宣言が勝つか (解決順) は `project` module が持つ**。本 module が持つのは
+# 「どの tracker にどんな実装と綴りが対応するか」の登録表で、tracker を 1 つ足す作業は
+# ここに entry を 1 行足すことに閉じる (`refs.PATTERNS` と同じ登録式)。
+#
+# 登録表を経由させるのは、adapter 固有の綴りを core に書き戻させないため。remote host の
+# 綴り (`github.com`) を core の表に持つと、tracker を足すたびに core が編集される。
+
+# tracker 名 → (module 名, class 名)。lazy import は保つが、host 綴りを引くときだけは
+# 全 adapter を import する (綴りは class 属性なので実体が要る)
+_ADAPTERS = {"gh": ("tracker_gh", "GhAdapter"), "glab": ("tracker_glab", "GlabAdapter")}
+
+
+def _adapter_class(tracker):
+    module_name, class_name = _ADAPTERS[tracker]
+    return getattr(importlib.import_module(module_name), class_name)
 
 
 def get_adapter(tracker):
@@ -231,19 +254,26 @@ def get_adapter(tracker):
     「未知の tracker」に丸めず別のメッセージで表す — spec §8 の「port 境界だけ設計した」を
     実行時に反証可能な形で残すため。
     """
-    if tracker == "gh":
-        import tracker_gh
-
-        return tracker_gh.GhAdapter()
-    if tracker == "glab":
-        import tracker_glab
-
-        return tracker_glab.GlabAdapter()
+    if tracker in _ADAPTERS:
+        return _adapter_class(tracker)()
     if tracker in refs.TRACKERS:
         raise TrackerError(
             f"{tracker} adapter は未実装 — port 境界 (継ぎ目) のみを設計してある (spec §8)"
         )
     raise TrackerError(f"未知の tracker: {tracker!r} (候補: {', '.join(refs.TRACKERS)})")
+
+
+def tracker_for_remote(remote_output):
+    """`git remote -v` の出力 → tracker 名 (どの adapter の host 綴りにも当たらなければ None)。
+
+    綴りを持つのは adapter (`TrackerPort.remote_hosts`) で、本関数は登録順に照合するだけ。
+    **判定に使うだけで、この経路を使うかどうかは `project` の解決順が決める**。
+    """
+    for tracker_name in _ADAPTERS:
+        for host in _adapter_class(tracker_name).remote_hosts:
+            if host in remote_output:
+                return tracker_name
+    return None
 
 
 # --- port ------------------------------------------------------------------------
@@ -254,59 +284,118 @@ class TrackerPort:
 
     公開 method (`observe_*` / `issue_*`) は中立語彙だけを受け渡しし、継ぎ目 method
     (`fetch_*` / `linked_prs` 等) は内部語彙のまま扱う。新しい tracker を足すときに
-    実装するのは継ぎ目 method だけ。
+    書くのは継ぎ目 method と綴りの宣言 (`tracker` / `remote_hosts`) で、core 側は
+    `_ADAPTERS` の 1 行だけ。
+
+    継ぎ目 method はすべて対象 repo の識別子 (`repo`) を最後の引数で受ける。`None` は
+    「呼び出し側が指定しなかった」であって「自 repo」ではない — adapter は識別子を CLI へ
+    足さず、対象 repo の推論を CLI 側へ残す。
     """
 
     tracker = None
+
+    # git remote の URL に現れる host 綴り。`tracker_for_remote` が宣言の無い環境の
+    # fallback 判定に使う。**綴りを adapter に持たせるのは、tracker を足す作業を
+    # adapter 1 file に閉じるため** (core の表に書き戻すと足すたびに core が動く)。
+    # self-hosted instance を含むので部分一致で照合する (`gitlab.example.com`)
+    remote_hosts = ()
 
     # tracker 側の 1 回取得上限 (None = 上限なし)。要求 limit がこれを超えるとき、
     # `truncated` は **実際に投げた件数** と比べないと必ず false になる (取れなかった
     # ぶんを「全部取れた」と報告してしまう)
     max_fetch = None
 
+    # 明示 repo scope に対応するか。False の adapter は `repo` を渡された時点で CLI を
+    # 起動する前に失敗する — 識別子を無視して cwd repo を観測・操作すると、宣言と別の
+    # repo へ claim / label が飛ぶ (i217 誤 dispatch と同型で最も高くつく取り違え)。
+    # **宣言の既定注入もこの値を見る** (server 側の `injectable_repo`) — 未対応の adapter へ
+    # 宣言値が流れ込むと tracker 系 tool が全滅するので、出所を名指しして落とす (#620)
+    supports_repo_scope = True
+
+    # `pr_detail` が repo 識別子を必須とするか。識別子を path へ埋める adapter (glab の
+    # `projects/{repo}/...`) は cwd 推論へ倒れられないので、None のまま撃つと存在しない
+    # path を叩く。`observe_pr_refs` が撃つ前に名指しで落とすための宣言
+    pr_detail_requires_repo = False
+
+    # PR の review thread を観測・resolve できるか (ADR 0039)。**既定は False で、実装した
+    # adapter だけが名乗る**。未対応の adapter は `require_review_threads` が撃つ前に名指しで
+    # 落ちる — 空配列を返すと「未解決 thread が 0 件」= レビュー対応済みと読まれ、駐機した
+    # worker が再入されないまま静かに滞留する (`blocked: null` と `false` を分ける規則と同じ)
+    supports_review_threads = False
+
     # --- 継ぎ目 (adapter が実装する) -------------------------------------------
 
-    def fetch_issues(self, state, limit):
+    def fetch_issues(self, state, limit, repo):
         """issue 一覧を内部語彙の dict 列で返す (number / title / state / labels /
         assignees / created_at / updated_at / url)。"""
         raise NotImplementedError
 
-    def fetch_issue(self, number):
+    def fetch_issue(self, number, repo):
         """issue 1 件を内部語彙の dict で返す (`fetch_issues` の要素と同じ形)。"""
         raise NotImplementedError
 
-    def fetch_blocked(self, number):
+    def fetch_blocked(self, number, repo):
         """open blocker 検査 → {"blocked", "open_blockers", "source"}。
         open_blockers は {"number", "title"} の列 (open のものだけ)。"""
         raise NotImplementedError
 
-    def repo_scope(self):
-        """自 repo を指す識別子 (別 repo からの言及を落とすために使う)。"""
+    def linked_prs(self, number, repo):
+        """issue → 紐づく PR の列 ({"number", "role", "repo"})。
+
+        role は `closes` / `mention`、`repo` は **その PR が居る repo** の識別子
+        (issue の repo とは限らない)。同じ PR の重複は adapter が closes 優先で潰す。
+        """
         raise NotImplementedError
 
-    def linked_prs(self, number, scope):
-        """issue → {PR 番号: role}。role は `closes` / `mention`。"""
+    def pr_detail(self, number, role, repo):
+        """PR 1 件 → 内部語彙 dict (number / state / mergeable / title / url / role / repo)。
+
+        `repo` は `linked_prs` が返した PR 自身の repo で、issue の repo ではない。
+        """
         raise NotImplementedError
 
-    def pr_detail(self, number, role):
-        """PR 1 件 → 内部語彙 dict (number / state / mergeable / title / url / role)。"""
+    def open_prs(self, limit, repo):
+        """repo の open PR → 内部語彙 dict の列 (+ head_branch / closes_issues / repo)。"""
         raise NotImplementedError
 
-    def open_prs(self, scope, limit):
-        """repo の open PR → 内部語彙 dict の列 (+ head_branch / closes_issues)。"""
-        raise NotImplementedError
-
-    def set_assignee(self, number, action):
+    def set_assignee(self, number, action, repo):
         """assignee を設定 (`claim`) / 解除 (`unclaim`) する。"""
         raise NotImplementedError
 
-    def post_comment(self, number, body):
+    def post_comment(self, number, body, repo):
         """issue にコメントを投稿する。"""
         raise NotImplementedError
 
-    def edit_labels(self, number, add, remove):
+    def edit_labels(self, number, add, remove, repo):
         """label を付け外しする。実行した CLI 呼び出しの数を返す。"""
         raise NotImplementedError
+
+    def fetch_review_threads(self, number, repo):
+        """PR 1 件の review thread → {"threads", "truncated"}。
+
+        `threads` は `{"id", "resolved"}` の列 (id は tracker が発行する thread 識別子で、
+        resolve 操作にそのまま渡せるもの)。`truncated` は 1 回で取り切れなかったこと
+        (取り切れたのに false を返すと「未解決 0 件」を無条件に信じてよいと読まれる)。
+        """
+        raise NotImplementedError
+
+    def resolve_review_thread(self, thread_id):
+        """review thread 1 件を resolve する → {"id", "resolved"} (操作後の観測)。"""
+        raise NotImplementedError
+
+    # --- repo scope -------------------------------------------------------------
+
+    def require_repo_scope(self, repo):
+        """明示 repo scope の可否を CLI 起動前に確かめる。
+
+        未対応の adapter が識別子を黙って捨てると cwd repo へ倒れるので、名指しで
+        失敗させる (`get_adapter` の未実装 tracker と同じ「継ぎ目を反証可能に残す」形)。
+        """
+        if repo is not None and not self.supports_repo_scope:
+            raise TrackerError(
+                f"{self.tracker} adapter は明示 repo scope 未実装 — 継ぎ目のみを設計してある "
+                f"(受け取った識別子: {repo!r})"
+            )
 
     # --- ref ヘルパ -------------------------------------------------------------
 
@@ -342,6 +431,7 @@ class TrackerPort:
         ordering=None,
         descending=False,
         include_blocked=False,
+        repo=None,
     ):
         """issue の生データを中立 schema で返す (spec §4.4)。
 
@@ -354,7 +444,12 @@ class TrackerPort:
         `blocked: null`** で返し、空配列にしない — 「検査して blocker 無し」と
         読めてしまう形は i217 誤 dispatch と同型の誤読を作る。検査は 1 issue あたり
         1 回以上 CLI を起動するので、filter で絞ってから立てる。
+
+        `repo` を渡すと issue 一覧も blocker 検査もその repo に向く。返り値の `repo` は
+        受け取った識別子の echo (未指定なら null) で、宣言と実際の観測先が食い違って
+        いないかは呼び出し側がこれで確かめる。
         """
+        self.require_repo_scope(repo)
         if state not in ISSUE_LIST_STATES:
             raise TrackerError(
                 f"未知の state: {state!r} (候補: {', '.join(ISSUE_LIST_STATES)})"
@@ -366,7 +461,7 @@ class TrackerPort:
         limit = _require_limit(limit)
         effective = self._effective_limit(limit)
 
-        fetched = self.fetch_issues(state, effective)
+        fetched = self.fetch_issues(state, effective, repo)
         selected = [
             issue
             for issue in fetched
@@ -375,9 +470,10 @@ class TrackerPort:
         if ordering is not None:
             selected.sort(key=lambda issue: _order_key(issue, ordering), reverse=descending)
 
-        entries = [self._neutral_issue(issue, include_blocked) for issue in selected]
+        entries = [self._neutral_issue(issue, include_blocked, repo) for issue in selected]
         return {
             "tracker": self.tracker,
+            "repo": repo,
             "count": len(entries),
             "fetched": len(fetched),
             # 取得上限に張り付いた = tracker 側にまだ残っている可能性がある。件数を
@@ -399,7 +495,7 @@ class TrackerPort:
             "issues": entries,
         }
 
-    def observe_issue(self, issue_ref):
+    def observe_issue(self, issue_ref, repo=None):
         """issue 1 件を中立 schema で返す (`resolve` の join 用)。
 
         台帳 entry の現況を `observe_issues` の窓から拾おうとすると、`limit` の外へ
@@ -407,9 +503,12 @@ class TrackerPort:
         番号で直接引く経路を分けてあるのはそのため。blocker 検査は join に要らないので
         しない (未検査は `blocked: null` のまま返る)。
         """
-        return self._neutral_issue(self.fetch_issue(self.issue_number(issue_ref)), False)
+        self.require_repo_scope(repo)
+        return self._neutral_issue(
+            self.fetch_issue(self.issue_number(issue_ref), repo), False, repo
+        )
 
-    def observe_prs(self, issue_ref=None, limit=DEFAULT_PR_LIMIT):
+    def observe_prs(self, issue_ref=None, limit=DEFAULT_PR_LIMIT, repo=None, issue_tracker=None):
         """PR を観測する (spec §4.4)。
 
         `issue_ref` を渡すとその issue に紐づく PR と 1 語の集約 status を返す。
@@ -423,16 +522,35 @@ class TrackerPort:
         未 merge のまま駐機 worktree を回収する経路に乗る (#445)。`resolve` の
         `pr_merged` drift も closes 限定なので、同じ問いへの答えを 1 つに保つ。
 
+        **その closes の部分列を `closes` に併記する** (#608)。`status` の母集団を呼び出し側が
+        role で filter し直さずに読めるようにする派生列で (`ref` / `repo` / `status` の射影)、
+        union (`prs` / `count`) は従来どおり併記される。role が定義されない経路
+        (issue 文脈の無い repo 全体の一覧) では `null` —
+        `[]` にすると「closes が 1 件も無い」と読めるが、実際には役割を判定していない。
+
+        **紐づく PR は repo で絞らない** (ADR 0036)。worker が関連 repo へ出した PR は
+        cross-repo の closing reference で issue に紐づくので、自 repo 以外を落とすと
+        正当な closes を mention 扱いへ落として駐機判定と merge 検知を壊す。代わりに
+        各 PR の `repo` (その PR が居る repo) を schema に載せて現実のまま返す — その
+        帰結として **fork から張られた `Closes` も closes として集約 `status` に効く**。
+        どの repo の PR を根拠に採るかは `prs[].repo` を読んで呼び出し側が決める。
+
         `limit` が効くのは repo 全体を見る経路だけ。issue に紐づく PR は issue 側で
-        件数が閉じているので切らない (`truncated` は常に false)。
+        件数が閉じているので切らない (`truncated` は常に false)。トップレベルの `repo`
+        は問い合わせ先 repo の echo (未指定なら null) で、`prs[].repo` とは別物。
+
+        `issue_tracker` は **issue 置き場**の tracker (未指定なら自 tracker と同じと見なす)。
+        PR 置き場と別なら、repo 全体の一覧に載る closing reference は中立 issue ref へ写せない
+        ので `closes_issues` に混ぜず `closes_unmappable` へ落とす (#576)。
         """
+        self.require_repo_scope(repo)
         limit = _require_limit(limit)
-        scope = self.repo_scope()
         if issue_ref is None:
             effective = self._effective_limit(limit)
-            prs = self.open_prs(scope, effective)
+            prs = self.open_prs(effective, repo)
             return {
                 "tracker": self.tracker,
+                "repo": repo,
                 "issue_ref": None,
                 # issue 文脈が無いので集約 status は定義されない (role も同様)
                 "status": None,
@@ -440,53 +558,230 @@ class TrackerPort:
                 "limit": limit,
                 "effective_limit": effective,
                 "truncated": len(prs) >= effective,
-                "prs": [self._neutral_pr(pr, with_links=True) for pr in prs],
+                "prs": [
+                    self._neutral_pr(pr, with_links=True, issue_tracker=issue_tracker)
+                    for pr in prs
+                ],
+                # role が定義されないので closes の部分列も作れない ([] は「1 件も無い」の意)
+                "closes": None,
+                "unmappable_prs": [],
             }
         number = self.issue_number(issue_ref)
-        links = self.linked_prs(number, scope)
-        prs = [self.pr_detail(pr_number, role) for pr_number, role in sorted(links.items())]
+        links = sorted(
+            self.linked_prs(number, repo), key=lambda link: (link["repo"], link["number"])
+        )
+        prs = [
+            self.pr_detail(link["number"], link["role"], link["repo"]) for link in links
+        ]
         closing_prs = [pr for pr in prs if pr["role"] == "closes"]
+        neutral = [self._neutral_pr(pr) for pr in prs]
         return {
             "tracker": self.tracker,
+            "repo": repo,
             "issue_ref": refs.parse_issue_ref(issue_ref)["ref"],
             "status": derive_pr_status(closing_prs),
             "count": len(prs),
             "limit": None,
             "effective_limit": None,
             "truncated": False,
-            "prs": [self._neutral_pr(pr) for pr in prs],
+            "prs": neutral,
+            "closes": derive_closes(neutral),
+            "unmappable_prs": [],
+        }
+
+    def observe_pr_refs(self, records, *, issue_ref=None, repo=None):
+        """**台帳が記録した PR** を (repo, ref) の組で観測する (`observe_prs` と同じ schema)。
+
+        issue 置き場が PR 置き場と別 tracker (issue = Jira / PR = GitLab) のとき、issue から
+        PR を引く経路が無い — closing reference は PR 置き場の番号空間にしか綴りが無く、
+        Jira の課題を指せない。**そのとき現況の観測の種になるのは台帳の記録だけ**なので、
+        記録した `{ref, role, repo}` から直接 PR を引く経路をここに置く (#576)。
+
+        `role` は台帳の記録をそのまま採る。どの PR が closes かを知っているのが台帳しかない
+        以上、**記録が誤っていれば mention の merged も `pr_merged` として出る** — 記録の
+        正しさは記帳側 (`ledger_record` / `ledger_transition`) の責務。
+
+        `repo` は記録に無いときの既定。`require_repo_scope` を掛けないのは、この経路の識別子が
+        CLI の scope flag ではなく `pr_detail` が PR 自身の在り処として受ける引数だから
+        (glab の `projects/{repo}/...` は別 project にも届く)。代わりに識別子を必須とする
+        adapter には、撃つ前に名指しで落とす (`pr_detail_requires_repo`)。
+
+        自 tracker で観測できない記録 (別 tracker の PR ref / 識別子が無い) は黙って落とさず
+        `unmappable_prs` に残す。
+        """
+        prs, unmappable = [], []
+        for record in records or []:
+            detail, reason = self._pr_from_record(record, repo)
+            if reason is not None:
+                unmappable.append(
+                    {"ref": record.get("ref"), "repo": record.get("repo"), "reason": reason}
+                )
+                continue
+            prs.append(detail)
+        closing_prs = [pr for pr in prs if pr["role"] == "closes"]
+        neutral = [self._neutral_pr(pr) for pr in prs]
+        return {
+            "tracker": self.tracker,
+            "repo": repo,
+            "issue_ref": refs.parse_issue_ref(issue_ref)["ref"] if issue_ref else None,
+            "status": derive_pr_status(closing_prs),
+            "count": len(prs),
+            "limit": None,
+            "effective_limit": None,
+            "truncated": False,
+            "prs": neutral,
+            "closes": derive_closes(neutral),
+            "unmappable_prs": unmappable,
+        }
+
+    def _pr_from_record(self, record, repo):
+        """台帳の PR 記録 1 件 → (観測した内部語彙 dict, 観測できない理由)。"""
+        ref = record.get("ref")
+        try:
+            parsed = refs.parse_pr_ref(ref)
+        except refs.RefError as exc:
+            return None, str(exc)
+        if parsed["tracker"] != self.tracker:
+            return None, (
+                f"{ref} は {parsed['tracker']} の PR ref で、PR 置き場の tracker "
+                f"({self.tracker}) では観測できない"
+            )
+        scope = record.get("repo") if record.get("repo") is not None else repo
+        if scope is None and self.pr_detail_requires_repo:
+            return None, (
+                f"{self.tracker} は PR 1 件の観測に repo 識別子が要る "
+                "(台帳の prs[].repo か pr_repo に渡す)"
+            )
+        return self.pr_detail(parsed["number"], record.get("role"), scope), None
+
+    # --- review thread (ADR 0039) --------------------------------------------------
+
+    def require_review_threads(self):
+        """review thread の観測・resolve の可否を CLI 起動前に確かめる。
+
+        **未対応を空 (未解決 0 件) で表さない。** 「観測していない」と「観測して未解決が
+        0 件」は読み手にとって正反対の意味を持つ — 後者はレビュー対応済みと読まれ、
+        駐機した worker を再入させないまま滞留させる。`get_adapter` の未実装 tracker と
+        同じく、継ぎ目であることを名指しで失敗させる。
+        """
+        if not self.supports_review_threads:
+            raise TrackerError(
+                f"{self.tracker} adapter は review thread の観測・resolve が未実装 — "
+                "**未解決 0 件として扱わない** (「観測していない」を「レビュー対応済み」と"
+                "読むと、指摘の付いた PR が駐機したまま滞留する)"
+            )
+
+    def observe_review_threads(self, records, *, repo=None):
+        """台帳が持つ PR 記録の列 → PR ごとの review thread 観測。
+
+        `records` は `{"ref", "repo"}` を持つ dict の列 (`observe_prs` の `prs[]` や台帳の
+        `prs[]` をそのまま渡せる)。`repo` は記録に `repo` が無いときの既定。
+
+        観測できない記録 (別 tracker の PR ref / repo 識別子が無い) は黙って落とさず
+        `unmappable_prs` に理由付きで残す — `observe_pr_refs` と同じ規則で、**取り落としを
+        「未解決 0 件」に化けさせない**ため。
+
+        thread の中身 (指摘の本文) は返さない。ここで要るのは「未解決が在るか」と
+        「閉じるための id」だけで、本文は対応する worker が PR を読めばよい (`resolve` の
+        応答は台帳の全 entry 分が積み上がる)。
+        """
+        self.require_review_threads()
+        targets, unmappable = [], []
+        for record in records or []:
+            ref = record.get("ref")
+            target, reason = self._review_thread_target(record, repo)
+            if reason is not None:
+                unmappable.append({"ref": ref, "repo": record.get("repo"), "reason": reason})
+                continue
+            targets.append(target)
+        observed = []
+        for target in targets:
+            found = self.fetch_review_threads(target["number"], target["repo"])
+            observed.append(
+                {
+                    "ref": target["ref"],
+                    "repo": target["repo"],
+                    "threads": found["threads"],
+                    "truncated": found["truncated"],
+                }
+            )
+        return {
+            "tracker": self.tracker,
+            "repo": repo,
+            "count": len(observed),
+            "prs": observed,
+            "unmappable_prs": unmappable,
+        }
+
+    def _review_thread_target(self, record, repo):
+        """PR 記録 1 件 → (問い合わせ先, 観測できない理由)。観測できるなら理由は None。"""
+        try:
+            parsed = refs.parse_pr_ref(record.get("ref"))
+        except refs.RefError as exc:
+            return None, str(exc)
+        if parsed["tracker"] != self.tracker:
+            return None, (
+                f"{record.get('ref')} は {parsed['tracker']} の PR ref で、PR 置き場の tracker "
+                f"({self.tracker}) では観測できない"
+            )
+        scope = record.get("repo") if record.get("repo") is not None else repo
+        if scope is None:
+            return None, (
+                f"{self.tracker} は review thread の観測に repo 識別子が要る "
+                "(台帳の prs[].repo か pr_repo に渡す)"
+            )
+        return {"ref": parsed["ref"], "repo": scope, "number": parsed["number"]}, None
+
+    def review_thread_resolve(self, thread_id):
+        """review thread 1 件を resolve する (対応した worker 自身が閉じる — ADR 0039)。
+
+        返す `resolved` は**操作後に tracker が返した状態**で、「呼び出しが成功した」とは
+        別物。閉じたつもりで閉じていない状態を true で覆わない。
+        """
+        self.require_review_threads()
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise TrackerError("thread_id が空 (resolve する thread の id を文字列で渡す)")
+        thread = self.resolve_review_thread(thread_id.strip())
+        return {
+            "tracker": self.tracker,
+            "action": "resolve",
+            "thread_id": thread["id"],
+            "resolved": thread["resolved"],
         }
 
     # --- operate ------------------------------------------------------------------
 
-    def issue_claim(self, issue_ref):
+    def issue_claim(self, issue_ref, repo=None):
         """assignee を自分に設定する。"""
-        return self._assignee_result(issue_ref, "claim")
+        return self._assignee_result(issue_ref, "claim", repo)
 
-    def issue_unclaim(self, issue_ref):
+    def issue_unclaim(self, issue_ref, repo=None):
         """assignee を解除して候補プールへ返す。"""
-        return self._assignee_result(issue_ref, "unclaim")
+        return self._assignee_result(issue_ref, "unclaim", repo)
 
-    def issue_comment(self, issue_ref, body):
+    def issue_comment(self, issue_ref, body, repo=None):
         """issue にコメントを投稿する (汎用 tracker 操作)。"""
+        self.require_repo_scope(repo)
         if not isinstance(body, str) or not body.strip():
             raise TrackerError("body が空 (投稿する本文を文字列で渡す)")
         number = self.issue_number(issue_ref)
-        self.post_comment(number, body)
+        self.post_comment(number, body, repo)
         return {
             "tracker": self.tracker,
+            "repo": repo,
             "issue_ref": self.issue_ref(number),
             "action": "comment",
             "ok": True,
         }
 
-    def issue_label(self, issue_ref, add=None, remove=None):
+    def issue_label(self, issue_ref, add=None, remove=None, repo=None):
         """label を付け外しする。
 
         どの label が何を意味するかは環境ごとの運用であって server は知らない
         (spec §4.4「環境ごとの label 運用は LLM がこれで表現」)。ここは付け外しの
         実行だけを担う。
         """
+        self.require_repo_scope(repo)
         add = list(add or [])
         remove = list(remove or [])
         if not add and not remove:
@@ -496,9 +791,10 @@ class TrackerPort:
             # 同じ label を同時に付けて外すと結果が CLI の適用順に依存する
             raise TrackerError(f"add と remove に同じ label がある: {overlap}")
         number = self.issue_number(issue_ref)
-        self.edit_labels(number, add, remove)
+        self.edit_labels(number, add, remove, repo)
         return {
             "tracker": self.tracker,
+            "repo": repo,
             "issue_ref": self.issue_ref(number),
             "action": "label",
             "added": add,
@@ -512,17 +808,19 @@ class TrackerPort:
         """実際に tracker へ投げる件数。adapter の 1 回取得上限で頭打ちにする。"""
         return min(limit, self.max_fetch) if self.max_fetch else limit
 
-    def _assignee_result(self, issue_ref, action):
+    def _assignee_result(self, issue_ref, action, repo):
+        self.require_repo_scope(repo)
         number = self.issue_number(issue_ref)
-        self.set_assignee(number, action)
+        self.set_assignee(number, action, repo)
         return {
             "tracker": self.tracker,
+            "repo": repo,
             "issue_ref": self.issue_ref(number),
             "action": action,
             "ok": True,
         }
 
-    def _neutral_issue(self, issue, include_blocked):
+    def _neutral_issue(self, issue, include_blocked, repo):
         entry = {
             "ref": self.issue_ref(issue["number"]),
             "number": issue["number"],
@@ -539,7 +837,7 @@ class TrackerPort:
             "blocked_source": None,
         }
         if include_blocked:
-            checked = self.fetch_blocked(issue["number"])
+            checked = self.fetch_blocked(issue["number"], repo)
             entry["blocked"] = checked["blocked"]
             entry["blocked_by"] = [
                 {"ref": self.issue_ref(blocker["number"]), "title": blocker.get("title", "")}
@@ -548,10 +846,12 @@ class TrackerPort:
             entry["blocked_source"] = checked["source"]
         return entry
 
-    def _neutral_pr(self, pr, with_links=False):
+    def _neutral_pr(self, pr, with_links=False, issue_tracker=None):
         entry = {
             "ref": self.pr_ref(pr["number"]),
             "number": pr["number"],
+            # その PR が居る repo。issue と別 repo でも落とさず現実のまま載せる (ADR 0036)
+            "repo": pr.get("repo"),
             "role": pr.get("role"),
             "status": pr_status(pr),
             "title": pr.get("title", ""),
@@ -559,9 +859,21 @@ class TrackerPort:
         }
         if with_links:
             entry["head_branch"] = pr.get("head_branch", "")
-            entry["closes_issues"] = [
-                self.issue_ref(number) for number in pr.get("closes_issues", [])
-            ]
+            numbers = list(pr.get("closes_issues", []))
+            # closing reference は **PR 置き場の番号空間**。issue 置き場が別 tracker なら
+            # 自 tracker の ref を騙ると別の issue を指すので写さず、取りこぼしとして残す
+            mappable = issue_tracker in (None, self.tracker)
+            entry["closes_issues"] = (
+                [self.issue_ref(number) for number in numbers] if mappable else []
+            )
+            entry["closes_unmappable"] = (
+                []
+                if mappable
+                else [
+                    {"number": number, "pr_tracker": self.tracker, "issue_tracker": issue_tracker}
+                    for number in numbers
+                ]
+            )
         return entry
 
 
@@ -624,6 +936,11 @@ def _require_import_time_consistency():
             "tracker._DERIVED_PR_STATUSES: derive_pr_status の段が "
             f"vocabulary.PR_STATUSES と不一致 (derived={sorted(_DERIVED_PR_STATUSES)})"
         )
+    # 逆向き (TRACKERS ⊆ _ADAPTERS) は検査しない — adapter を持たない tracker (jira) が
+    # 居るのは仕様 (spec §8)。ここで見るのは「綴りを間違えた登録」だけ
+    unknown = set(_ADAPTERS) - set(refs.TRACKERS)
+    if unknown:
+        raise ValueError(f"tracker._ADAPTERS: 未知の tracker {sorted(unknown)}")
 
 
 _require_import_time_consistency()

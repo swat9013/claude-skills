@@ -29,7 +29,9 @@
     "./skills/dev/contextual-commits",
     "./skills/dev/frontend-refine",
     "./skills/dev/worktree-setup",
+    "./skills/util/dispatch-setup",
     "./skills/util/inventory-dispatch",
-    "./skills/util/issue-dispatch"
+    "./skills/util/observer",
+    "./skills/util/orchestrator"
   ]
 }

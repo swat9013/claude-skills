@@ -24,9 +24,14 @@ skill ファイルは frontmatter + 本文の構成。
 |---|---|---|
 | `name` | ✓ | skill 名 (一意。kebab-case 推奨) |
 | `description` | ✓ | いつこの skill を起動すべきかの説明。trigger 語彙を含めると model が想起しやすい |
-| `model` | - | 実行モデル指定。ID 一覧は [models](./models.md) の表が正本 (ここに再掲しない — 世代が上がると二重管理で腐る)。省略時は呼び出し元のモデルを継承 |
+| `model` | - | 実行モデル指定。ID 一覧は [models](./models.md) の表が正本 (ここに再掲しない — 世代が上がると二重管理で腐る)。省略時は呼び出し元のモデルを継承。**上書きは turn スコープ** — skill が active な turn の残りにだけ効き、次の prompt で session の model に戻る (settings には保存されない) |
+| `effort` | - | reasoning effort (`low` / `medium` / `high` / `xhigh` / `max`。選べる段はモデル依存)。`model` と同じく skill が active な間だけ session の effort を上書きする |
 | `allowed-tools` | - | この skill 実行時に許可する tool のリスト。最小化が原則 |
 | `disable-model-invocation` | - | true にすると model が自動で skill を起動しなくなる (ユーザー明示呼び出しのみ) |
+
+**常駐セッションの model / effort を決める用途では frontmatter を当てにしない。** 上書きが turn スコープなので、skill が active でない turn (メッセージ受信・待機・ScheduleWakeup の arm など) は session の値で走る。セッション全体を 1 つの帯に置きたいなら起動時 (`claude --model` / `--effort`、`pane_spawn` の `model` / `effort`) で決める。
+
+**`disable-model-invocation: true` の skill は scheduled fire で実行されない。** `/loop` や cron が slash command を prompt として発火したとき、model が自分で起動できない skill は**プレーンテキストとして届くだけ**で skill 本文はロードされない ([公式](https://code.claude.com/docs/en/scheduled-tasks) の「A scheduled fire only runs skills that Claude is allowed to invoke on its own」)。周期実行される skill にこのフラグを立てると、初回だけ効いて 2 周目以降は無言で効かなくなる。
 
 ### 配置
 
@@ -42,6 +47,7 @@ skill を新設・編集する前に確認する。
 - [ ] `description` が trigger 語彙を含むか (× 「便利な機能」 / ○ 「commit message を書く / git commit / コミット作成」)
 - [ ] `description` が過剰トリガーになっていないか (汎用語のみだと無関係な場面で起動する)
 - [ ] proactive / evaluative どちらの用途か明確で、`disable-model-invocation` の有無と整合しているか
+- [ ] **周期実行される skill (`/loop` / cron の prompt に置く skill) に `disable-model-invocation: true` を立てていないか** — 立てると 2 周目以降 skill 本文がロードされない
 - [ ] `model:` がタスク負荷と整合か → [models](./models.md) の表で照合
 - [ ] 本文の prompt スタイルが指定モデルに最適か ([prompting-principles](../../prompting-principles/SKILL.md) が文面規則の正本。共通原則で足りるか、対象モデル確定なら同 skill の references/ の差分まで見る)。`model:` 未指定の skill は呼び出し元継承なので Opus 5 を既定と仮定して照合する。haiku は同 skill に reference がなく [models](./models.md) の Haiku 節が正本
 - [ ] `allowed-tools` が最小化されているか (× 全 tool / ○ 必要な tool のみ列挙)

@@ -50,6 +50,11 @@ SCOPED_EVENT_COLUMNS = (
     "denial_reason_label",
 )
 
+# section の `settings_sources` に出す reason (= その section の分母そのもの)。
+# `cross_layer_match` (global 突合用) と `out_of_section` / `not_a_settings_layer` は
+# section の分母ではないので meta の `settings_denominator` 側だけに残す。
+SECTION_DENOMINATOR_REASONS = ("read", "absent", "unparsed")
+
 PERMISSION_ENTRY_COLUMNS = (
     "raw", "category", "source_path", "scope", "tool", "pattern", "confidence",
     "match_kind",
@@ -121,28 +126,40 @@ def _load_permission_entries(conn: sqlite3.Connection, statements: dict[str, str
 # --- 集計の組み立て ----------------------------------------------------------
 
 def build_axis_a(conn: sqlite3.Connection, statements: dict[str, str],
-                 entries: list[settings_mod.PermissionEntry]) -> list[dict]:
+                 entries: list[settings_mod.PermissionEntry],
+                 split_epoch: float) -> list[dict]:
     """設定 entry 別の match_count / outcome_breakdown / sample_matched。
 
-    query は (entry, tool, command_head, outcome) の 1 粒度で返る。outcome 内訳と
-    代表 (tool, command_head) はそれを 2 方向へ畳み直したもので、**どちらも初出順
-    (`first_seq`) を tie-break に使う** — 同数のとき「lake で先に現れた方が上」に
-    なり、順序が実行のたびに揺れない。
+    query は (entry, tool, command_head, outcome, window_half) の 1 粒度で返る。
+    outcome 内訳と代表 (tool, command_head) はそれを 2 方向へ畳み直したもので、
+    **どちらも初出順 (`first_seq`) を tie-break に使う** — 同数のとき「lake で先に
+    現れた方が上」になり、順序が実行のたびに揺れない。
 
     `compound_command_deny_count` は deny 系 outcome のうち**複合コマンド行**由来の
     件数。1 行に allow 対象と deny 対象が混在すると call 全体の deny が行内の全 entry
     へ載るため、この数が entry の高 deny 比率の別解を示す (ADR 0032 の誤計上検査)。
+
+    `outcome_breakdown_early` / `_late` は観測窓を `split_epoch` で二分した内訳
+    (#584)。窓内で挙動が変わった entry では窓全体の比率が変更前後の平均になり entry の
+    性質を表さないため、**比率と同じ場所に変化の有無を読める材料を置く**。ts 欠損
+    event はどちらにも入らない (early + late < match_count がありうる)。
     """
     breakdown: dict[int, dict[str, int]] = collections.defaultdict(dict)
+    half_breakdown: dict[str, dict[int, dict[str, int]]] = {
+        "early": collections.defaultdict(dict), "late": collections.defaultdict(dict)}
     outcome_first_seq: dict[tuple[int, str], int] = {}
     compound_deny: dict[int, int] = collections.defaultdict(int)
     combos: dict[tuple[int, str, str], dict] = {}
-    for row in conn.execute(statements["axis_a_matches"]):
+    for row in conn.execute(statements["axis_a_matches"],
+                            {"split_epoch": split_epoch}):
         if row["outcome"] is None:
             continue
         entry_no, outcome = row["entry_no"], row["outcome"]
         counts = breakdown[entry_no]
         counts[outcome] = counts.get(outcome, 0) + row["n"]
+        if row["window_half"] is not None:
+            half_counts = half_breakdown[row["window_half"]][entry_no]
+            half_counts[outcome] = half_counts.get(outcome, 0) + row["n"]
         if outcome.startswith("deny_"):
             compound_deny[entry_no] += row["compound_n"] or 0
         key = (entry_no, outcome)
@@ -165,9 +182,12 @@ def build_axis_a(conn: sqlite3.Connection, statements: dict[str, str],
 
     rows: list[dict] = []
     for entry_no, entry in enumerate(entries, start=1):
-        outcomes = dict(sorted(
-            breakdown.get(entry_no, {}).items(),
-            key=lambda item: outcome_first_seq[(entry_no, item[0])]))
+        def _ordered(counts: dict[str, int], entry_no: int = entry_no) -> dict:
+            """outcome の並びを entry 内で揃える (初出順。半分ごとに揺らさない)。"""
+            return dict(sorted(counts.items(),
+                               key=lambda item: outcome_first_seq[(entry_no, item[0])]))
+
+        outcomes = _ordered(breakdown.get(entry_no, {}))
         rows.append({
             "entry": entry.raw,
             "category": entry.category,
@@ -177,6 +197,10 @@ def build_axis_a(conn: sqlite3.Connection, statements: dict[str, str],
             "matcher_confidence": entry.confidence,
             "match_count": sum(outcomes.values()),
             "outcome_breakdown": outcomes,
+            "outcome_breakdown_early": _ordered(
+                half_breakdown["early"].get(entry_no, {})),
+            "outcome_breakdown_late": _ordered(
+                half_breakdown["late"].get(entry_no, {})),
             "compound_command_deny_count": compound_deny.get(entry_no, 0),
             "sample_matched": samples.get(entry_no, []),
         })
@@ -419,6 +443,39 @@ def aggregate_hook_activity(configured: list[dict], firings: list[dict]) -> dict
 
 # --- derived views -----------------------------------------------------------
 
+def _half_stats(counts: dict[str, int]) -> dict:
+    """窓の半分の match_count / hard_deny_count / hard_deny_share (生値)。"""
+    match_count = sum(counts.values())
+    hard_deny = sum(counts.get(key, 0) for key in contract.HARD_DENY_OUTCOMES)
+    return {"match_count": match_count, "hard_deny_count": hard_deny,
+            "hard_deny_share": (hard_deny / match_count) if match_count else None}
+
+
+def _window_split(row: dict) -> dict:
+    """観測窓を二分した前半 / 後半の hard deny 比率と変化点フラグ (#584)。
+
+    `shifted` は 3 値。**`null` (判定不能) を `false` (変化なし) に潰さない** —
+    どちらかの半分が `WINDOW_SPLIT_MIN_MATCH` に満たなければ比較が成立しないので、
+    「一様だった」とは言えない。判定不能でも各半分の件数はそのまま出す (なぜ判定
+    できないかが row から読めないと `null` が窓全体の平均と同じ不透明さになる)。
+    """
+    early = _half_stats(row.get("outcome_breakdown_early") or {})
+    late = _half_stats(row.get("outcome_breakdown_late") or {})
+    comparable = min(early["match_count"],
+                     late["match_count"]) >= contract.WINDOW_SPLIT_MIN_MATCH
+    delta = (None if early["hard_deny_share"] is None or late["hard_deny_share"] is None
+             else abs(early["hard_deny_share"] - late["hard_deny_share"]))
+    return {
+        "early": {**early, "hard_deny_share": None if early["hard_deny_share"] is None
+                  else round(early["hard_deny_share"], 2)},
+        "late": {**late, "hard_deny_share": None if late["hard_deny_share"] is None
+                 else round(late["hard_deny_share"], 2)},
+        "hard_deny_share_delta": None if delta is None else round(delta, 2),
+        "shifted": (delta >= contract.WINDOW_SPLIT_MIN_SHARE_DELTA
+                    if comparable else None),
+    }
+
+
 def build_derived_views(axis_a: list[dict], axis_b: list[dict],
                         bypass_sequences: list[dict]) -> dict:
     """LLM 段階が典型的に必要とする view を決定的に前計算する (純関数)。
@@ -446,6 +503,7 @@ def build_derived_views(axis_a: list[dict], axis_b: list[dict],
                 "entry": row["entry"], "category": row["category"],
                 "scope": row["scope"], "match_count": row["match_count"],
                 "hard_deny_count": hard_deny, "hard_deny_share": round(share, 2),
+                "window_split": _window_split(row),
                 "outcome_breakdown": row["outcome_breakdown"],
                 "sample_matched": row["sample_matched"],
             })
@@ -523,22 +581,33 @@ def build_bypass_group_samples(bypass_grouped: list[dict],
 # --- section 組み立て --------------------------------------------------------
 
 def _summarize_settings_sources(
+        described: list[dict],
         entries: list[settings_mod.PermissionEntry]) -> list[dict]:
-    grouped: dict[tuple[str, str], collections.Counter] = collections.defaultdict(
+    """section の分母 path × 件数。
+
+    **列挙した path から組む** — entry から逆算すると、在るのに 0 件だった層と
+    そもそも読まなかった層が同じ「行が無い」に潰れる (#583)。
+    """
+    grouped: dict[str, collections.Counter] = collections.defaultdict(
         collections.Counter)
     for entry in entries:
-        grouped[(entry.source_path, entry.scope)][entry.category] += 1
+        grouped[entry.source_path][entry.category] += 1
     rows = [
         {
-            "path": path,
-            "scope": scope,
-            "allow_count": counter.get("allow", 0),
-            "deny_count": counter.get("deny", 0),
-            "ask_count": counter.get("ask", 0),
-            "sandbox_excluded_commands_count": counter.get(
+            "path": row["path"],
+            "resolved_path": row["resolved_path"],
+            "scope": row["scope"],
+            "exists": row["exists"],
+            "read": row["read"],
+            "reason": row["reason"],
+            "allow_count": grouped[row["path"]].get("allow", 0),
+            "deny_count": grouped[row["path"]].get("deny", 0),
+            "ask_count": grouped[row["path"]].get("ask", 0),
+            "sandbox_excluded_commands_count": grouped[row["path"]].get(
                 settings_mod.SANDBOX_CATEGORY, 0),
         }
-        for (path, scope), counter in grouped.items()
+        for row in described
+        if row["reason"] in SECTION_DENOMINATOR_REASONS
     ]
     rows.sort(key=lambda row: (row["scope"], row["path"]))
     return rows
@@ -546,8 +615,8 @@ def _summarize_settings_sources(
 
 def build_section(
         conn: sqlite3.Connection, statements: dict[str, str], request: Request,
-        section_name: str,
-        cutoff_epoch: float) -> tuple[dict, list[settings_mod.PermissionEntry]]:
+        section_name: str, cutoff_epoch: float,
+        split_epoch: float) -> tuple[dict, list[settings_mod.PermissionEntry]]:
     """section 1 つ分の集計と、その section の設定 entry (rule 評価の入力)。
 
     entry を返すのは、rule 評価が **mart 全体の総 event 数** (判定可能性) を要し、
@@ -571,7 +640,7 @@ def build_section(
     _load_permission_entries(conn, statements, entries)
 
     summary = conn.execute(statements["event_summary"]).fetchone()
-    axis_a = build_axis_a(conn, statements, entries)
+    axis_a = build_axis_a(conn, statements, entries, split_epoch)
     matches = axis_b_matches(conn, statements)
     axis_b = build_axis_b(conn, statements, matches,
                           matches if global_matches is None else global_matches)
@@ -579,7 +648,10 @@ def build_section(
                                     request.bypass_max_gap_seconds)
     return {
         "name": section_name,
-        "settings_sources": _summarize_settings_sources(entries),
+        "settings_sources": _summarize_settings_sources(
+            settings_mod.describe_settings_paths(
+                section_name, request.repo_root, request.global_settings),
+            entries),
         "event_count": summary["event_count"],
         "distinct_sessions": summary["distinct_sessions"],
         "outcome_totals": {row["outcome"]: row["n"]
@@ -605,6 +677,10 @@ def build(request: Request) -> dict:
     now = resolve_now(request.now)
     cutoff = now - dt.timedelta(days=request.days)
     cutoff_epoch = cutoff.timestamp()
+    # 変化点フラグ用の固定二分点 (#584)。section・entry を問わず 1 点で、mart の
+    # meta にも出す (どこで切ったかが分からないと前後半の内訳を検証できない)
+    midpoint = cutoff + (now - cutoff) / 2
+    split_epoch = midpoint.timestamp()
 
     conn, sync_report = ingest.open_synced(
         request.transcripts_dir, cache_dir=request.cache_dir, now=now)
@@ -619,7 +695,8 @@ def build(request: Request) -> dict:
                    conn.execute(statements["hook_firings"],
                                 {"cutoff_epoch": cutoff_epoch})]
         built = {
-            name: build_section(conn, statements, request, name, cutoff_epoch)
+            name: build_section(conn, statements, request, name, cutoff_epoch,
+                                split_epoch)
             for name in request.sections()
         }
     finally:
@@ -643,11 +720,15 @@ def build(request: Request) -> dict:
                 "start": _stamp(cutoff),
                 "end": _stamp(now),
                 "days": request.days,
+                # derived view の window_split がここで前半 / 後半を切る (#584)
+                "midpoint": _stamp(midpoint),
             },
             "section": request.section,
             "repo_root": str(request.repo_root.resolve()),
             "transcripts_dir": str(request.transcripts_dir),
             "global_settings": str(request.global_settings),
+            "settings_denominator": settings_mod.describe_settings_paths(
+                request.section, request.repo_root, request.global_settings),
             "total_events": total_events,
             "sufficient_threshold": request.sufficient_threshold,
             "sufficient_for_relative_judgment": sufficient,

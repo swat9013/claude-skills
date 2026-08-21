@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 from pathlib import Path
 
@@ -73,12 +74,21 @@ def parse_permission_entry(raw: str, category: str, source_path: str,
                            confidence=confidence, match_kind=match_kind)
 
 
-def _read_json(path: Path) -> dict:
+def _parse_json(path: Path) -> dict | None:
+    """読めた JSON object を返す。読めない / object でないときだけ None。
+
+    `{}` (空だが健全) と「読めなかった」を呼び分けるために None を分ける —
+    分母の観測 (`describe_settings_paths`) が両者を別の reason に振る。
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_json(path: Path) -> dict:
+    return _parse_json(path) or {}
 
 
 def _sandbox_excluded_commands(data: dict) -> list[str]:
@@ -126,17 +136,139 @@ def read_permission_entries(settings_path: Path, scope: str) -> list[PermissionE
     return entries
 
 
+def _main_clone_root(repo_root: Path) -> Path | None:
+    """repo_root が git worktree なら親 clone の root、そうでなければ None。
+
+    worktree の `.git` は `gitdir: <main clone>/.git/worktrees/<name>` の 1 行 file
+    (通常の clone では directory)。**subprocess を呼ばずに file 読みだけで解く** —
+    mart は決定的に組み、実行環境の git に依存させない。
+    """
+    marker = repo_root / ".git"
+    if not marker.is_file():
+        return None
+    try:
+        content = marker.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not content.startswith("gitdir:"):
+        return None
+    gitdir = Path(content.split(":", 1)[1].strip())
+    if not gitdir.is_absolute():
+        # `git worktree add --relative-paths` は worktree からの相対 path を書く。
+        # `..` は字面で畳む (resolve() だと symlink まで解決してしまい、path と
+        # resolved_path を別列で出す意味が消える)
+        gitdir = Path(os.path.normpath(marker.parent / gitdir))
+    if gitdir.parent.name != "worktrees":
+        return None
+    return gitdir.parents[2]
+
+
+def _settings_candidates(repo_root: Path, global_settings: Path) -> list[dict]:
+    """settings 層の候補表 (`sections` はその層を**分母として**読む section)。
+
+    `is_layer: False` の行は分母に入れない。user scope の file 名は常に
+    `settings.json` で、`.local.json` を作るのは project の local scope だけ
+    (v2.1.234)。`<config dir>/settings.local.json` を置いても probe すらされない
+    ため、足すと**効いていない entry が分母に混ざり**、promote 候補が黙って消える。
+    列挙だけして読まない理由を残す (#583)。
+
+    **例外**: cwd が config dir の親 (通常 `$HOME`) のとき、同 path は local scope
+    の解決先そのものになり実際に効く。この場合は project 側の候補と path が一致し、
+    先勝ちの重複除去で層として残る。
+
+    global 層は section `project` でも**突合のためだけに**読む (#513) ので、
+    sections に project を含めず `_describe_candidate` が別 reason を付ける。
+    """
+    candidates = [
+        {"path": repo_root / ".claude" / "settings.json",
+         "scope": "project", "sections": ("project", "all"), "is_layer": True},
+        {"path": repo_root / ".claude" / "settings.local.json",
+         "scope": "project_local", "sections": ("project", "all"), "is_layer": True},
+    ]
+    main_clone = _main_clone_root(repo_root)
+    if main_clone is not None:
+        # worktree セッションでは親 clone 側の settings.local.json も読まれる
+        # (実測: probe されるのは親の local だけで settings.json は読まれない)。
+        # gitignore される file なので worktree には無く、親側にしか実体が無い
+        candidates.append(
+            {"path": main_clone / ".claude" / "settings.local.json",
+             "scope": "project_local_main_clone",
+             "sections": ("project", "all"), "is_layer": True})
+    candidates += [
+        {"path": global_settings,
+         "scope": "global", "sections": ("global", "all"), "is_layer": True},
+        {"path": global_settings.parent / "settings.local.json",
+         "scope": "global_local", "sections": (), "is_layer": False},
+    ]
+    # **同一 path は先勝ち**で畳む。cwd が config dir の親 (通常 `$HOME`) のとき
+    # `<config dir>/settings.local.json` は local scope の解決先そのものになり、
+    # 実際に効く — 層として先に並ぶ project 側が残り、`not_a_settings_layer` の
+    # 行は消える。順序がこの正しさを担っているので入れ替えないこと
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate["path"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
+
+
 def enumerate_settings_sources(section: str, repo_root: Path,
                                global_settings: Path) -> list[dict]:
     """section 別に読む settings.json の一覧。"""
-    sources: list[dict] = []
-    if section in ("project", "all"):
-        for name, scope in (("settings.json", "project"),
-                            ("settings.local.json", "project_local")):
-            sources.append({"path": repo_root / ".claude" / name, "scope": scope})
-    if section in ("global", "all"):
-        sources.append({"path": global_settings, "scope": "global"})
-    return sources
+    return [{"path": candidate["path"], "scope": candidate["scope"]}
+            for candidate in _settings_candidates(repo_root, global_settings)
+            if candidate["is_layer"] and section in candidate["sections"]]
+
+
+def _resolved_path(path: Path) -> str:
+    """symlink 解決後の表記 (解決できなければ解決前をそのまま返す)。"""
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def _describe_candidate(candidate: dict, section: str) -> dict:
+    """候補 1 件を「読んだか / 読まなかったならなぜか」の行に落とす。"""
+    path: Path = candidate["path"]
+    exists = path.is_file()
+    in_section = section in candidate["sections"]
+    # global 層だけは section project でも突合用に読む (#513)
+    read_for_cross_layer_match = candidate["scope"] == "global"
+    if not candidate["is_layer"]:
+        reason = "not_a_settings_layer"
+    elif not (in_section or read_for_cross_layer_match):
+        reason = "out_of_section"
+    elif not exists:
+        reason = "absent"
+    elif _parse_json(path) is None:
+        reason = "unparsed"
+    else:
+        reason = "read" if in_section else "cross_layer_match"
+    return {
+        "path": str(path),
+        "resolved_path": _resolved_path(path),
+        "scope": candidate["scope"],
+        "exists": exists,
+        "read": reason in ("read", "cross_layer_match"),
+        "reason": reason,
+    }
+
+
+def describe_settings_paths(section: str, repo_root: Path,
+                            global_settings: Path) -> list[dict]:
+    """分母の観測可能性: 読んだ path と、存在するのに読まなかった path を列挙する。
+
+    **読めた entry から逆算すると、読まなかった層は痕跡すら残らない** (#583)。
+    reason は `read` (section の分母として読んだ) / `cross_layer_match` (global 突合
+    のためだけに読んだ) / `absent` / `unparsed` (在るが JSON として読めない) /
+    `out_of_section` / `not_a_settings_layer` に分ける。symlink は `path` (解決前) と
+    `resolved_path` (解決後) の両方を出す。
+    """
+    return [_describe_candidate(candidate, section)
+            for candidate in _settings_candidates(repo_root, global_settings)]
 
 
 def collect_permission_entries(section: str, repo_root: Path,

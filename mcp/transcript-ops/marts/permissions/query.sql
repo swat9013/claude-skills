@@ -131,11 +131,20 @@ ORDER BY min(seq)
 -- **複合行の計数も同じ GROUP BY に載せる** (ADR 0032 の誤計上検査。別 query に
 -- 分けると matcher の再走査が要る)。`is_compound_command` は join 済みの行に
 -- しか当たらないので matcher の呼び出し数は変わらない。
+--
+-- **窓の前後半 (`window_half`) も同じ GROUP BY に載せる** (#584 の変化点フラグ)。
+-- `:split_epoch` との定数比較なので matcher の呼び出し数も走査回数も変わらない
+-- (entry ごとの中央値で割るなら window 関数 = 照合済み行の partition sort が要り、
+-- 全体の 4 割を占めるこの query を重くする。窓の固定二分点で足りる)。
+-- ts 欠損 event は `NULL` に落とし、どちらの半分にも入れない。
 -- name: axis_a_matches
 SELECT e.entry_no       AS entry_no,
        ev.tool          AS tool,
        ev.command_head  AS command_head,
        ev.outcome       AS outcome,
+       CASE WHEN ev.ts_epoch IS NULL THEN NULL
+            WHEN ev.ts_epoch < :split_epoch THEN 'early'
+            ELSE 'late' END AS window_half,
        count(ev.seq)    AS n,
        sum(CASE WHEN is_compound_command(ev.command) THEN 1 ELSE 0 END)
                         AS compound_n,
@@ -145,7 +154,7 @@ LEFT JOIN scoped_event ev
        ON ev.tool = e.tool
       AND entry_matches(e.match_kind, e.pattern, ev.tool, ev.command,
                         ev.target_path)
-GROUP BY e.entry_no, ev.tool, ev.command_head, ev.outcome
+GROUP BY e.entry_no, ev.tool, ev.command_head, ev.outcome, window_half
 ORDER BY e.entry_no, first_seq
 
 -- 実績 (B 軸)。tool × command_head × outcome。

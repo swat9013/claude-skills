@@ -13,6 +13,16 @@ deny() {
   exit 0
 }
 
+# pass (判断を出さない) 出口はすべてここを通す。無出力の exit は transcript に attachment を
+# 残さず、棚卸しで「壊れて死んだ guard」と「窓内に出番が無かった guard」が同じ見え方になる
+# (#587 / ADR 0043)。permissionDecision を持たない envelope は通常の permission フローへ
+# 委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard の
+# 一致を見る)。
+passthrough() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
+  exit 0
+}
+
 # 先頭の空白を許容するため `^[[:space:]]*git` を共通プレフィクスにする。
 
 # `git add` の一括指定は guard-bulk-stage.sh が担う。本 hook は hooks.json 側の
@@ -64,4 +74,4 @@ if printf '%s\n' "$COMMAND" | grep -qE '^[[:space:]]*git push'; then
   exit 0
 fi
 
-exit 0
+passthrough

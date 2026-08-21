@@ -98,6 +98,7 @@ baseline の各 entry を、適用先の現状と突き合わせて 3 分類に�
 | 設定 | 症状 (これが出たら足す) | 補足 |
 |---|---|---|
 | `excludedCommands` に `git push:*` / `git fetch:*` / `git pull:*` / `git ls-remote:*` | sandbox 内の git remote 操作が `nc: authentication method negotiation failed` で失敗する | sandbox が注入する `nc` ProxyCommand が、認証必須 SOCKS5 proxy と非互換なため。proxy 構成に依存し、同じマシンでもセッションによって変わった実績がある。**足したら force push の deny (`Bash(git push --force:*)` / `Bash(git push -f:*)`) と対で扱う** — sandbox 外実行になるので、止めているのは permission 層だけになる |
+| `excludedCommands` に `git merge:*` | sandbox 内の `git merge` が `Operation not permitted` で落ち、**HEAD 据え置き + working tree だけ書き換わった中途半端な状態**になる | 適用先が `hooks/` / `.claude/hooks` / `.claude/skills` / `.claude/agents` を in-tree で管理していると、sandbox 組み込みの自己改変保護 (設定では解除できない) が merge の write を拒む。**repo の形に依存する** — これらを持たない project では症状が出ないので足さない。`git pull` (= fetch + merge) を既に除外しているなら一貫性の範囲で、権限の新規拡大にはならない |
 | `sandbox.enableWeakerNetworkIsolation: true` | `gh` (Go binary) が sandbox 内で TLS 検証に失敗する | セキュリティ低下とのトレードオフ。まず `gh api user` を sandbox 内で走らせて要否を確認する |
 | `network.allowedDomains` の追加 | sandbox 内の fetch / install が domain 拒否で失敗する | 適用先の実依存 (npm / rubygems / 社内 registry 等) で決まる。baseline をそのまま増やさない |
 

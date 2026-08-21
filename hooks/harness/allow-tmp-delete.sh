@@ -1,7 +1,7 @@
 #!/bin/sh
 # allow-tmp-delete.sh — tmp ルート配下のみの rm を allow する許可専用 PreToolUse hook。
 #
-# fail-safe: 静的に安全と確証できないケースは一切 allow せず exit 0 (出力なし) で
+# fail-safe: 静的に安全と確証できないケースは一切 allow せず passthrough() で
 # 素通しし、guard-destructive.sh の deny 判定と settings の ask に委ねる。
 # guard-destructive.sh (deny) とは逆方向 (こちらは allow 専用)。
 #
@@ -17,24 +17,34 @@
 # hooks.json 側の `if` gate は付けない。gate は token 境界照合のため `/bin/rm` を
 # 弾いてしまい、綴り違いで自動許可を失う (issue #361)。判定は本 script に一本化する。
 
+# pass (allow を出さない) 出口はすべてここを通す。無出力の exit は transcript に attachment を
+# 残さず、棚卸しで「壊れて死んだ hook」と「窓内に出番が無かった hook」が同じ見え方になる
+# (#587 / ADR 0043)。permissionDecision を持たない envelope は通常の permission フローへ
+# 委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard の
+# 一致を見る)。
+passthrough() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
+  exit 0
+}
+
 # jq 必須 (無ければ allow しない = fail-safe)
-command -v jq >/dev/null 2>&1 || exit 0
+command -v jq >/dev/null 2>&1 || passthrough
 
 INPUT=$(cat)
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
 CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 
-[ -n "$COMMAND" ] || exit 0
+[ -n "$COMMAND" ] || passthrough
 
 # --- G1: コマンド形状 ---
 trimmed=$(printf '%s' "$COMMAND" | sed 's/^[[:space:]]*//')
 # 連結 / リダイレクト / 置換 / 変数 / glob / quote を含むなら素通し
-printf '%s' "$COMMAND" | grep -q '[|&;<>]' && exit 0   # パイプ/連結(&& ||)/リダイレクト
-printf '%s' "$COMMAND" | grep -q '[$`]'    && exit 0   # 変数展開 / コマンド置換
-printf '%s' "$COMMAND" | grep -q '[*?]'    && exit 0   # glob (* ?)
-printf '%s' "$COMMAND" | grep -q '\['      && exit 0   # glob ([...])
-printf '%s' "$COMMAND" | grep -q "['\"]"   && exit 0   # quote (tokenize 単純化)
-printf '%s' "$COMMAND" | grep -q '[\]'     && exit 0   # backslash (\rm / エスケープ)
+printf '%s' "$COMMAND" | grep -q '[|&;<>]' && passthrough   # パイプ/連結(&& ||)/リダイレクト
+printf '%s' "$COMMAND" | grep -q '[$`]'    && passthrough   # 変数展開 / コマンド置換
+printf '%s' "$COMMAND" | grep -q '[*?]'    && passthrough   # glob (* ?)
+printf '%s' "$COMMAND" | grep -q '\['      && passthrough   # glob ([...])
+printf '%s' "$COMMAND" | grep -q "['\"]"   && passthrough   # quote (tokenize 単純化)
+printf '%s' "$COMMAND" | grep -q '[\]'     && passthrough   # backslash (\rm / エスケープ)
 
 set -f                       # glob 無効化 (二重防御)
 # shellcheck disable=SC2086
@@ -44,7 +54,7 @@ set -- $trimmed              # IFS 空白で token 分割 (quote/glob は上で�
 [ "${1:-}" = "command" ] && shift
 case "${1:-}" in
   rm|/bin/rm|/usr/bin/rm) shift ;;
-  *) exit 0 ;;
+  *) passthrough ;;
 esac
 
 # --- G2: フラグ検査 + target 抽出 ---
@@ -60,11 +70,11 @@ $tok"
   case "$tok" in
     --) afterdd=1 ;;
     --recursive|--force|--verbose|--interactive|--dir) : ;;
-    --*) exit 0 ;;                       # 未知 long flag
+    --*) passthrough ;;                       # 未知 long flag
     -*)
       opt=${tok#-}
       case "$opt" in
-        ""|*[!rRfivd]*) exit 0 ;;        # "-" 単体 or 許可外文字
+        ""|*[!rRfivd]*) passthrough ;;        # "-" 単体 or 許可外文字
         *) : ;;                          # r R f i v d クラスタのみ
       esac
       ;;
@@ -73,7 +83,7 @@ $tok" ;;
   esac
 done
 
-[ -n "$targets" ] || exit 0              # target 0 個
+[ -n "$targets" ] || passthrough              # target 0 個
 
 # --- G3: 全 target が承認ルート配下か ---
 HOME_DIR=${HOME:-}
@@ -95,7 +105,7 @@ add_root "/private/tmp"
 [ -n "$HOME_DIR" ] && add_root "$HOME_DIR/.claude/tmp"
 [ -n "$CWD" ] && add_root "${CWD%/}/tmp"
 
-[ -n "$canon_roots" ] || exit 0
+[ -n "$canon_roots" ] || passthrough
 
 # canon_parent が承認ルートのいずれかと等しい or その配下なら 0。
 under_root() {
@@ -124,24 +134,24 @@ for t in $targets; do
   # ${t#~/} は macOS /bin/sh で ~ を HOME に展開するため \~/ でエスケープ
   # shellcheck disable=SC2088
   case "$t" in
-    "~"|"~/") IFS=$OLDIFS; exit 0 ;;     # home 自体は対象外
+    "~"|"~/") IFS=$OLDIFS; passthrough ;;     # home 自体は対象外
     "~/"*) t="$HOME_DIR/${t#\~/}" ;;
-    ~*) IFS=$OLDIFS; exit 0 ;;            # ~user 非対応
+    ~*) IFS=$OLDIFS; passthrough ;;            # ~user 非対応
   esac
   # 相対 → cwd 基準
   case "$t" in
     /*) abs="$t" ;;
-    *) [ -n "$CWD" ] || { IFS=$OLDIFS; exit 0; }; abs="${CWD%/}/$t" ;;
+    *) [ -n "$CWD" ] || { IFS=$OLDIFS; passthrough; }; abs="${CWD%/}/$t" ;;
   esac
   leaf=$(basename "$abs")
   case "$leaf" in
-    "."|"..") IFS=$OLDIFS; exit 0 ;;      # . / .. は素通し
+    "."|"..") IFS=$OLDIFS; passthrough ;;      # . / .. は素通し
   esac
   parent=$(dirname "$abs")
-  canon_parent=$(cd "$parent" 2>/dev/null && pwd -P) || { IFS=$OLDIFS; exit 0; }
+  canon_parent=$(cd "$parent" 2>/dev/null && pwd -P) || { IFS=$OLDIFS; passthrough; }
   if ! under_root "$canon_parent"; then
     IFS=$OLDIFS
-    exit 0
+    passthrough
   fi
 done
 IFS=$OLDIFS

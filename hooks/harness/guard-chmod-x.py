@@ -32,6 +32,17 @@ DENY_REASON_LABEL = "chmod-x-auto-trigger-path"
 
 
 def passthrough() -> None:
+    """判断を出さずに終了する (既存 ask フローに委ねる)。
+
+    判断は出さないが観測痕跡は残す (#587 / ADR 0043)。無出力の exit は transcript に
+    attachment を残さず、棚卸しで「壊れて死んだ guard」と「窓内に出番が無かった guard」が
+    同じ見え方になる。`permissionDecision` を持たない envelope は通常の permission フローへ
+    委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard
+    の一致を見る)。
+    """
+    sys.stdout.write(
+        '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
+    )
     sys.exit(0)
 
 

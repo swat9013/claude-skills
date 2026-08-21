@@ -40,9 +40,29 @@ STATE_DIR_ENV = "WORKTREE_GUARD_STATE_DIR"
 STATE_TTL_SECONDS = 7 * 24 * 3600
 GUARDED_WRITE_TOOLS = ("Edit", "Write")
 
+# 発火した event 名。payload を読めた時点で main() が設定し、passthrough() が観測痕跡を
+# 出すかどうかの判定に使う (本 hook は SessionStart と PreToolUse の両方に登録されている)。
+HOOK_EVENT = ""
+
 
 def passthrough() -> None:
-    """出力なし exit 0 = 判定しない (通常の permission フローに委ねる)。"""
+    """判定しない (通常の permission フローに委ねる)。
+
+    PreToolUse で発火したときだけ pass の観測痕跡を 1 行出す (#587 / ADR 0043)。無出力の
+    exit は transcript に attachment を残さず、棚卸しで「壊れて死んだ guard」と「窓内に
+    出番が無かった guard」が同じ見え方になる。`permissionDecision` を持たない envelope は
+    通常の permission フローへ委ねるので、判断の意味論は無出力のときと変わらない。
+
+    **SessionStart は対象外**にする。本 hook は 2 event に登録されており、SessionStart の
+    hook stdout は**モデルの文脈に入る** (実 transcript で確認済み) — PreToolUse と違って
+    観測の代金を文脈汚染で払うことになるため、そちら側は無出力のままにする。payload を
+    読めなかった経路も event が不明なので無出力 (痕跡は「hook が起動した」の証拠であって、
+    判定まで到達した証拠ではない)。
+    """
+    if HOOK_EVENT == "PreToolUse":
+        sys.stdout.write(
+            '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
+        )
     sys.exit(0)
 
 
@@ -167,6 +187,8 @@ def prune_stale_states(state_dir: str) -> None:
 
 
 def main() -> None:
+    global HOOK_EVENT
+
     try:
         data = json.loads(sys.stdin.read())
     except (ValueError, TypeError):
@@ -174,6 +196,7 @@ def main() -> None:
     if not isinstance(data, dict):
         passthrough()
 
+    HOOK_EVENT = str(data.get("hook_event_name") or "")
     session_id = str(data.get("session_id") or "")
     cwd = str(data.get("cwd") or "")
     is_subagent = bool(data.get("agent_id") or data.get("agent_type"))

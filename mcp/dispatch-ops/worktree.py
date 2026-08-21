@@ -1,12 +1,18 @@
-"""WorktreePort — dispatch worktree (`i<N>` 規約) の観測と安全回収の継ぎ目。
+"""WorktreePort — dispatch worktree の観測と安全回収の継ぎ目。
 
 spec §4.4 の `observe_worktrees` / `worktree_tidy` を提供する。VCS は git のみを想定するので
 port (`WorktreePort`) と adapter (`GitWorktrees`) を 1 module に置く (tracker が 3 module に
 割れているのは adapter が gh / glab の 2 つあるため)。
 
-継ぎ目は 2 段ある: 呼び出し側 (`main.py` / テストの代役) が見るのは `WorktreePort` の 4 method
-だけで、その下で git を起こすのが `proc.command_runner` で作った `run_command`。段階関数 (parse / 選別 / 安全回収)
-は `_` prefix の実装詳細であり、自 module のテスト以外から import しない。
+継ぎ目は 3 段ある。呼び出し側 (`main.py` / テストの代役) が見るのは `WorktreePort` の 4 method
+だけで、その下で git を起こすのが `proc.command_runner` で作った `run_command`。その間に、観測から
+削除計画を起こす**純関数の内部 seam** (`tidy_snapshot` / `plan_tidy` / `derive_tidy_scope`) が在る。
+
+内部 seam を面に出してあるのは、掃除の選別 (どのツリーを消し、どれを除外するか) が本 module で
+最も不可逆な判断であり、git を起こさずに 1 本のテストで再現できる形に保つため (issue #610)。
+port 面には出さない — 出すと呼び出し側が実装の途中経過に結合し、port を差し替えられなくなる。
+安全回収 (`_remove_if_safe`) と parse / 照合の段 (`_parse_*` / `_slug_of` / `_lock_state` /
+`_removal_args`) は引き続き `_` prefix の実装詳細で、自 module のテスト以外から import しない。
 
 台帳を伴う掃除 (`tidy_dispatches` / `sweep_dispatches`) は port の面に載せず module 関数に置く。
 台帳から保護 / 回収対象を導出するのも回収後に `cleaned` を記帳するのも VCS に触れない手続きなので、
@@ -28,14 +34,21 @@ port へ持ち上げると判断材料の導出まで VCS 実装の選択に引�
 - 保護対象は台帳の phase から導出する (`derive_tidy_scope`)。LLM が会話内記憶から `--active` を
   手組みする旧経路 (誤ると作業ツリー消失) を廃した spec §4.4 の主眼
 
-`i<N>` 語彙の判定は `refs.parse_issue_slug` が唯一の正本。本 module は branch 命名規約
+`i<N>` 語彙の判定は `refs.parse_number_slug` が唯一の正本。本 module は branch 命名規約
 (Claude Code の `--worktree i<N>` が branch を `worktree-i<N>` にする) だけを所有し、prefix を
 剥がしてから refs へ渡す。語彙側に別定義を置くと、pane label (refs 由来) と worktree ディレクトリ名が
 同じ綴りを別の番号に読む drift が起きる。
+
+**掃除 (tidy / sweep) の照合だけは綴りを分類せず、台帳由来の slug 集合への membership で行う**
+(`_slug_of`、#621)。番号を持たない tracker (jira の `swatcf-14`) の木もこれで保護・回収でき、
+`observe` の `i<N>` 規約は動かさずに済む。綴りで分類しないのは、key slug の綴りが `feature-2`
+のような**人間が自由に付ける branch 名と区別が付かない**ため — 綴りだけで dispatch 由来と
+判定すると、台帳と無関係なツリーを掃除の対象に取り込む。
 """
 
 import os
 import re
+import stat
 import time
 
 import ledger as ledger_mod
@@ -91,16 +104,25 @@ def _issue_ref(number):
     return f"i{number}"
 
 
+def _strip_branch_prefix(value):
+    """branch 命名規約の prefix を剥がして slug の綴りだけにする (本 module 唯一の綴り知識)。"""
+    name = value or ""
+    if name.startswith(BRANCH_PREFIX):
+        name = name[len(BRANCH_PREFIX) :]
+    return name
+
+
 def _parse_branch(value):
     """`i<N>` / `worktree-i<N>` から issue 番号を返す (規約外は None)。
 
     prefix を剥がす knowledge だけが本 module の担当で、残りの綴りが `i<N>` 語彙かどうかの
     判定は refs に委ねる。`i007` のような非正準名は refs が撥ねるので追跡対象外になる。
+
+    読むのは number slug (`i<N>`) だけ。`observe` の「dispatch した作業ツリーの一覧」を
+    番号体系に閉じておくための判定であって、**掃除の保護 / 回収の照合はこれを使わない**
+    (`_slug_of` の membership が担い、番号を持たない tracker の木もそちらで守られる)。
     """
-    name = value or ""
-    if name.startswith(BRANCH_PREFIX):
-        name = name[len(BRANCH_PREFIX) :]
-    return refs.parse_issue_slug(name)
+    return refs.parse_number_slug(_strip_branch_prefix(value))
 
 
 def _issue_of(branch, path):
@@ -114,6 +136,32 @@ def _issue_of(branch, path):
         return number
     if path:
         return _parse_branch(os.path.basename(path.rstrip("/")))
+    return None
+
+
+def _slug_of(branch, path, slugs):
+    """branch / worktree path が指す issue slug のうち `slugs` に属するもの (無ければ None)。
+
+    **綴りを「slug か否か」で分類せず、台帳が持っている slug 集合への membership で決める。**
+    key slug (`swatcf-14`) の綴りは `feature-2` / `wip-3` のような人間が自由に付ける branch 名
+    と区別が付かないので、綴りだけで dispatch 由来と判定すると台帳と無関係なツリーを保護・
+    回収の対象に取り込む。集合が台帳由来である限り、当たった綴りは必ずその dispatch を指す。
+
+    番号体系 (gh / glab) の挙動は変わらない — `i217` の membership は、台帳が `gh#217` を
+    持っているときだけ当たる旧来の番号照合と 1:1 で対応する。`i0217` のような非正準名は
+    `refs.format_issue_slug` が正準形しか作らないので集合に入らず、従来どおり当たらない。
+
+    branch 名と path の basename を独立に見るのは、`--worktree i<N>` が path を `i<N>`、
+    branch を `worktree-i<N>` にするため (片方だけの照合では取りこぼす)。
+    """
+    if not slugs:
+        return None
+    candidates = [_strip_branch_prefix(branch)]
+    if path:
+        candidates.append(_strip_branch_prefix(os.path.basename(path.rstrip("/"))))
+    for candidate in candidates:
+        if candidate and candidate in slugs:
+            return candidate
     return None
 
 
@@ -192,34 +240,49 @@ def _parse_lock_pid(reason):
     return int(match.group(1)) if match else None
 
 
-def _pid_alive(pid, kill=os.kill):
-    """pid が生存しているか。**ESRCH のときだけ False** を返す。
+def _pid_alive_using(kill):
+    """`kill(pid, 0)` で pid 生存を判定する述語を作る。**ESRCH のときだけ False** を返す。
 
     `EPERM` (存在するが signal を送れない) を死亡と読むと稼働中セッションの worktree を
     消す。sandbox 下では稼働中プロセスへの `kill(pid, 0)` が実際に EPERM で落ちる
     (実測 2026-08-02) ため、ESRCH 以外はすべて生存側に倒す。
+
+    signal 送出を引数に取るのは、この errno 規則だけを実 process 抜きで固定できるように
+    するため。判定そのものの差し替えは adapter の `pid_alive` 注入が担う (2 段に分けて
+    あるのは、lock の live / stale 分岐を試すのに毎回 errno を作らせないため)。
     """
-    try:
-        kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
+
+    def _alive(pid):
+        try:
+            kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
         return True
-    return True
+
+    return _alive
 
 
-def _lock_state(locked):
+# 生存判定の実体。`GitWorktrees(pid_alive=...)` の既定であり、production で使う唯一の束縛
+_pid_alive = _pid_alive_using(os.kill)
+
+
+def _lock_state(locked, pid_alive):
     """`git worktree list --porcelain` の locked 値 → `unlocked` / `live` / `stale` / `unparsed`。
 
     `locked` が None のときだけ未 lock。理由なし lock ("") は「読めない lock」であって
     未 lock ではない — 消せる側に倒すと他者の lock を踏む。
+
+    `pid_alive` (pid -> bool) は lock に書かれた pid の生存判定。既定を持たせない — 既定で
+    実 process を叩くと、呼び出し側が注入し忘れても気づけない。
     """
     if locked is None:
         return "unlocked"
     pid = _parse_lock_pid(locked)
     if pid is None:
         return "unparsed"
-    return "live" if _pid_alive(pid) else "stale"
+    return "live" if pid_alive(pid) else "stale"
 
 
 def _removal_args(path, *, locked, force):
@@ -250,7 +313,7 @@ def _git_error(step, args, rc, stderr):
     }
 
 
-def _remove_if_safe(git, root, worktree, branch, *, locked=None):
+def _remove_if_safe(git, root, worktree, branch, *, locked=None, pid_alive):
     """dirty 検査 → lock 判定 → worktree remove → 非昇格の `branch -d` (安全規則の唯一の実装)。
 
     守る規則は 3 つ: **dirty な worktree は消さない** (未回収の変更を失う)、**live / 読めない
@@ -270,6 +333,7 @@ def _remove_if_safe(git, root, worktree, branch, *, locked=None):
     - branch: falsy / "HEAD" なら branch 削除自体を試みない (detached worktree の回収)
     - locked: `git worktree list --porcelain` の locked 値をそのまま渡す (None = 未 lock)。
       `live` / `unparsed` なら remove も branch 削除も撃たず `_lock_state` を載せて返す
+    - pid_alive: lock の pid 生存判定 (pid -> bool)。git と同じ外部状態の観測なので注入で受ける
     """
     result = {
         "dirty": None,
@@ -290,7 +354,7 @@ def _remove_if_safe(git, root, worktree, branch, *, locked=None):
         result["dirty"] = bool(out.strip())
         if result["dirty"]:
             return result
-        result["lock_state"] = _lock_state(locked)
+        result["lock_state"] = _lock_state(locked, pid_alive)
         if result["lock_state"] in BLOCKING_LOCK_STATES:
             # 稼働中セッション / 他者の lock。branch はその worktree に checkout 済みなので
             # branch 削除も試みない
@@ -314,20 +378,21 @@ def _remove_if_safe(git, root, worktree, branch, *, locked=None):
 # --- 掃除の選別 (repo_tidy の移植) --------------------------------------------------
 
 
-def _is_protected(branch, path, protected_issues):
+def _is_protected(branch, path, protected_slugs):
     """台帳が保護している issue に属する branch / worktree か。
+
+    `protected_slugs` は `derive_tidy_scope` が台帳から導出した issue slug の集合。番号を
+    持たない tracker (jira の `swatcf-14`) の entry も同じ集合に入るので、tidy / sweep の
+    両方でその worktree が守られる (#621)。
 
     branch 名と worktree path を**独立に**照合する — 片方だけが保護対象を指す食い違い
     (branch `worktree-i218` が path `i217` に checkout されている等) でも、どちらか一方が
-    当たれば保護する側に倒す。
+    当たれば保護する側に倒す (`_slug_of`)。
     """
-    return (
-        _issue_of(branch, None) in protected_issues
-        or _issue_of(None, path) in protected_issues
-    )
+    return _slug_of(branch, path, protected_slugs) is not None
 
 
-def _select_branches(merged, worktrees, default_branch, protected_issues):
+def _select_branches(merged, worktrees, default_branch, protected_slugs):
     """merged branch → 削除対象と除外理由。除外は報告用に理由付きで残す。"""
     targets, excluded = [], []
     for branch in merged:
@@ -335,41 +400,183 @@ def _select_branches(merged, worktrees, default_branch, protected_issues):
             excluded.append({"branch": branch, "reason": "protected-branch"})
             continue
         path = worktrees.get(branch)
-        if _is_protected(branch, path, protected_issues):
+        if _is_protected(branch, path, protected_slugs):
             excluded.append({"branch": branch, "reason": "ledger-protected"})
             continue
         targets.append({"branch": branch, "worktree": path})
     return targets, excluded
 
 
-def _select_reclaim(worktrees, reclaim_issues, protected_issues, handled):
+def same_worktree(recorded, observed, root):
+    """記録パスと観測パスが同じツリーを指すか。判定できないなら None。
+
+    issue slug は project に 1 つでも clone をまたぐと一意でない (ADR 0036 — 実装 repo は
+    複数ありうる)。slug だけで突き合わせると**別 clone の同 slug ツリーを回収**し、その回収を
+    根拠に entry が `cleaned` へ進んで本物のツリーが永久に取り残される。
+
+    相対パスは root 基準で解く (台帳導入初期の entry は相対で記録されている)。realpath を
+    通すのは、ghq 配下を symlink にした構成 (ADR 0027) で記録と git の答えが別表記になる
+    ため — 表記差を不一致と読むと、回収すべきツリーが回収されない側に倒れる。
+    """
+    if not recorded or not observed:
+        return None
+    if not os.path.isabs(recorded):
+        if not root:
+            return None
+        recorded = os.path.join(str(root), recorded)
+    return os.path.realpath(recorded) == os.path.realpath(observed)
+
+
+def _select_reclaim(worktrees, reclaim_worktrees, protected_slugs, handled, root):
     """台帳が `done` と記録した issue の worktree → 削除対象と除外理由。
+
+    `reclaim_worktrees` は issue slug → 台帳が記録した worktree パス (無ければ None)。記録が
+    あるのに観測したパスと違うツリーは**別 clone の同 slug** なので回収しない。記録が無い entry
+    は slug だけで回収する (記録以前の entry を回収不能にしない)。
 
     merged branch 経路が既に扱った branch (`handled`) は飛ばす — 同じ worktree を 2 回
     remove しにいかず、報告も重複させない。
     """
     targets, excluded = [], []
     for branch, path in sorted(worktrees.items()):
-        issue = _issue_of(branch, path)
-        if issue not in reclaim_issues or branch in handled:
+        slug = _slug_of(branch, path, reclaim_worktrees)
+        if slug is None or branch in handled:
             continue
         if branch in PROTECTED:
             # path だけが規約に合う worktree (protected branch を checkout 中) を消さない
             excluded.append({"branch": branch, "reason": "protected-branch"})
             continue
-        if _is_protected(branch, path, protected_issues):
+        if _is_protected(branch, path, protected_slugs):
             excluded.append({"branch": branch, "reason": "ledger-protected"})
             continue
-        targets.append({"branch": branch, "worktree": path, "issue_number": issue})
+        recorded = reclaim_worktrees[slug]
+        if same_worktree(recorded, path, root) is False:
+            excluded.append(
+                {
+                    "branch": branch,
+                    "reason": "recorded-path-mismatch",
+                    "worktree": path,
+                    "recorded": recorded,
+                }
+            )
+            continue
+        targets.append({"branch": branch, "worktree": path, "issue_slug": slug})
     return targets, excluded
 
 
-def derive_tidy_scope(entries):
-    """台帳 entry 列 → 保護対象 / 回収対象の issue 番号 (spec §4.4 の「台帳から自動導出」)。
+def _contains_cwd(cwd, path):
+    """`path` の worktree が `cwd` を含むか (server プロセスの足元を消さないための判定)。"""
+    real = os.path.realpath(path)
+    return cwd == real or cwd.startswith(real + os.sep)
 
-    entry は `ledger.Ledger` の view 形式 (`phase` / `issue.number` / `issue_ref`) を読む。
-    番号を持たない tracker (jira は `PROJ-9` 形式) は `i<N>` 規約に写せないので `unmappable` に
+
+def _drop_self(targets, excluded, cwd):
+    """server プロセスが立っている worktree を対象から外す (自分の足元を消さない)。"""
+    kept = []
+    for target in targets:
+        path = target["worktree"]
+        if path and _contains_cwd(cwd, path):
+            excluded.append({"branch": target["branch"], "reason": "server-cwd"})
+            continue
+        kept.append(target)
+    return kept
+
+
+# --- 掃除の計画 (観測 snapshot → 削除計画) ------------------------------------------
+
+
+def tidy_snapshot(*, root, cwd, default_branch, merged_text, worktree_text):
+    """git の生出力 → 計画に要る観測だけを持つ snapshot (parse をここへ閉じる)。
+
+    - `merged`: `branch --merged <ref>` が挙げた branch 名
+    - `worktrees`: branch → worktree パス。掃除の単位が branch なので、branch を持たない
+      worktree (detached) はここで落ちる
+    - `locks`: branch → lock 理由 (未 lock は None、理由なし lock は "")
+
+    `root` / `cwd` も載せる — 計画が記録パスの照合 (`same_worktree`) と自分の足元の除外に
+    使うため。**git には触れない**ので、テストは porcelain の text から snapshot を組んで
+    計画だけを検査できる (issue #610 の内部 seam)。
+    """
+    records = _parse_worktrees(worktree_text)
+    return {
+        "root": str(root),
+        "cwd": os.path.realpath(str(cwd)),
+        "default_branch": default_branch,
+        "merged": _parse_merged_branches(merged_text),
+        "worktrees": _worktree_map(records),
+        "locks": _lock_map(records),
+    }
+
+
+def plan_tidy(snapshot, protected_slugs, reclaim_worktrees):
+    """観測 snapshot + 台帳由来の scope → 削除計画。git に触れない純関数。
+
+    → `{"targets": [...], "excluded": [...]}`。target は
+    `{branch, worktree, locked, route, issue_slug}` で、`route` が `branch -d` の拒否を
+    どう読むかを決める (`merged` = merged と読んだのに消せない = 前提が崩れている /
+    `reclaim` = squash merge 後の定常状態で正常結果)。
+
+    2 経路の順序は計画の一部。merged branch 経路が扱った branch (対象・除外の両方) は
+    `handled` に入り、駐機 worktree 経路は同じツリーを 2 度 remove しにいかない。除外の並び
+    (merged の除外 → merged の server-cwd → 駐機の除外 → 駐機の server-cwd) も報告の外形
+    なので保つ。
+
+    merged 経路の `issue_slug` は**綴りから起こさず**、台帳由来の回収対象集合への membership
+    でだけ付ける (#621)。集合の外の branch は帰属先無し (None) のまま報告し、台帳に居ない
+    branch を「その issue のツリー」と名乗らせない。
+    """
+    excluded = []
+    merged_targets, merged_excluded = _select_branches(
+        snapshot["merged"],
+        snapshot["worktrees"],
+        snapshot["default_branch"],
+        protected_slugs,
+    )
+    excluded.extend(merged_excluded)
+    merged_targets = _drop_self(merged_targets, excluded, snapshot["cwd"])
+
+    handled = {t["branch"] for t in merged_targets} | {e["branch"] for e in excluded}
+    reclaim_targets, reclaim_excluded = _select_reclaim(
+        snapshot["worktrees"],
+        reclaim_worktrees,
+        protected_slugs,
+        handled,
+        snapshot["root"],
+    )
+    excluded.extend(reclaim_excluded)
+    reclaim_targets = _drop_self(reclaim_targets, excluded, snapshot["cwd"])
+
+    locks = snapshot["locks"]
+    targets = [
+        {
+            **target,
+            "route": "merged",
+            "issue_slug": _slug_of(target["branch"], target["worktree"], reclaim_worktrees),
+            "locked": locks.get(target["branch"]),
+        }
+        for target in merged_targets
+    ]
+    targets += [
+        {**target, "route": "reclaim", "locked": locks.get(target["branch"])}
+        for target in reclaim_targets
+    ]
+    return {"targets": targets, "excluded": excluded}
+
+
+def derive_tidy_scope(entries):
+    """台帳 entry 列 → 保護対象 / 回収対象の issue slug (spec §4.4 の「台帳から自動導出」)。
+
+    entry は `ledger.Ledger` の view 形式 (`phase` / `issue_ref` / `agent`) を読む。鍵は
+    **番号ではなく issue slug** (`refs.format_issue_slug`) — 番号を持たない tracker
+    (jira の `jira:PROJ-9` → `proj-9`) も同じ集合に入り、tidy / sweep の両方で守られる (#621)。
+
+    slug を作れない entry (`issue_ref` が無い / 中立 ref の書式でない) は `unmappable` に
     落として報告する — 黙って無視すると「保護したつもりの worktree が消える」に化ける。
+    正常な台帳では空だが、手で編集された state や将来の ref 語彙の取りこぼしをここで鳴らす。
+
+    回収対象には記録された worktree パスを添える (slug だけでは clone をまたいで一意にならない
+    — `same_worktree`)。保護対象は slug だけで持つ: 別 clone の同 slug まで保護に数えるのは
+    過剰保護で、安全側の外し方だから。
     """
     protected, reclaim, unmappable = set(), {}, []
     for entry in entries:
@@ -379,17 +586,21 @@ def derive_tidy_scope(entries):
             and phase not in vocabulary.RECLAIM_PHASES
         ):
             continue
-        number = (entry.get("issue") or {}).get("number")
-        if number is None:
+        try:
+            slug = refs.format_issue_slug(entry.get("issue_ref"))
+        except refs.RefError:
             unmappable.append({"issue_ref": entry.get("issue_ref"), "phase": phase})
             continue
         if phase in vocabulary.PROTECTED_PHASES:
-            protected.add(number)
+            protected.add(slug)
         else:
-            reclaim[number] = entry.get("issue_ref")
-    # 同じ番号が両方に立つことは phase が 1 つである以上ありえないが、保護を優先して念のため落とす
-    for number in protected:
-        reclaim.pop(number, None)
+            reclaim[slug] = {
+                "issue_ref": entry.get("issue_ref"),
+                "worktree": (entry.get("agent") or {}).get("worktree"),
+            }
+    # 同じ slug が両方に立つことは phase が 1 つである以上ありえないが、保護を優先して念のため落とす
+    for slug in protected:
+        reclaim.pop(slug, None)
     return {"protected": protected, "reclaim": reclaim, "unmappable": unmappable}
 
 
@@ -400,39 +611,59 @@ def tidy_dispatches(port, ledger):
     """台帳から保護 / 回収対象を導出して掃除し、回収できた worktree の entry を `cleaned` へ送る。
 
     port と ledger をどちらも引数で受ける — 生成は tool 層の責務。`derive_tidy_scope` が既に
-    台帳 view の形 (`phase` / `issue.number` / `issue_ref`) を読んでいた依存が、これで
-    signature に現れる。
+    台帳 view の形 (`phase` / `issue_ref` / `agent`) を読んでいた依存が、これで signature に
+    現れる。
     """
     scope = derive_tidy_scope(ledger.list_entries())
-    result = port.tidy(scope["protected"], set(scope["reclaim"]))
-    cleaned, transition_errors = _clean_reclaimed(
-        ledger, scope["reclaim"], result["removed_worktrees"]
+    reclaim = scope["reclaim"]
+    result = port.tidy(
+        scope["protected"], {slug: rec["worktree"] for slug, rec in reclaim.items()}
+    )
+    cleaned, transition_errors, unattributed = _clean_reclaimed(
+        ledger, reclaim, result["removed_worktrees"], port.root
     )
     result["ledger"] = {
         "repo_key": ledger.repo_key,
-        "protected_issues": sorted(scope["protected"]),
-        "reclaimable_issues": sorted(scope["reclaim"]),
+        "protected_slugs": sorted(scope["protected"]),
+        "reclaimable_slugs": sorted(reclaim),
         "unmappable": scope["unmappable"],
         "cleaned": cleaned,
+        "unattributed": unattributed,
         "transition_errors": transition_errors,
     }
     return result
 
 
-def _clean_reclaimed(ledger, reclaim, removed_worktrees):
-    """回収できた worktree を持つ entry を `cleaned` へ送る → (遷移した ref, 失敗した ref)。
+def _clean_reclaimed(ledger, reclaim, removed_worktrees, root):
+    """回収できた worktree を持つ entry を `cleaned` へ送る。
+
+    → (遷移した ref, 遷移に失敗した ref, 記録パスと一致せず遷移させなかったもの)。
 
     遷移させるのは**実際に消えた** worktree の entry だけ。server 自身が今作った事実の記帳で
     あって判断ではないので、dirty で見送った worktree や最初から無かった worktree は動かさない
     (後者は台帳と現実の食い違いなので `resolve` の領分)。
 
+    記録パスと違うツリーの回収では遷移させない — 別 clone の同 slug ツリーや merged branch 経路の
+    巻き添えで `cleaned` にすると、その entry は二度と回収対象にならず本物のツリーが残り続ける
+    (`same_worktree`)。黙って落とさず `unattributed` として返す。
+
     遷移の失敗は集めて返し、掃除の結果ごと落とさない — worktree は既に消えているので、
     例外で応答を捨てると「何が消えたか」の記録が呼び出し側に残らない。
     """
-    cleaned, errors = [], []
+    cleaned, errors, unattributed = [], [], []
     for removed in removed_worktrees:
-        issue_ref = reclaim.get(removed["issue_number"])
-        if issue_ref is None:
+        record = reclaim.get(removed["issue_slug"])
+        if record is None:
+            continue
+        issue_ref = record["issue_ref"]
+        if same_worktree(record["worktree"], removed["worktree"], root) is False:
+            unattributed.append(
+                {
+                    "issue_ref": issue_ref,
+                    "worktree": removed["worktree"],
+                    "recorded": record["worktree"],
+                }
+            )
             continue
         try:
             ledger.transition(
@@ -443,7 +674,7 @@ def _clean_reclaimed(ledger, reclaim, removed_worktrees):
             cleaned.append(issue_ref)
         except (ledger_mod.LedgerError, vocabulary.TransitionError) as exc:
             errors.append({"issue_ref": issue_ref, "error": str(exc)})
-    return cleaned, errors
+    return cleaned, errors, unattributed
 
 
 def sweep_dispatches(port, ledger, *, grace_hours, max_age_hours, dry_run):
@@ -463,7 +694,7 @@ def sweep_dispatches(port, ledger, *, grace_hours, max_age_hours, dry_run):
     )
     result["ledger"] = {
         "repo_key": ledger.repo_key,
-        "protected_issues": sorted(scope["protected"]),
+        "protected_slugs": sorted(scope["protected"]),
         "unmappable": scope["unmappable"],
     }
     return result
@@ -478,6 +709,9 @@ def _admin_dir_last_activity(root, name):
     `.git/worktrees/<name>/` 直下ファイル (HEAD / index 等) は git 操作のたびに更新される
     ため、worktree root の mtime より生存 proxy として頑健。読めない場合 (dir 不在 / 権限)
     は None — 呼び出し側は安全側 (keep) に倒す。
+
+    `GitWorktrees(last_activity=...)` の既定であり、production で使う唯一の束縛
+    (`_pid_alive` と同じ扱い)。実 FS を叩く観測なので、テストは注入で差し替える。
     """
     admin = os.path.join(str(root), ".git", "worktrees", name)
     try:
@@ -504,14 +738,18 @@ run_command = proc.command_runner(error=WorktreeError, timeout_sec=SUBPROCESS_TI
 class WorktreePort:
     """dispatch worktree への中立 API。VCS 固有の呼び出しは下の継ぎ目 method が担う。
 
-    継ぎ目は**git を触る 4 method だけ**。段階関数 (`_parse_worktrees` / `_select_*` /
-    `_remove_if_safe` 等) は adapter の内側にあり、port の面には出さない — 出すと呼び出し側が
+    継ぎ目は**git を触る 4 method だけ**。安全回収と parse の段 (`_remove_if_safe` /
+    `_parse_worktrees` 等) は adapter の内側にあり、port の面には出さない — 出すと呼び出し側が
     実装の途中経過に結合し、port を差し替えられなくなる。
 
-    台帳 entry から保護 / 回収対象を導出する `derive_tidy_scope` は VCS に触れない純関数なので
-    port を通さない (module 関数のまま)。adapter 越しにすると、判断材料の導出まで VCS 実装の
-    選択に引きずられる。
+    VCS に触れない純関数 (`derive_tidy_scope` の台帳導出、`tidy_snapshot` / `plan_tidy` の
+    削除計画) は port を通さない (module 関数のまま)。adapter 越しにすると、判断材料の導出まで
+    VCS 実装の選択に引きずられる。
     """
+
+    # この port が面倒を見る clone の root。台帳が相対で記録したパスを解く基準になるので、
+    # 面に出しておく (実装が持つ値であって、呼び出し側が設定するものではない)
+    root = None
 
     def resolve_default_branch(self):
         """default branch 名と merged 判定に使う ref を `(name, ref)` で返す。"""
@@ -521,15 +759,33 @@ class WorktreePort:
         """`i<N>` 規約の worktree 一覧 + dirty 状態 → `{root, count, worktrees}`。"""
         raise NotImplementedError
 
-    def tidy(self, protected_issues, reclaim_issues):
-        """merged branch / 回収対象 worktree を安全規則に従って掃除する。
+    def probe(self, path, issue_ref):
+        """記録された worktree パス 1 本を観測する (別 clone のツリーを照合する継ぎ目)。
 
-        `protected_issues` / `reclaim_issues` は `derive_tidy_scope` が台帳から導出した issue
-        番号。実装は「どれを保護すべきか」を判断せず、渡された集合をそのまま適用する。
+        `observe` が返すのは**この port の root にぶら下がる worktree だけ**なので、別の
+        clone に切られたツリーはそこに現れない。台帳 entry が持つパスを直接見る経路を
+        分けてあるのは、「一覧に無い」を「消えた」と読ませないため (ADR 0036)。
+
+        受け取るのは番号ではなく中立 ref。**番号を持たない ref (jira) でも記録パスを
+        観測できる**ようにするためで、record の `label` / `issue_number` はその ref から
+        導く (key で識別する ref の `issue_number` は null)。
+
+        返り値は `observe` の record と同じ形 + `issue_ref` + `source`。**存在しないなら
+        None、判定できなければ `WorktreeError`** — この 3 値を潰すと、観測できなかった
+        ツリーが「回収済み」に化ける。
         """
         raise NotImplementedError
 
-    def sweep(self, protected_issues, *, grace_hours, max_age_hours, dry_run, now):
+    def tidy(self, protected_slugs, reclaim_worktrees):
+        """merged branch / 回収対象 worktree を安全規則に従って掃除する。
+
+        `protected_slugs` は保護する issue slug の集合、`reclaim_worktrees` は回収する issue
+        slug → 台帳が記録した worktree パス (無ければ None)。どちらも `derive_tidy_scope` が
+        台帳から導出したもので、実装は「どれを保護すべきか」を判断せず渡されたまま適用する。
+        """
+        raise NotImplementedError
+
+    def sweep(self, protected_slugs, *, grace_hours, max_age_hours, dry_run, now):
         """worktree 領域を生成主体を問わず回収し、総数を有界化する。
 
         閾値は判断ではなく dial なので既定値は実装側が持つ。`now` (epoch 秒) は時刻の注入口 —
@@ -546,12 +802,26 @@ class GitWorktrees(WorktreePort):
 
     `cwd` は server プロセスが立っている場所。ここを含む worktree は回収対象から外す —
     自分の足元を消すと呼び出し元のセッションが宙に浮く。
+
+    外部状態の観測は 3 つとも注入で受ける (`run` = git、`pid_alive` = lock の pid 生存、
+    `last_activity` = git admin dir の mtime)。既定は production の実体だが、テストが差し
+    替える経路を signature に出しておく — module 属性を書き換える経路しか無いと、注入し
+    忘れが黙って実 process / 実 FS を叩く。
     """
 
-    def __init__(self, root, cwd=None, run=run_command):
+    def __init__(
+        self,
+        root,
+        cwd=None,
+        run=run_command,
+        pid_alive=_pid_alive,
+        last_activity=_admin_dir_last_activity,
+    ):
         self.root = str(root)
         self.cwd = os.path.realpath(str(cwd)) if cwd is not None else os.path.realpath(os.getcwd())
         self._run = run
+        self._pid_alive = pid_alive
+        self._last_activity = last_activity
 
     # --- git ------------------------------------------------------------------
 
@@ -633,10 +903,54 @@ class GitWorktrees(WorktreePort):
             )
         return {"root": self.root, "count": len(observed), "worktrees": observed}
 
+    def probe(self, path, issue_ref):
+        """記録された worktree パス 1 本の存在と dirty を見る (別 clone のツリー用)。
+
+        相対パスは本 port の root から解く — 台帳導入初期の entry は相対で記録されており、
+        絶対パス規約 (ADR 0036) 以前の記録を「判定できない」に落とすと保護が消える。
+
+        `label` / `issue_number` は渡された ref から導く。**パスを見るのに番号は要らない**
+        ので、番号を持たない ref (jira) でも記録パスの観測はこの経路で成立する
+        (`issue_number` は null で返り、突合は `issue_ref` で行う)。
+
+        `branch` / `locked` は **null 固定**。1 本のパスを見るだけで clone の worktree 一覧を
+        引かないためで、「branch が無い」ではない (`source` がその区別の印)。
+
+        存在しなければ None を返し、**stat が「無い」以外の理由で落ちたら raise する** —
+        権限や I/O の失敗を「無かった」と読むと、生きている作業ツリーを回収対象に見せる。
+        """
+        parsed = refs.parse_issue_ref(issue_ref)
+        target = path if os.path.isabs(path) else os.path.join(self.root, path)
+        try:
+            # `os.path.isdir` を使わないのは、存在しない (ENOENT) と判定できない (権限 / I/O)
+            # を同じ False に潰すため。前者だけが「無かった」という観測になる
+            found = stat.S_ISDIR(os.stat(target).st_mode)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise WorktreeError(f"worktree パスを観測できない ({target}): {exc}") from exc
+        if not found:
+            return None
+        rc, out, err = self._git(target, ["status", "--porcelain"])
+        return {
+            "label": refs.format_issue_slug(parsed["ref"]),
+            "issue_number": parsed["number"],
+            "issue_ref": parsed["ref"],
+            "path": target,
+            "branch": None,
+            "locked": None,
+            "dirty": bool(out.strip()) if rc == 0 else None,
+            "dirty_error": None if rc == 0 else err.strip(),
+            "source": "recorded-path",
+        }
+
     # --- tidy -----------------------------------------------------------------
 
-    def tidy(self, protected_issues, reclaim_issues):
+    def tidy(self, protected_slugs, reclaim_worktrees):
         """掃除の 2 経路 (merged branch / 台帳が `done` と記録した駐機 worktree) を通す。
+
+        観測 (`tidy_snapshot`) → 計画 (`plan_tidy`) → 適用の 3 段。**どれを消すかの判断は
+        すべて計画側の純関数に在り**、本 method に残るのは git を撃つ段だけ (issue #610)。
 
         `fetch --prune` で remote-tracking ref だけを最新化してから merged 判定を撃つので、
         どの worktree から呼ばれても working tree に触らない。
@@ -655,26 +969,20 @@ class GitWorktrees(WorktreePort):
             "failed": [],
         }
 
-        merged = _parse_merged_branches(self._git_out(["branch", "--merged", merged_ref]))
-        records = self._list_worktrees()
-        worktrees = _worktree_map(records)
-        locks = _lock_map(records)
-
-        targets, result["excluded"] = _select_branches(
-            merged, worktrees, default_branch, protected_issues
+        snapshot = tidy_snapshot(
+            root=self.root,
+            cwd=self.cwd,
+            default_branch=default_branch,
+            merged_text=self._git_out(["branch", "--merged", merged_ref]),
+            worktree_text=self._git_out(["worktree", "list", "--porcelain"]),
         )
-        targets = self._drop_self(targets, result["excluded"])
-        for target in targets:
-            self._remove_merged(target, locks.get(target["branch"]), result)
-
-        handled = {t["branch"] for t in targets} | {e["branch"] for e in result["excluded"]}
-        reclaimable, reclaim_excluded = _select_reclaim(
-            worktrees, reclaim_issues, protected_issues, handled
-        )
-        result["excluded"].extend(reclaim_excluded)
-        reclaimable = self._drop_self(reclaimable, result["excluded"])
-        for target in reclaimable:
-            self._remove_reclaimed(target, locks.get(target["branch"]), result)
+        plan = plan_tidy(snapshot, protected_slugs, reclaim_worktrees)
+        result["excluded"] = plan["excluded"]
+        for target in plan["targets"]:
+            if target["route"] == "merged":
+                self._remove_merged(target, result)
+            else:
+                self._remove_reclaimed(target, result)
 
         self._git_out(["worktree", "prune"])
         result["ok"] = result["fetch"]["ok"] and not result["failed"]
@@ -691,23 +999,11 @@ class GitWorktrees(WorktreePort):
             return {"ok": False, "error": f"fetch --prune failed: {err.strip()}"}
         return {"ok": True, "error": None}
 
-    def _drop_self(self, targets, excluded):
-        """server プロセスが立っている worktree を対象から外す (自分の足元を消さない)。"""
-        kept = []
-        for target in targets:
-            path = target["worktree"]
-            if path and self._contains_cwd(path):
-                excluded.append({"branch": target["branch"], "reason": "server-cwd"})
-                continue
-            kept.append(target)
-        return kept
-
-    def _contains_cwd(self, path):
-        real = os.path.realpath(path)
-        return self.cwd == real or self.cwd.startswith(real + os.sep)
-
-    def _reclaim(self, target, locked, result):
+    def _reclaim(self, target, result):
         """dirty 検査 → lock 判定 → worktree remove → 非昇格 `branch -d`。共通部分を result へ。
+
+        受け取る target は `plan_tidy` が組んだ 1 件 (`branch` / `worktree` / `locked` /
+        `issue_slug`)。**どれを消すかは既に決まっている** — ここに残るのは撃つ段だけ。
 
         続行不能 (dirty / live な lock / worktree remove 失敗) なら None、そうでなければ結果を
         そのまま返す — `branch -d` の拒否をどう読むかは経路で違うので呼び出し側に残す。dirty
@@ -718,7 +1014,14 @@ class GitWorktrees(WorktreePort):
         「人手が要る」信号が埋まる)。
         """
         branch, path = target["branch"], target["worktree"]
-        outcome = _remove_if_safe(self._git, self.root, path, branch, locked=locked)
+        outcome = _remove_if_safe(
+            self._git,
+            self.root,
+            path,
+            branch,
+            locked=target["locked"],
+            pid_alive=self._pid_alive,
+        )
         error = outcome["error"]
         if error and error["step"] == "status":
             raise WorktreeError(error["message"])
@@ -741,17 +1044,13 @@ class GitWorktrees(WorktreePort):
             return None
         if outcome["removed"]:
             result["removed_worktrees"].append(
-                {
-                    "branch": branch,
-                    "worktree": path,
-                    "issue_number": target.get("issue_number", _issue_of(branch, path)),
-                }
+                {"branch": branch, "worktree": path, "issue_slug": target["issue_slug"]}
             )
         return outcome
 
-    def _remove_merged(self, target, locked, result):
+    def _remove_merged(self, target, result):
         """merged branch を worktree ごと回収する。`branch -d` の拒否は failed。"""
-        outcome = self._reclaim(target, locked, result)
+        outcome = self._reclaim(target, result)
         if outcome is None:
             return
         if outcome["branch_deleted"]:
@@ -765,13 +1064,13 @@ class GitWorktrees(WorktreePort):
                 }
             )
 
-    def _remove_reclaimed(self, target, locked, result):
+    def _remove_reclaimed(self, target, result):
         """台帳 `done` の worktree を回収する。`branch -d` の拒否は skipped (正常結果)。
 
         squash merge 後は拒否が定常状態であり、failed に積むと ok が落ち続けて「人手が要る」
         信号が埋まる。回収の目的物は worktree で、それは成功している。
         """
-        outcome = self._reclaim(target, locked, result)
+        outcome = self._reclaim(target, result)
         if outcome is None:
             return
         if outcome["branch_deleted"]:
@@ -790,7 +1089,7 @@ class GitWorktrees(WorktreePort):
 
     def sweep(
         self,
-        protected_issues,
+        protected_slugs,
         *,
         grace_hours=SWEEP_DEFAULT_GRACE_HOURS,
         max_age_hours=SWEEP_DEFAULT_MAX_AGE_HOURS,
@@ -843,7 +1142,7 @@ class GitWorktrees(WorktreePort):
             if not self._under_worktrees_dir(path):
                 continue  # main working tree / worktree 領域外は管轄外
             entry = {"path": path, "branch": branch}
-            reason = self._screen(record, protected_issues, moment, grace_seconds)
+            reason = self._screen(record, protected_slugs, moment, grace_seconds)
             if reason is not None:
                 bucket = "kept" if reason in ("young", "age-unknown") else "excluded"
                 result[bucket].append({**entry, "reason": reason})
@@ -870,23 +1169,23 @@ class GitWorktrees(WorktreePort):
             os.path.split(parent)[0]
         )[1] == WORKTREES_SUBDIR[0]
 
-    def _screen(self, record, protected_issues, moment, grace_seconds):
+    def _screen(self, record, protected_slugs, moment, grace_seconds):
         """git を撃たずに決まる除外理由 (回収候補なら None)。
 
         規則 1–4。lock と台帳という確度の高い生存シグナルを先に見て、どちらも無い木にだけ
         時間 (最終活動) を代替シグナルとして当てる。
         """
         path, branch = record["path"], record["branch"]
-        if _is_protected(branch, path, protected_issues):
+        if _is_protected(branch, path, protected_slugs):
             return "ledger-protected"
-        if self._contains_cwd(path):
+        if _contains_cwd(self.cwd, path):
             return "server-cwd"
-        state = _lock_state(record["locked"])
+        state = _lock_state(record["locked"], self._pid_alive)
         if state == "live":
             return "locked-live"
         if state == "unparsed":
             return "locked-unparsed"
-        last = _admin_dir_last_activity(self.root, os.path.basename(path.rstrip(os.sep)))
+        last = self._last_activity(self.root, os.path.basename(path.rstrip(os.sep)))
         if last is None:
             return "age-unknown"
         if moment - last < grace_seconds:
@@ -907,7 +1206,7 @@ class GitWorktrees(WorktreePort):
         if not dirty:
             self._reap(entry, path, locked, "clean", None, dry_run, result)
             return
-        last = _admin_dir_last_activity(self.root, os.path.basename(path.rstrip(os.sep)))
+        last = self._last_activity(self.root, os.path.basename(path.rstrip(os.sep)))
         if last is None or moment - last <= max_age_seconds:
             result["kept"].append({**entry, "reason": "dirty-young"})
             return

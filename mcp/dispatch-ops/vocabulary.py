@@ -201,8 +201,10 @@ AGENT_FIELDS = (
     "effort",
 )
 
-# state.json の prs[] entry が持つ key
-PR_FIELDS = ("ref", "role", "last_seen_status")
+# state.json の prs[] entry が持つ key。`repo` はその PR が居る repo で、issue 置き場とは
+# 別軸 (ADR 0036)。ref は repo をまたぐと一意でないので、これが無い記録は resolve の突合で
+# 「一意に決まらない」に落ちる
+PR_FIELDS = ("ref", "role", "last_seen_status", "repo")
 
 
 class VocabularyError(ValueError):
@@ -294,7 +296,10 @@ def validate_transition(current, to):
                 "(同じ issue を再 dispatch するなら新規 entry を起こす)"
             )
         if current == to:
-            raise TransitionError(f"{current} から同じ phase への遷移は無効")
+            raise TransitionError(
+                f"{current} から同じ phase への遷移は無効 "
+                "(phase を変えずに note を更新するなら ledger_annotate)"
+            )
         raise TransitionError(
             f"{current} → {to} は不正な遷移 (合法: {', '.join(allowed) or 'なし'})"
         )

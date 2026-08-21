@@ -1,6 +1,51 @@
 #!/bin/sh
+# 本 hook は fail-closed: payload を読めなかったとき (jq が無い / JSON として不正 / 期待した
+# 形でない) は判断保留 = 素通しにせず deny する (#250 決定 3 / #596)。読み取り失敗を素通しに
+# すると `COMMAND` が空文字になり、下の全判定が不成立のまま passthrough して bash/sh/zsh の
+# 直接実行が無検査で通る。
+#
+# 受容コスト: jq の無い環境では hooks.json の gate (`if: Bash(bash|sh|zsh:*)`) に載る呼び出しが
+# 全て止まる。**既定 deny の直接起動だけでなく、Claude Code の matcher が Bash(sh:*) へ過剰
+# マッチさせる for/while ループ (本来 passthrough) も巻き添えで deny される**。gate があるので
+# Bash 全体は止まらず、deny 理由に内訳が出るのでそれを見て jq を入れる。
+#
+# 同じ harness の guard-inline-python.sh は gate 無し (全 Bash で発火) のため、fail-closed 化の
+# 停止範囲が本 hook より広い。#596 で人間が posture を判断し、そちらも fail-closed へ倒した。
+deny_unreadable() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"payload を読めなかったため bash/sh/zsh の起動を停止した (fail-closed): %s [guard-shell.sh]"}}\n' "$1"
+  exit 0
+}
+
+# pass (判断を出さない) 出口はすべてここを通す。無出力の exit は transcript に attachment を
+# 残さず、棚卸しで「壊れて死んだ guard」と「窓内に出番が無かった guard」が同じ見え方になる
+# (#587 / ADR 0043)。permissionDecision を持たない envelope は通常の permission フローへ
+# 委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard の
+# 一致を見る)。
+passthrough() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
+  exit 0
+}
+
+# stdin は jq 検査より先に読み切る。deny して先に exit すると書き手側が EPIPE を踏みうる
+# (pretooluse-guard-write.sh と同じ順序)。
 INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
+
+command -v jq >/dev/null 2>&1 ||
+  deny_unreadable 'jq が見つからない'
+
+[ -n "$INPUT" ] ||
+  deny_unreadable 'stdin が空'
+
+# JSON 検査と shape 検査で jq を 2 回呼ぶ。jq は parse error も error() も同じ exit 5 を返す
+# ため、1 回に畳むと「不正な JSON」と「期待した形でない」が deny 理由から区別できなくなる
+# (pretooluse-guard-write.sh と同じ形)。
+printf '%s\n' "$INPUT" | jq -e . >/dev/null 2>&1 ||
+  deny_unreadable 'JSON として parse できない'
+
+# command が空 / 不在なのは正常系 (制御構文の過剰マッチ等)。deny するのは tool_input 自体が
+# object でないとき — #598 で実測した素通し経路そのもの。
+COMMAND=$(printf '%s\n' "$INPUT" | jq -r 'if (.tool_input | type) != "object" then error("tool_input is not an object") else (.tool_input.command // empty) end' 2>/dev/null) ||
+  deny_unreadable 'tool_input が object でない'
 
 # bash/sh/zsh -n <file> は構文チェックのみ (実行しない) で安全。allow 済の syntax-check.sh
 # wrapper へ変換して pre-sanction 枠へ誘導する (permission=意図表明 / hook=変換)。settings.deny の
@@ -93,12 +138,12 @@ fi
 # 引数・文字列位置のトークン (`grep bash` `man zsh` `commit -m "...bash..."`) と `foo.sh` 等の
 # スクリプトパス引数、bash/sh/zsh トークンを含まない制御構文 (for/while ループ — Claude Code の
 # matcher が Bash(sh:*) へ過剰マッチして本 hook に届く) は誤検知しない。trailing は語境界
-# (`bashx`/`shell` を除外)。非該当は passthrough (exit 0 無出力) し、通常の permission 評価 +
-# 後続 guard に委ねる。
+# (`bashx`/`shell` を除外)。非該当は passthrough (判断を出さない観測痕跡だけを出す) し、
+# 通常の permission 評価 + 後続 guard に委ねる。
 if printf '%s\n' "$COMMAND" | grep -qE '(^|[;&|({`])[[:space:]]*([^[:space:];&|()]*/)?(bash|sh|zsh)([^[:alnum:]_.-]|$)'; then
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"bash/sh/zshの直接実行は禁止。スクリプトの実行は直接パス起動（./script.sh または /abs/path/script.sh）を使用。構文チェックは bash -n <file> / zsh -n <file>。"}}\n'
   exit 0
 fi
 
 # bash/sh/zsh の直接起動を含まない (for/while ループ等の制御構文) → passthrough
-exit 0
+passthrough

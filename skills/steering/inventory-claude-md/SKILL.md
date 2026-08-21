@@ -77,7 +77,7 @@ observation の schema は script docstring 参照。以下の順に組み立て
 **bucket 割当ての制約 (script との責務分担)**:
 
 - LLM は observation JSON の証拠に**紐付けて**割り当てる。「常時参照される」を主張するなら「先頭 N section 以内 / 他 skill から参照される / 反復失敗の記録がある」等の**可視な根拠**を書く
-- 決定的観測を超える推論には `推測:` prefix を必ず付ける (例: `推測: このルールは issue-dispatch 実行時のみ必要と読める`)
+- 決定的観測を超える推論には `推測:` prefix を必ず付ける (例: `推測: このルールは dispatch 実行時のみ必要と読める`)
 - lint 化可否は LLM の判断で、根拠に**適用可能な判定形式** (regex / AST / 静的解析) を 1 行明示する。実 gate 配線は書かない
 - 参照実在 fail は `move-to-lint` の証拠にできる。ただし fail 一件で削除を主張しない (書き手の誤植 vs 陳腐化を区別できない)
 - **inline code span (backtick 内) の path は script の `link_targets` に出ない**。`[text](target)` markdown link と `@path` import のみが検査対象。バッククォート内で書かれた `docs/foo.md` は observation JSON に無いため、参照実在の主張はしない (「link 抽出仕様の範囲外」を明記)

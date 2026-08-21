@@ -34,8 +34,27 @@ LOCK_FILENAME = ".lock"
 LEDGER_ROOT_ENV = "ISSUE_DISPATCH_LEDGER_ROOT"
 DEFAULT_LEDGER_ROOT = Path.home() / ".claude" / "issue-dispatch"
 
-# 記帳の主体。pane 側の自己申告と dispatcher の操作を events.jsonl 上で区別する
+# 台帳ディレクトリそのもの (`<root>/<key>`) の完全パス。**ROOT とは別物** — ROOT は
+# 「どの root の下で cwd から key を導出するか」、DIR は「この プロセスが書くべき台帳は
+# これ 1 つ」を指す。cwd と別の clone で走る worker が project の台帳へ着地するための
+# 機械経路で、`pane_spawn` が起動プロセスの環境へ注入する (ADR 0036)
+LEDGER_DIR_ENV = "ISSUE_DISPATCH_LEDGER_DIR"
+
+# 記帳の主体。events.jsonl の `actor` 欄に載り、その行を誰が書いたかの帰属を決める。
+#
+# - `dispatcher`: orchestrator の記帳 (判断を伴う遷移)。綴りは server 改名前の旧名のまま
+#   据え置く — 既存 events.jsonl の全行がこの綴りなので、改名すると過去の行だけが別の
+#   書き手に見える (ADR 0028 と同じ live 台帳の移行回避)
+# - `observer`: observer の記帳 (観測から一意に決まる機械的遷移だけ)。orchestrator と
+#   同じ tool を同じ既定値で呼ぶので、**名乗らなければ `dispatcher` として残り帰属が
+#   決まらない**。名乗る責務は呼び出し側 (observer skill 本文) が持つ
+# - `pane`: worker の完了自己申告 (`report_outcome` の既定)
+#
+# **語彙は閉じない — 未知の actor もそのまま通す (fail-open)。** actor は機械が分岐に使わ
+# ない記録欄 (outcome と同じ扱い) で、検証を足しても防げるのは綴り間違いだけな一方、書き手
+# を 1 人増やすたびに server の変更が要るようになる。
 DEFAULT_ACTOR = "dispatcher"
+OBSERVER_ACTOR = "observer"
 OUTCOME_ACTOR = "pane"
 
 
@@ -54,15 +73,61 @@ def default_ledger_root():
     return Path(override).expanduser() if override else DEFAULT_LEDGER_ROOT
 
 
-def open_ledger(cwd=None, root=None, run=repo_key_mod.run_git):
-    """cwd から repo-key を導出して Ledger を開く (ディレクトリは必要なら作る)。"""
+def resolve_ledger_dir(cwd=None, root=None, run=repo_key_mod.run_git):
+    """開くべき台帳ディレクトリを **path として**解く (作らない・実在検査もしない)。
+
+    優先順は **明示 root 引数 > `ISSUE_DISPATCH_LEDGER_DIR` > `ISSUE_DISPATCH_LEDGER_ROOT`
+    > 既定 root**。DIR が立っているときだけ cwd からの導出を行わない — 導出すると、
+    別 clone の worktree で走る worker が自分の repo-key で新しい台帳を作り、project の
+    台帳から記録が迷子になる (ADR 0036 の壊れ点 1)。
+
+    DIR に明示 root 引数を勝たせるのは、開発者の shell に DIR が残っているだけでテストの
+    書き込み先が変わる (非 hermetic になる) のを避けるため。実運用の呼び出しは引数なし
+    なので、機械経路としての強さは変わらない。
+
+    **台帳を開く `open_ledger` と、置き場の宣言を読む `project` がこの 1 関数を共有する**
+    (ADR 0036 の追補 / #589)。宣言 config は台帳と同じディレクトリに置くので、優先順が
+    1 文字でもずれると宣言と台帳が別 project を指す — 揃えるのではなく、同じ関数にする。
+
+    返り値: ``{"path": Path, "repo_key": str | None, "source": "dir_env" | "derived"}``
+    (`repo_key` は DIR 経由では判らない — 注入された path をそのまま使うため)。
+    """
+    if root is None:
+        directory = os.environ.get(LEDGER_DIR_ENV)
+        if directory:
+            return {"path": Path(directory).expanduser(), "repo_key": None, "source": "dir_env"}
     key = repo_key_mod.derive_repo_key(cwd, run=run)
     base = Path(root).expanduser() if root is not None else default_ledger_root()
-    return Ledger(base / key, repo_key=key)
+    return {"path": base / key, "repo_key": key, "source": "derived"}
+
+
+def open_ledger(cwd=None, root=None, run=repo_key_mod.run_git):
+    """開くべき台帳を決めて Ledger を返す (ディレクトリは必要なら作る)。
+
+    どのディレクトリを開くかは `resolve_ledger_dir` が決める (優先順はそちらの docstring)。
+
+    **DIR が実在しないディレクトリを指していたら失敗させる**。注入する側 (`pane_spawn`) は
+    既存の台帳を指すので、実在しない DIR は古い env か手で置いた値。そこに新しい台帳を作ると
+    `ledger_list` が空を返し、「進行中の dispatch は無い」と読める — DIR が防ぐはずの迷子が
+    別の形で再発する。
+    """
+    resolved = resolve_ledger_dir(cwd, root, run=run)
+    path = resolved["path"]
+    if resolved["source"] == "dir_env" and not path.is_dir():
+        raise LedgerError(
+            f"{LEDGER_DIR_ENV} が指す台帳ディレクトリが無い: {path} "
+            "(pane_spawn の注入なら既存の台帳を指す。手で設定した env なら外す)"
+        )
+    return Ledger(path, repo_key=resolved["repo_key"])
 
 
 class Ledger:
-    """1 repo 分の台帳ディレクトリ (`<root>/<repo-key>/`)。"""
+    """1 project 分の台帳ディレクトリ (`<root>/<key>/`)。
+
+    key の導出式はメイン repo の repo-key のまま (ADR 0036 — 意味だけが「この repo の
+    台帳」から「この project の台帳」へ移る)。project の実装 repo が複数あっても台帳は
+    ここ 1 つで、どの clone で実装したかは entry 側 (`repo` / `agent.worktree`) が持つ。
+    """
 
     def __init__(self, directory, repo_key=None):
         self.directory = Path(directory)
@@ -174,6 +239,44 @@ class Ledger:
                     "event": "transition",
                     "from": current,
                     "to": phase,
+                    "actor": actor,
+                    "note": note,
+                }
+            )
+            return self._view(parsed["ref"], entry)
+
+    def annotate(self, issue_ref, note, *, actor=DEFAULT_ACTOR):
+        """phase を変えずに note だけ差し替える (引き継ぎの更新)。
+
+        note は次セッションの自分へ判断の文脈を引き継ぐ欄だが、**引き継ぎたい状況ほど
+        phase は動かない** (回答待ち / 裏取り中)。`transition` は同一 phase を非合法として
+        撥ねるので、この method が無いと phase が動くまで note を書き換えられない。
+
+        遷移表を触らず別 method を立てるのは、合法性検証を `transition` に閉じたまま
+        にするため — 同一 phase を許すと「遷移」の名前と責務が食い違い、終端 phase の
+        自己遷移という新しい合法遷移まで抱え込む。
+
+        note は置換 (追記ではない。`transition` の note と同じ意味)。空文字は撥ねる —
+        中身の無い annotate は「誰かが何かを書いた」だけの行を events.jsonl に残し、
+        追跡の役に立たないまま履歴を濁す。終端 phase の entry にも書ける (事後の記録)。
+        """
+        parsed = refs.parse_issue_ref(issue_ref)
+        if not isinstance(note, str) or not note.strip():
+            raise LedgerError("note が空 (phase を変えずに残したい文脈を文字列で渡す)")
+        with self._locked() as state:
+            entry = state["dispatches"].get(parsed["ref"])
+            if entry is None:
+                raise LedgerError(f"{parsed['ref']} は台帳に無い (先に ledger_record する)")
+            timestamp = now_iso()
+            entry["note"] = note
+            entry["updated_at"] = timestamp
+            self._write_state(state)
+            self._append_event(
+                {
+                    "ts": timestamp,
+                    "issue": parsed["ref"],
+                    "event": "annotate",
+                    "phase": entry["phase"],
                     "actor": actor,
                     "note": note,
                 }
@@ -292,6 +395,15 @@ class Ledger:
             **json.loads(json.dumps(entry)),  # 呼び出し側の変更が state に漏れない複製
         }
 
+    def ensure_directory(self):
+        """台帳ディレクトリを実体化して絶対パスを返す (記帳前に anchor を配るときに使う)。
+
+        `open_ledger` は DIR が実在しなければ失敗する。まだ 1 件も記帳していない台帳を anchor
+        として配るとその失敗を踏むので、配る側が先に作る。
+        """
+        self.directory.mkdir(parents=True, exist_ok=True)
+        return str(self.directory)
+
     @contextmanager
     def _locked(self):
         """advisory lock を握って state を読み、context を抜けるまで排他を保つ。"""
@@ -407,5 +519,9 @@ def _normalize_prs(prs):
             raise LedgerError(
                 f"未知の PR status: {status!r} (候補: {', '.join(vocabulary.PR_STATUSES)})"
             )
-        normalized.append({"ref": ref, "role": role, "last_seen_status": status})
+        # repo は検証しない自由記述 (server は repo 識別子の形を決めない)。無いまま記録
+        # すると、別 repo に同番号の PR が居る運用で resolve が突合先を一意に決められない
+        normalized.append(
+            {"ref": ref, "role": role, "last_seen_status": status, "repo": item.get("repo")}
+        )
     return normalized
