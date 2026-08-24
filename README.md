@@ -84,11 +84,11 @@ Task tool 経由で skill やメインの Claude から委譲される、専用�
 
 ## 同梱している hook
 
-Bash / Write / WebFetch の危険操作を実行前に deny する PreToolUse guard 群 (`hooks/` に配置、登録は `hooks/hooks.json`)。deny 条件に当たらない入力はすべて素通しし、判定できないケースは Claude Code 標準の permission フローに委ねる。
+Bash / Write / WebFetch の危険操作を実行前に deny する PreToolUse guard 群 (`hooks/` に配置、登録は `hooks/hooks.json`)。deny 条件に当たらない入力はすべて素通しし、Claude Code 標準の permission フローに委ねる。**入力そのものを読めなかったときは素通しせず deny する** (fail-closed。下記 jq の前提を参照)。
 
 hook は install した環境でそのまま動くが、以下を前提にしている。
 
-- **`jq` が PATH にあること**。無い場合、`guard-git.sh` / `guard-pipe-execute.sh` / `guard-destructive.sh` / `guard-webfetch.sh` は判定不能として **deny 側に倒れる** (fail-closed)。該当する Bash / WebFetch 呼び出しがすべて拒否されるため、hook を使うなら jq を入れる
+- **`jq` が PATH にあること**。guard は **原則 fail-closed** で、payload を読めない (jq が無い / JSON が不正) ときは判定不能として **deny 側に倒れる**。例外は `guard-worktree-escape.py` の 1 本だけ (素通しの損害が git で回復可能なため fail-open。判断の正本は本 repo の `docs/adr/0046-guard-fail-closed-by-default.md`)。発火条件を持たない guard が複数あるため、jq が無い環境では **Bash がほぼ全面的に拒否される**。hook を使うなら jq を入れる
 - **guard の方針は作者の運用に合わせて固定されている**。例: `git push --force` (`--force-with-lease` を除く) を deny、`bash`/`sh`/`zsh` の直接起動を deny、WebFetch は `guard-webfetch.sh` の `ALLOWLIST` に載るドメインのみ許可。合わない場合は該当 script を編集する
 - **protected branch の防御は hook では持たない**。main/master への直接 push の禁止は GitHub / GitLab の branch protection 側で設定する前提 (hook はローカルにしか効かないため)
 - **`guard-worktree-escape.py` は `~/.claude/state/worktree-guard/` に session ごとの作業 root を書く** (7 日で自動削除)。書けない環境では guard が無効化されるだけで、tool 実行は妨げない

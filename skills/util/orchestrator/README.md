@@ -149,6 +149,8 @@ pane の起動・観測・rename は [herdr](https://github.com/HerdrHQ/herdr) (
 
 worker が実装から PR まで自走するために要る最小セット。既定 template では `Bash(git commit:*)` / `Bash(git push:*)` / `Bash(git pull:*)` / `Bash(git merge:*)` / `Bash(git worktree:*)` / `Bash(gh issue view:*)` / `Bash(gh pr create:*)` などを許可している。**`git merge:*` は allow と `excludedCommands` の両方が要る** (permission 層と sandbox 層は別)。
 
+**observer も deploy (毎 tick の `git pull --ff-only`) で `Bash(git pull:*)` / `Bash(git rev-parse:*)` / `Bash(git status:*)` / `Bash(git diff:*)` を使う。** worker 用の最小セットに含まれているので追加は要らないが、observer は worktree を持たず checkout の root で走るので、**allow がその repo に効いていること**が要件になる。`git pull:*` が `excludedCommands` に無い環境では、自己改変保護が半適用 (HEAD 据え置き + working tree だけ書き換わり) を作りうる — observer は止めずに escalation するので、**不成立は silent ではなく loud** になる。
+
 ### 3.6 network
 
 sandbox の `network.allowedDomains` に tracker の host を含める。GitHub なら `github.com` / `api.github.com` / `*.githubusercontent.com` / `codeload.github.com`。

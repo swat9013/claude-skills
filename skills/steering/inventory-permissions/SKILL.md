@@ -220,7 +220,9 @@ matcher confidence: exact 105 / approx 14
 |---|---|---|
 | unknown が多い | tool_result が transcript 末尾で truncate / 別セッションに分割された、または未完了 | mart の `outcome_totals.unknown` を「参考値」として扱い、bucket 判定は明示 outcome を主にする |
 | deny_user-rejected が過大 | Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive バグ | user-reject の count は bucket 判定の主根拠にしない (permission-rule / automode / success が主) |
-| deny_hook が 0 | Claude Code が PreToolUse hook deny に `toolDenialKind: hook` を emit しないため、本 skill は明示 kind のみ信頼する保守設計 | hook 由来の deny は本 skill の観測範囲外。hook 追加要件は refine / sandbox の bucket に記述する |
+| deny_hook が 0 | Claude Code が PreToolUse hook deny に `toolDenialKind: hook` を emit しないため、本 skill は明示 kind のみ信頼する保守設計 | hook 由来の deny は `denial_kind` からは引けない。hook 追加要件は refine / sandbox の bucket に記述する |
+| `deny_permission-rule` を permission 層の実績として読む | hook 由来の deny が `permission-rule` にラベルされる (さらに `denial_kind` 空 + `outcome_base: error` に落ちる経路もある) | **`hard_deny_share` を根拠にする前に、その deny が permission entry 由来か確かめる**。guard の deny メッセージは安定文字列なので `result_text` の署名で帰属が引ける。`axis_a_high_deny_share` / `compound_line_deny_miscount` が 0 件でも「候補が無い」ではなく「入力が汚染されている」ことがある |
+| `project_local` の未使用 entry を revoke に出したが、その file が**配布 template** だった | `<repo>/.claude/settings.local.json` が他 project へ配る原本を指す symlink のとき、その entry の本来の利用者は**観測範囲外の他 repo**。当該 repo での match_count 0 は不使用の証拠にならない | `settings_denominator` の `resolved_path` が repo 内の配布用ディレクトリを指していないか見る。指していれば `exposure_opportunity` は当該 repo の実績だけでは判定できず、**revoke ではなく keep**。棚卸しの revoke 候補は**配布先**の settings に当てるもので、原本の剪定基準 (上流 skill が削除されたか等) は repo 側の規約が正本 |
 | fire_count null の hook を「死んでいる」と断じる | 発火条件を満たす操作が窓内に無かっただけ (または発火が観測に残らなかっただけ) の可能性を潰していない | 窓内の作業内容と突き合わせて機会の実在を確かめる。fire_count null は informational 止まり |
 | hook の fire 回数を unit ごとに断定する | `key_collision: true` の共有値を単独実績と読んだ | 共有 key の unit は「fire していない」だけを主張する。回数は共有値である旨を明記する |
 | bypass 系列が過大 | 同 tool の後続 call を全て follow_up にするため、無関係な reuse も混入する | 「first follow_up が success かつ input が似ている」ものだけ refine 候補にする。低 gap の系列を優先 |

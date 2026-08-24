@@ -12,10 +12,32 @@
 # した `rm -rf` は guard-destructive.sh も deny するが、deny は重なっても結果が
 # 変わらないので、force の判定を両者で分掌しない。
 #
-# jq が無ければ deny せず素通しする (fail-open)。承認プロンプトを減らすための
-# hook が jq 不在で全 Bash を止めるのは本末転倒なので、guard-destructive.sh の
-# fail-closed とは逆に倒す (allow 専用の allow-tmp-delete.sh と同じ判断)。
+# 本 hook は fail-closed: payload を読めなかったとき (jq が無い / JSON として不正 / 期待した
+# 形でない) は判断保留 = 素通しにせず deny する。guard は deny 権能を持つ以上 **原則
+# fail-closed** で、fail-open を選ぶには「素通しの損害が回復可能であること」を示す脅威モデルを
+# 要する (ADR 0046)。本 hook にその脅威モデルは無い — 読み取り失敗を素通しにすると `COMMAND`
+# が空文字になり、下の全判定が不成立のまま passthrough して `rm -f` が無検査で通る。
 #
+# 旧 posture (fail-open) は「承認プロンプトを減らすための hook が jq 不在で全 Bash を止めるのは
+# 本末転倒」を根拠に挙げていたが、この根拠は実測で空振りしていた: 発火条件を持たない
+# guard-destructive.sh / guard-pipe-execute.sh が jq 不在時に既に全 Bash を deny しており、
+# 反転の**増分**可用性コストはゼロである (#658)。根拠を他 guard への参照で継承することは
+# ADR 0046 が禁じているので、ここでは原則そのものを引く。
+#
+# 受容コスト: 本 hook は hooks.json に `if` gate を持たず **全 Bash 呼び出しで発火する**ため、
+# jq が PATH から消えた瞬間に Bash が全面停止する。jq は guard 機構の宣言済み前提インフラで
+# あり、その不在は環境破損として全 Bash 停止で検知するのが正しい縮退挙動 (ADR 0046)。deny 理由に
+# 内訳と hook 名が出るので、それを見て jq を入れれば復旧する。
+#
+# stdin は jq 検査より先に読み切る。読まずに deny して先に exit すると書き手側が EPIPE を
+# 踏みうる (guard-inline-python.sh / guard-shell.sh と同順)。
+INPUT=$(cat)
+
+deny_unreadable() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"payload を読めなかったため Bash を停止した (fail-closed): %s [guard-rm-force.sh]"}}\n' "$1"
+  exit 0
+}
+
 # pass (判断を出さない) 出口はすべて passthrough() を通す。無出力の exit は transcript に
 # attachment を残さず、棚卸しで「壊れて死んだ guard」と「窓内に出番が無かった guard」が同じ
 # 見え方になる (#587 / ADR 0043)。permissionDecision を持たない envelope は通常の permission
@@ -26,10 +48,20 @@ passthrough() {
   exit 0
 }
 
-command -v jq >/dev/null 2>&1 || passthrough
+command -v jq >/dev/null 2>&1 ||
+  deny_unreadable 'jq が見つからない'
 
-INPUT=$(cat)
-COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
+[ -n "$INPUT" ] ||
+  deny_unreadable 'stdin が空'
+
+# JSON 検査と shape 検査で jq を 2 回呼ぶ。jq は parse error も error() も同じ exit 5 を返す
+# ため、1 回に畳むと「不正な JSON」と「期待した形でない」が deny 理由から区別できなくなる。
+printf '%s\n' "$INPUT" | jq -e . >/dev/null 2>&1 ||
+  deny_unreadable 'JSON として parse できない'
+
+# command が空 / 不在なのは正常系。deny するのは tool_input 自体が object でないとき。
+COMMAND=$(printf '%s\n' "$INPUT" | jq -r 'if (.tool_input | type) != "object" then error("tool_input is not an object") else (.tool_input.command // empty) end' 2>/dev/null) ||
+  deny_unreadable 'tool_input が object でない'
 
 # here-document の本体は shell がデータとして読むだけで実行しないため、判定対象から
 # 落とす。危険なコマンドの説明文を `cat > doc.md <<EOF` で書くだけで deny される誤爆を

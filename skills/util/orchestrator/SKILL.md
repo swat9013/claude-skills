@@ -21,7 +21,7 @@ herdr session 内で、宣言された issue 置き場の open issue から着�
 |---|---|---|
 | MCP server (`mcp__plugin_swat-skills_dispatch-ops__<tool>`) | 観測の正規化・操作の実行・台帳への記帳・phase 遷移の合法性検証 | ポリシー (候補選定・回収可否・drift の解消手段) |
 | **worker** (pane の独立セッション) | 担当 issue の作業そのもの。**質問だけ**を orchestrator へ送り、終了直前に台帳へ自己申告する | PR 到達・完了の通知 (検知は observer の外形観測) |
-| **observer** (pane の常駐セッション + `/loop` dynamic) | 外部状態 (tracker / PR / pane 生死 / worktree) の周期観測。**観測から一意に決まる機械的遷移だけ**を台帳へ直接記帳し、判断が要る事象を escalation する | user・channel との対話。worker の transcript 読解。判断を要する遷移 |
+| **observer** (pane の常駐セッション + `/loop` dynamic) | 外部状態 (tracker / PR / pane 生死 / worktree) の周期観測。**観測から一意に決まる機械的遷移だけ**を台帳へ直接記帳し、判断が要る事象を escalation する。加えて **tick の最後に自分が走っている checkout を pull する** (deploy の主経路) | user・channel との対話。worker の transcript 読解。判断を要する遷移。**取り込む変更の採否の判断** (pull は無条件) |
 | **このセッション** (orchestrator) | 候補選定・起動 prompt の文面・escalation とイベントの解釈・回収 / 駐機 / unclaim の判断・drift 解消・user との対話 | 周期的な外形監視 (observer へ移管。単発の照合は下記 3 点で行う) |
 
 **server はポリシーを持たない。** 候補を選ばず、回収すべきかを返さず、drift の解消手段も示さない。判断を server の返り値に探しに行かず、観測を材料に自分で決める。
@@ -290,7 +290,7 @@ worker は質問しか送ってこない。**PR 到達・完了・無言死の�
 
 | 観測 | 判断 |
 |---|---|
-| `derived.mechanical_done` が `satisfied: true` (`issue_closed` / `closes_merged_in_entry_repo` の発火。**同一 repo の `Closes` が merge されると 2 本とも発火する**) | pane が在れば `pane_close`。`done` へ遷移させ、`worktree_tidy` に回収させる — これが駐機ツリーの回収経路。**observer が先に記帳していることがある** (既に `done` なら遷移は不要で `worktree_tidy` から先を進める)。`rule_fired` に `closes_merged_in_entry_repo` があったら、続けて**下記「merge した変更を runtime へ載せる」を通す** (既に `done` でも通す — 記帳済みでも pull 済みとは限らない)。issue が open のままなら報告する: **PR と issue が別 repo なら自動 close されない**ので open のままが既定で、assignee が残って候補から外れ続ける。close 要否は user へ返す |
+| `derived.mechanical_done` が `satisfied: true` (`issue_closed` / `closes_merged_in_entry_repo` の発火。**同一 repo の `Closes` が merge されると 2 本とも発火する**) | pane が在れば `pane_close`。`done` へ遷移させ、`worktree_tidy` に回収させる — これが駐機ツリーの回収経路。**observer が先に記帳していることがある** (既に `done` なら遷移は不要で `worktree_tidy` から先を進める)。`rule_fired` に `closes_merged_in_entry_repo` があったら、続けて**下記「別 clone に着地した merge を runtime へ載せる」を通す** (既に `done` でも通す — 記帳済みでも pull 済みとは限らない)。issue が open のままなら報告する: **PR と issue が別 repo なら自動 close されない**ので open のままが既定で、assignee が残って候補から外れ続ける。close 要否は user へ返す |
 | agent 停止 (`exited` / `gone`)・PR 成果なし・**自己申告も無い** (途中死候補) | `released` へ遷移 + `issue_unclaim` してキューへ返す |
 | worker が「作業不要」「検証のみ完了」を申告・`derived` の closes 2 列が空・worktree clean | `pane_close` → `done`。**`released` + `issue_unclaim` は採らない** (成果の無い未着手として候補プールへ戻り、同じ作業が再 dispatch される)。issue は open のまま残るので、**close 要否は `note` と報告に書いて user へ返す**。**申告を完了の証拠として扱う唯一の経路**なので、申告の逐語と worktree clean の観測を `note` に両方残す |
 | agent 停止・PR 成果あり | **駐機**: `parked` へ遷移 (`agent` の `pane_id` を null に)。worktree と assignee は残す |
@@ -307,13 +307,17 @@ worker は質問しか送ってこない。**PR 到達・完了・無言死の�
 
 駐機した issue には worker がもう居ない。**merge の検知は observer の周期観測が主経路**で、observer が止まっている間は「次にこのセッションが動いたとき」— 届いたものの処理・user の問い合わせ・次セッションの再入 — に落ちる。止まった observer はその起床の冒頭で確保し直されるので、遅れは次の起床までで頭打ちになる。台帳が永続なので取りこぼしても失われはしない。
 
-#### merge した変更を runtime へ載せる
+#### 別 clone に着地した merge を runtime へ載せる
 
 **merge は deploy ではない。** plugin 実体は cache コピーを持たず main チェックアウトの working tree を in-place で読むので、`origin/main` が正しくても**ローカル main が古ければ runtime は古いまま動き続ける**。merge 成功・CI 緑・issue closed・PR "Merged" と「有効になった」と読める材料だけが揃い、無効であることを示す信号は一つも出ない。
 
+**このセッションが通すのは「着地 clone ≠ observer の clone」のときだけ。** observer は毎 tick、自分が走っている checkout を最新にする (observer skill の「tick の最後」) ので、同一 clone なら譲る — 台帳 entry を持たない merge もそちらが拾うため、契機を `mechanical_done` に置くこのセッションより漏れが少ない。**残るのは observer が引かない clone** で、cross-repo dispatch (実装 repo が別 clone) の着地先がこれに当たる。
+
+判定はこう取る: 手順 1 で復元した clone root が、**`observe_worktrees` を `repo_root` 無しで呼んだときの `root`** (= server プロセスの clone = `pane_spawn` が `repo_root` を渡さない observer が走る clone) と**一致するなら通さない**。**誤って通しても害は無い** (`pull --ff-only` は冪等で、observer が引いた後なら no-op になる) ので、判定が付かないときは通す側に倒す。
+
 **`closes_merged_in_entry_repo` を観測したら、その場で通す。** 起動時にまとめて引くのでは足りない — このセッションは常駐なので、事故は常駐中の merge で起きる。
 
-1. **clone root を復元し、pull 前の HEAD を控える** — clone root は台帳 entry の `agent.worktree` の絶対パスから `.claude/worktrees/<slug>` を除いた部分 (`worktree_tidy` と同じ導出)。**`git -C <clone root> rev-parse HEAD` の値を控えてから次へ進む** — 手順 4 の diff の基点で、pull した後では取り戻せない
+1. **clone root を復元し、pull 前の HEAD を控える** — clone root は台帳 entry の `agent.worktree` の絶対パスから `.claude/worktrees/<slug>` を除いた部分 (`worktree_tidy` と同じ導出)。**復元した root が observer の clone と一致するならここで打ち切る** (上記)。**`git -C <clone root> rev-parse HEAD` の値を控えてから次へ進む** — 手順 4 の diff の基点で、pull した後では取り戻せない
 2. **`git -C <clone root> pull --ff-only origin main`** — `--no-rebase` を使わない。main に merge commit を作らせず、ff できない状況では大きく失敗させる
 3. **着地を検証する** — `git -C <clone root> rev-parse HEAD origin/main` が同じ sha を 2 行返すこと **かつ** `git -C <clone root> status --porcelain` が空であること。**両方見る** (片方だけでは半適用を見逃す)
 4. **diff を分類して報告する** — `git -C <clone root> diff --name-only <手順 1 で控えた sha> HEAD`
@@ -330,7 +334,7 @@ worker は質問しか送ってこない。**PR 到達・完了・無言死の�
 - **pull 自体が失敗しても止める。** main が dirty なのは異常 (worktree 必須ルールが clean を保つ建て付け)。原因を推測して `--force` や `stash` へ逃げない
 - 止めた場合も `done` 遷移と `worktree_tidy` は通してよい (deploy の失敗と dispatch の完了は別事象)。ずれたままであることを `ledger_annotate` の `note` に残す
 
-**引くのは merge が着地した clone 1 つだけ** (手順 1 で復元したもの)。他の clone は今回の観測の対象外なので触らない — 別の entry の merge を観測したときにその clone が引かれる。**runtime が直るのは、着地先が plugin 実体の clone だったときだけ**である点に注意する (他 repo の merge を引いても hook / skill は変わらない。それでも次の worker が古い土台から始めるのを防ぐので引く価値はある)。
+**引くのは merge が着地した clone 1 つだけ** (手順 1 で復元したもの)。他の clone は今回の観測の対象外なので触らない — 別の entry の merge を観測したときにその clone が引かれる。**この経路で引く clone は observer の clone ではない**ので、直るのは「次の worker が古い土台から始めない」ことであって、このセッションの runtime ではない (このセッションが読む plugin 実体は observer の clone 側で、そちらは observer が毎 tick 引いている)。
 
 **稼働中 worker の足元で hook script が差し替わる**ことは避けられない。merge 後 / CI 緑のコードなので確率は低いが、fail-closed guard が壊れた版に入ると全 worker が同時に止まる。pull の直後に worker の沈黙が揃ったら、まずこれを疑う。
 
@@ -464,7 +468,7 @@ observer も同じ切り分けで動くが、**issue 側は Rovo の読み取り
 
 ## 責務境界
 
-orchestrator の責務は配車と取りまとめ、そして user と worker の間の中継。conflict は解消作業の**起動まで**。周期的な外形観測は observer の領分で、observer が上げてくる判断はこちらが持つ。**merge を観測した後の deploy (着地先 clone の main を最新にする) もこちらの責務** — 環境を変える操作は observer に持たせない (E の「merge した変更を runtime へ載せる」)。
+orchestrator の責務は配車と取りまとめ、そして user と worker の間の中継。conflict は解消作業の**起動まで**。周期的な外形観測は observer の領分で、observer が上げてくる判断はこちらが持つ。**deploy (checkout を最新にする) の主経路は observer** — 自分が走っている checkout を毎 tick 引くので、台帳 entry を持たない merge も覆う。**こちらが持つのは observer が引かない clone だけ** (E の「別 clone に着地した merge を runtime へ載せる」)。
 
 **並列化はすでに pane (worker / observer / concierge) の形で表現してある。** 観測 (`resolve` / `observe_*`)・台帳への記帳・回収と駐機の判断は、このセッションが自分の手で行う — Task subagent へ委任しない。台帳の書き手が 1 つでなくなると、どの観測でその phase にしたかを次セッションの自分が再現できなくなる。
 
@@ -474,7 +478,7 @@ orchestrator の責務は配車と取りまとめ、そして user と worker �
 
 - 実装・調査・triage の中身、issue を close する判断、PR の作成・merge、conflict 解消そのもの
 - outcome の自己申告 (各 worker が `ledger_report_outcome` で残す。**代理申告も推測での補完もしない** — 埋めると「途中死を検知できる」という契約が壊れる)
-- 周期的な外部状態の観測と、そこから一意に決まる `done` 記帳 (observer。**その 2 つ以外を observer に判断させない**)
+- 周期的な外部状態の観測と、そこから一意に決まる `done` 記帳、および自分が走っている checkout の pull (observer。**この 3 つ以外を observer に判断させない**。pull は判断を含まない 1 コマンドで、取り込む中身の採否を observer に決めさせるものではない)
 - 駐機 worktree の破棄。orchestrator が回収するのは `done` へ送れたものだけで、dirty なツリーと未 merge branch は報告して user に返す (`branch -d` の `-D` 昇格は server も skill も行わない)
 - permission 待ち (`blocked`) の解除 — ダイアログはメッセージで答えられないので user が pane に入って解く
 - **clone root (作業ツリーの外) にある実体の編集。worker の sandbox が拒否した書き込みを肩代わりしない** — user の承認があってもやらない。その clone に外部の自動 commit 機構 (backup / sync) が居ると変更が main へ載り、同じ file を触る駐機中の PR を delete/modify conflict にする。台帳 `note` に「単体で commit しない」と書いても、commit する主体は orchestrator ではないので効かない。**deploy の `pull --ff-only` (上記) は別** — あれは main を上流に追いつかせるだけで、自分の変更を持ち込まない
@@ -488,8 +492,8 @@ orchestrator の責務は配車と取りまとめ、そして user と worker �
 | 症状 | 原因 | 対応 |
 |---|---|---|
 | tool が見えない | plugin 未有効化 / server 設定後にセッションを起動していない | `/mcp` で `plugin:swat-skills:dispatch-ops` が connected か確認する。無ければ `/reload-plugins` かセッション再起動 |
-| merge したはずの hook / skill の挙動が変わっていない | **ローカル main が古い。merge は deploy ではない** (plugin 実体は main チェックアウトを in-place で読む)。信号が一つも出ないので「有効になった」と読める材料だけが揃う | E の「merge した変更を runtime へ載せる」を通す。`mcp/**` や `hooks.json` を含む変更は pull しても載らないので、再起動を user へ依頼する |
-| `pull --ff-only` の後にツリーが dirty | sandbox の自己改変保護が `hooks/` への write を拒み、**HEAD 据え置き + working tree だけ書き換わった**半適用状態 (`git pull:*` が `sandbox.excludedCommands` に無い環境で起きる) | **止めて user へ返す。リトライしない** — 半適用の上での再試行が最も壊す。settings の不足なら同ディレクトリの `README.md` の `sandbox.excludedCommands` の節を案内する |
+| merge したはずの hook / skill の挙動が変わっていない | **ローカル main が古い。merge は deploy ではない** (plugin 実体は main チェックアウトを in-place で読む)。信号が一つも出ないので「有効になった」と読める材料だけが揃う | 主経路は observer の毎 tick の pull なので、**まず observer が生きているかを `observe_panes` で確かめ、居なければ A の手順で確保し直す** (deploy が止まる窓は「observer 死 かつ このセッション不在」に限られる)。着地先が observer の clone でないなら E の「別 clone に着地した merge を runtime へ載せる」を通す。`.mcp.json` / `hooks.json` / `plugin.json` / settings を含む変更は pull しても載らないので、再起動または適用手順を user へ依頼する |
+| `pull --ff-only` の後にツリーが dirty | sandbox の自己改変保護が `hooks/` への write を拒み、**HEAD 据え置き + working tree だけ書き換わった**半適用状態 (`git pull:*` が `sandbox.excludedCommands` に無い環境で起きる) | **止めて user へ返す。リトライしない** — 半適用の上での再試行が最も壊す。settings の不足なら同ディレクトリの `README.md` の `sandbox.excludedCommands` の節を案内する。**observer が同じ状態を報告してきたときは扱いが違う** — あちらは止めずに escalation するだけなので、止める判断はこのセッションが持つ |
 | 初回コンタクトが `No agent named ... is reachable` で撥ねられる | ListAgents 登録前 (起動から十数秒) | 数秒おいて引き直し、`name [ref]` 表記が出たらそれで送り直す。**起動失敗として巻き戻さない** |
 | 初回コンタクトが `N agents are named 'observer'` で撥ねられる / 送信の返り値に `other live sessions are also named` が付く | pane に映らない同名の peer session が生存している (pane を畳んでも messaging registry からは即座に消えない) | エラーが列挙する候補のうち**活動時刻が最も新しいもの**へ ref 付きで再送する。**live な同名 observer が複数居る間は、escalation の帰属 (どの observer の記帳か) を自分の観測なしに断定しない** — 余分なセッションは user に閉じてもらう |
 | worker から何も届かない | **正常** — worker の契約は質問のみで、PR 到達も完了も送ってこない | 何もしない。PR / 完了は observer の escalation か、届いたものを処理するついでの `resolve` で拾う |

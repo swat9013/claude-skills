@@ -25,6 +25,22 @@ deny するのはバグの signature に一致する場合のみ:
     Read を matcher に含めるのは状態の鮮度維持のため)
   - git 情報が取れない・状態が無く cwd も worktree でない等、確証が持てないケース
 
+fail-posture: **fail-open — ADR 0046 の「guard は原則 fail-closed」に対する明示的な例外**。
+本 hook が原則から外れるのは、原則の根拠 (素通しの損害は不可逆・deny の損害は回復可能、と
+いう非対称性) がここでは成立しないため。3 点で判断している:
+
+  1. **停止範囲が過大**: 発火条件が `Bash|Edit|Write|Read` + SessionStart と全ツール級に広い。
+     fail-closed にすると、状態ファイルが書けない / git 情報が取れないだけで Read まで含む
+     ほぼ全操作が止まる。同じ posture でも sh guard 4 本は Bash 止まりで、こちらはそれより広い
+  2. **守る対象が security ではない**: 塞いでいるのは main checkout への逸脱という **workflow
+     規律**であって、bypass primitive でも権限昇格でもない。素通しで通るのは「正しい木の外で
+     編集してしまう」ことであり、guard 機構が守る境界を越えるものではない
+  3. **素通しの損害が回復可能**: 逸脱した編集は main checkout の working tree に残るだけで、
+     git が全量を追跡している。取り消しも移送も後から効く
+
+この 3 点が崩れたら (例: 発火条件を絞れる / 守る対象が security 相当になる) posture の
+再評価が要る。原則の適用を免れているのは見落としではなく認定された例外である。
+
 限界: Bash のコマンド文字列内に埋め込まれた main checkout への絶対 path
 (例: `cat /path/to/main/file`) までは検査しない。cwd の照合のみ行う。
 """

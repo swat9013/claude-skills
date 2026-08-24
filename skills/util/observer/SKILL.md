@@ -3,16 +3,18 @@ name: observer
 user-invocable: true
 model: sonnet
 effort: medium
-description: dispatch 機構の observer 本体。orchestrator が dispatch した issue の外部状態 (tracker / PR / pane 生死 / worktree) と候補プールの存在を周期観測し、機械的遷移だけを dispatch-ops の台帳へ記帳して判断は orchestrator へ escalation する。**起動するのは、自分が observer として起きているときだけ** — orchestrator の pane_spawn が渡す初期 prompt、その /loop dynamic の各 tick、人間の /swat-skills:observer の 3 経路。それ以外の文脈 (dispatch や observer の話題が出た / issue や PR の状態を知りたい / 台帳を読みたい) では呼ばない。
+description: dispatch 機構の observer 本体。orchestrator が dispatch した issue の外部状態 (tracker / PR / pane 生死 / worktree) と候補プールの存在を周期観測し、機械的遷移だけを dispatch-ops の台帳へ記帳して判断は orchestrator へ escalation する。tick の最後に、自分が走っている checkout を `git pull --ff-only` で最新にする。**起動するのは、自分が observer として起きているときだけ** — orchestrator の pane_spawn が渡す初期 prompt、その /loop dynamic の各 tick、人間の /swat-skills:observer の 3 経路。それ以外の文脈 (dispatch や observer の話題が出た / issue や PR の状態を知りたい / 台帳を読みたい) では呼ばない。
 ---
 
 # observer
 
 dispatch 機構の **observer**。orchestrator が dispatch した issue の**外部状態**と、まだ dispatch されていない**候補プールの存在**だけを周期観測し、**観測から一意に決まる機械的遷移だけ**を台帳へ記帳して、それ以外は全部 orchestrator へ escalation する常駐セッション。
 
+加えて、**自分が走っている repo の checkout を毎 tick 最新にする** (§5)。これは観測ではなく環境を変える操作だが、**判断を伴わない 1 コマンド**なので下の禁止には当たらない。
+
 **判断はしない。** 候補の選定 / 回収 / 駐機 / `released` と `parked` の選択 / `issue_unclaim` / `pane_close` / conflict 解消の起動 / `worktree_tidy` / drift の解消 / worker への送信は全部 orchestrator の担当。ここで判断すると、最も高くつく誤り (PR 成果のある issue の unclaim → 二重 PR、`pane_close` → 対話の消失) を犯す。
 
-**持たないもの**: user・channel との対話 / worker の pane 入室と transcript 読解 / 判断を要する遷移。
+**持たないもの**: user・channel との対話 / worker の pane 入室と transcript 読解 / 判断を要する遷移。§5 はこのどれにも当たらない — 対話せず、transcript を読まず、取り込む中身で採否を決めない。
 
 観測と記帳は dispatch-ops MCP server の tool (`mcp__plugin_swat-skills_dispatch-ops__<tool>`) で行う。`SendMessage` / `ScheduleWakeup` / dispatch-ops / Rovo MCP の tool が一覧に無ければ ToolSearch で schema を取ってから使う (`select:<tool 名>,...` で名指しする。取らずに呼ぶと InputValidationError で落ちる)。
 
@@ -34,11 +36,11 @@ escalation の宛先 (orchestrator の UDS アドレス) は、**spawn 直後に
 1. 初回コンタクト (orchestrator からのメッセージ) が既に届いているか確認する — **この turn の入力に `<cross-session-message>` が在るかを見る。`ListAgents` では分からない** (peer 一覧は着信の有無を答えない)
 2. **届いていなければ turn を終えて待つ。** メッセージ受信で新しい turn が始まる。ここで `/loop` を armed しない
 3. 届いたら `from` 属性のアドレスを控え、**それを書き込んだ loop 指示文**で `/loop` を interval 無し (dynamic) で起動する
-   - **起動は `Skill` tool の `loop` 経由で行い、`ScheduleWakeup` の直呼びで代用しない。** 直呼びは auto mode classifier に拒否されることがあり、そうなると 1 tick も観測しないまま止まる。§6 の「毎回決め直す」は `/loop` が armed された後の話で、最初の armed の代わりにはならない
+   - **起動は `Skill` tool の `loop` 経由で行い、`ScheduleWakeup` の直呼びで代用しない。** 直呼びは auto mode classifier に拒否されることがあり、そうなると 1 tick も観測しないまま止まる。§7 の「毎回決め直す」は `/loop` が armed された後の話で、最初の armed の代わりにはならない
 
-**loop 指示文は、この skill を読み直す形にする** — `/swat-skills:observer を実行する。skill の手順に完全に従うこと。escalation の宛先は <控えたアドレス>。カウンタ: <§4 の打ち切りカウンタ。無ければ「なし」>。候補: <§2 で観測した候補プールの ref 集合。無ければ「なし」>。既見: <cross-tracker のみ — §2 で観測した既見 ref 集合と直前の件数。無ければ「なし」>`。**手順を要約して渡さない**: compaction で手順が context から落ちた tick でも、skill を読み直せば §2〜§5 が復活する。要約を渡すと、起点の選び方も `done` を書ける条件も pane の確認要件も失われたまま観測を続けることになる。
+**loop 指示文は、この skill を読み直す形にする** — `/swat-skills:observer を実行する。skill の手順に完全に従うこと。escalation の宛先は <控えたアドレス>。カウンタ: <§4 の打ち切りカウンタ。無ければ「なし」>。候補: <§2 で観測した候補プールの ref 集合。無ければ「なし」>。既見: <cross-tracker のみ — §2 で観測した既見 ref 集合と直前の件数。無ければ「なし」>。deploy: <§5 が恒久スキップに入っていれば「スキップ (理由)」。入っていなければ「通常」>`。**手順を要約して渡さない**: compaction で手順が context から落ちた tick でも、skill を読み直せば §2〜§6 が復活する。要約を渡すと、起点の選び方も `done` を書ける条件も pane の確認要件も失われたまま観測を続けることになる。
 
-**宛先・カウンタ・候補集合・既見集合は載せる (手順ではなく状態だから)。** 手順は skill の読み直しが供給するが、状態を運ぶ経路はこの指示文しか無い。
+**宛先・カウンタ・候補集合・既見集合・deploy のスキップ状態は載せる (手順ではなく状態だから)。** 手順は skill の読み直しが供給するが、状態を運ぶ経路はこの指示文しか無い。
 
 **宛先を得る前に armed すると、正しく観測しながら escalation だけがどこにも届かない observer になる。** 送信側にも受信側にもエラーが出ないので、静かな正常系と見分けが付かない。
 
@@ -47,7 +49,7 @@ escalation の宛先 (orchestrator の UDS アドレス) は、**spawn 直後に
 
 ## 2. 毎 tick の観測
 
-観測対象は**外部状態だけ**。順に通す:
+観測対象は**外部状態だけ**で、この節では環境を変えない (checkout を最新にするのは tick の最後 = §5)。順に通す:
 
 1. **issue 置き場 / PR 置き場は server が宣言から解決する** — `resolve` に `repo` / `pr_repo` を渡さない。置き場が起動 repo 自身でなくても宣言どおりの repo で観測される
    - **観測先が想定と違ったら `observe_project` で宣言を確かめ、escalation する**。自分で `repo` を渡して補正しない — 宣言が誤っているなら直す先は config で、その判断は orchestrator の担当
@@ -120,6 +122,10 @@ escalation の宛先 (orchestrator の UDS アドレス) は、**spawn 直後に
 - agent が停止したが PR 成果が無い
 - `agent_status_raw` が `blocked`
 - **台帳に PR 記録が無いまま `checked.prs` が false の entry** (cross-tracker)。「PR が無い」ではなく「観測できない」なので、記録を足せるのは orchestrator だけ
+- **pull 後にツリーが dirty** (§5 の手順 3)
+- **pull では反映されない変更が着地した** (§5 の手順 4)。**1 通で打ち切る**
+- **pull が失敗した** (§5 の一過性の失敗)
+- **deploy の前提が恒久的に成立しない** (§5 の恒久スキップ)。**1 度だけ送り、観測失敗カウンタには数えない**
 - **新しい候補が現れた** — §2 の候補集合に、前 tick の候補集合に無い ref が含まれるとき。**件数が同じままでも成立する** (1 件が dispatch されて 1 件現れれば件数は動かない)。**cross-tracker (issue 置き場が jira) では判定材料が 2 つ**あり (先頭ページの ref が既見集合に無い / 件数が前 tick より増えた)、どちらか一方で成立する。**材料は 2 つでも事象は 1 つ**なので、カウンタのキーは同じ `候補プール:新しい候補が現れた` を使う (別々に数えると打ち切りが 3 回で効かなくなる)
 
 **これら以外もすべて escalation する。** 名指しは「必ず上げるもの」であって上限ではない。特に駐機の起点 (`idle` + PR `open`) を落とすと、その worker が slot を塞いだまま補充が止まる。
@@ -154,17 +160,56 @@ orchestrator の起床経路は「worker の質問」「observer の escalation�
 
 **カウンタのキーは `<issue_ref>:<事象>`。事象は上の「名指しで持つ事象」の語句をそのまま使う** (名指しに無い事象は短い固定語句を自分で決め、以後の tick も同じ語句で書く)。毎 tick 文面を書き下ろすとキーが一致せず、カウンタが 1 のまま伸びないので打ち切りが永久に効かない。
 
+- **deploy の 4 事象も issue に紐づかないので、キーは `deploy:<上の語句>` にする** (例: `deploy:pull が失敗した`)。数え方・打ち切り・リセット規則は他の事象と同じ。「pull では反映されない変更が着地した」だけは 3 回ではなく**初回の 1 通で打ち切る** — 同じ着地を毎 tick 再通知しても新しい情報が無い。次の tick で diff が空になればその事象は観測されなくなるのでキーが落ち、**後日また config 層が着地したときは改めて 1 通送られる**
 - **候補出現の事象は issue に紐づかないので、キーは `候補プール:新しい候補が現れた` にする。** 数え方と打ち切りは他の事象と同じで、リセット規則 (事象が観測されなくなったらキーごと落とす) もそのまま効く — 新しい候補が現れない tick が 1 度あればカウンタは落ちる。新しい候補が現れ続けているのに 3 回とも判断が返らないなら窓口が塞がっているので、そこで送るのをやめる
 - **escalation は送った回数を数え、3 回 (初回 + 再送 2 回) で打ち切る。** 以後その事象は送らず、別の事象を送るときの文面に併記するだけにする
 - **観測失敗は連続して失敗した tick 数を数え、3 回目で 1 度だけ escalation する** (キーは `<対象>:観測失敗`)。以後は再試行を続けても送らない
 - note との整合で送らないと決めた事象も、カウンタに `打ち切り済み` と書いて持ち回る (判断を毎 tick やり直さない)。**orchestrator が cross-session message で「もう送るな」と返したときも同じ** — message は tick を跨がないので、カウンタへ書かないと次 tick で同じ判断をやり直す
 - **リセットするのはその事象が観測されなくなったとき** (キーごと落とす)、**および escalation の宛先が変わったとき** (orchestrator が再起動して新しい初回コンタクトが届いた場合。カウンタは全部落とす — 新しい orchestrator は過去の escalation を 1 通も受け取っていない)。note が更新されただけ / phase が据え置きのままではリセットしない
 
-**カウンタ・候補集合・既見集合は loop 指示文 (§1 の形) で持ち回る。tick を跨ぐ保存先はそこしか無い** — カウンタ節を書き落とした tick はカウンタ 0 として読むしかなく、打ち切り済みの事象がもう一度送られる。**候補節を書き落とすともっと悪い** — 候補集合 0 として読むので、プール全体が「前 tick に無い ref」に見えて 1 通丸ごと誤発火する。**cross-tracker の既見節も同じ** (既見集合 0 として読み、先頭ページの全 ref が新規に見える)。
+**カウンタ・候補集合・既見集合・deploy のスキップ状態は loop 指示文 (§1 の形) で持ち回る。tick を跨ぐ保存先はそこしか無い** — カウンタ節を書き落とした tick はカウンタ 0 として読むしかなく、打ち切り済みの事象がもう一度送られる。**候補節を書き落とすともっと悪い** — 候補集合 0 として読むので、プール全体が「前 tick に無い ref」に見えて 1 通丸ごと誤発火する。**cross-tracker の既見節も同じ** (既見集合 0 として読み、先頭ページの全 ref が新規に見える)。**deploy 節を書き落とすと恒久スキップが解けて、成立しない前提への 1 通目が毎回の compaction ごとに再発する。**
 
-書式例: `カウンタ: gh#583:closes PR が merged だが pane が生きている=2, gh#589:agent が idle かつ closes PR が open=打ち切り済み, resolve:観測失敗=1, 候補プール:新しい候補が現れた=1`。候補集合は別節で持つ — 書式例: `候補: gh#587, gh#566`。cross-tracker の既見集合も別節で持ち、件数を併記する — 書式例: `既見: jira:SWATCF-14, jira:SWATCF-20 (件数 21)`
+書式例: `カウンタ: gh#583:closes PR が merged だが pane が生きている=2, gh#589:agent が idle かつ closes PR が open=打ち切り済み, resolve:観測失敗=1, 候補プール:新しい候補が現れた=1, deploy:pull が失敗した=2`。候補集合は別節で持つ — 書式例: `候補: gh#587, gh#566`。cross-tracker の既見集合も別節で持ち、件数を併記する — 書式例: `既見: jira:SWATCF-14, jira:SWATCF-20 (件数 21)`。deploy のスキップ状態も別節で持つ — 書式例: `deploy: スキップ (upstream 未設定)` / `deploy: 通常`
 
-## 5. fail-closed
+## 5. tick の最後 — 走っている checkout を最新にする
+
+**観測 (§2)・記帳 (§3)・escalation (§4) をすべて終えてから通す。** hook script は呼び出しごとに exec されるので、pull は tick の途中で足元の実装を差し替えうる。その tick の観測と記帳は差し替え前の一貫した状態で完了させる。
+
+**なぜ observer が持つか**: plugin / hook / skill の実体は cache コピーを持たず checkout の working tree を in-place で読むので、**手元が古ければ merge 成功・CI 緑・issue closed・PR "Merged" が揃っても古いコードが動き続ける**。無効であることを示す信号は一つも出ない。台帳 entry を持たない merge (人間が単独で出した PR / dispatch が動いていない時間帯の merge) もここで拾われる — 契機を台帳に置かないので、entry の有無に依存しない。
+
+1. **pull 前の HEAD を控える** — `git rev-parse HEAD`。手順 4 の diff の基点で、pull の後では取り戻せない
+2. **`git pull --ff-only` を引数なしで 1 回打つ**
+   - **remote 名も branch 名も書かない。** 現在の checkout の upstream 設定に従わせる — 綴りを書くと、既定ブランチの綴りが違う repo でこの skill が動かなくなる
+   - **`git fetch` を前置しない。** pull は fetch を内包するので、足すと同じ通信を 2 度払う
+   - **top-level の 1 断片として打つ。** `if` / `for` / `&&` の連結や compound command に埋めない — sandbox の excludedCommands は top-level segment 単位で照合されるので、埋めると許可が当たらず塞がれる
+   - **止めない。分類して判断しない。** 取り込む変更の中身を読んで採否を決めない — 開発環境は常に最新の既定ブランチの上で動かし、その上で開発する。最新にエラーがあればそれはその場で直す対象で、取り込みを見送る理由にはならない (安定版を狙って取り込むライブラリ更新とは思想が違う)
+3. **`git status --porcelain` を引き、非空なら escalation する。止めない** — 観測も次の tick も続ける。`git pull` が sandbox の `excludedCommands` に無い環境では、自己改変保護が write を拒んで **HEAD 据え置き + working tree だけ書き換わった半適用**を作りうる。この検査が無いと半適用が信号ゼロで残る
+4. **pull で動いた diff が session 起動時に確定する層を触っていたら、1 通だけ escalation して打ち切る** — `git diff --name-only <手順 1 で控えた sha> HEAD` で見る
+
+| 触った path | 扱い |
+|---|---|
+| hook script の本体 / skill 本文 (`SKILL.md`) | **載る** (script は呼び出しごとに exec、skill は次の invoke から)。通知しない |
+| plugin manifest (`plugin.json`) / hook の登録 (`hooks.json`) / MCP server の宣言 (`.mcp.json`) / settings (`.claude/settings.json` `.claude/settings.local.json`) | **載らない** — 登録と設定は session 起動時に確定する。escalation する |
+
+- **判定の根拠は「Claude Code の登録と設定は session 起動時に確定する」という性質**であって、特定 repo のディレクトリ構成ではない。**どの repo でも同じ綴りで存在しうる config path だけを判定材料にする** — repo 固有の実体 path (MCP server の実装を置いたディレクトリ等) はこの分類で拾えない。**受容する**: 拾おうとすると綴りを skill に持ち込むことになり、他の repo で誤判定する
+- **文面を「再起動」に限定しない。** 「pull では反映されない変更が着地した — 再起動または適用手順が要る」と書く。settings が配布 template である repo では、反映手段は再起動ではなく適用手順になる
+
+### 前提が成立しないとき
+
+**恒久的な不成立 (cwd が git repo でない / upstream 未設定 / detached HEAD) は、最初の 1 度だけ escalation し、以後の tick ではこの節をまるごとスキップする。**
+
+- **§4 の観測失敗カウンタに数えない。** 恒久的に成立しない前提を数えるとカウンタが毎 tick 伸びる (綴りを外した候補観測・adapter 未対応の `unresolved_review_threads` が null になる project と同じ扱い)
+- **スキップ済みであることを §1 の loop 指示文の deploy 節で持ち回る。** カウンタ・候補集合と同列の状態で、載せ落とすと compaction 後の tick で 1 通目が再発する
+
+**一過性の失敗 (ff できない / network 断 / working tree が dirty で衝突) は escalation し、§4 の「再送と再試行の打ち切り」カウンタに乗せる。** 次の tick では再試行する — スキップに入れない。
+
+### この節がしないこと
+
+- **失敗しても観測を止めない。** §6 の停止に入るのは §6 が挙げる前提が崩れたときだけで、deploy の失敗は含まない
+- **台帳に書かない。** deploy は台帳 entry に紐づかない (台帳を持たない merge こそこの節が拾う対象) ので、記帳経路を増やさない。deploy の履歴は git 自身が持つ
+- **自分が走っている checkout 以外を引かない。** 他の clone のパスを導出しない — 綴りの持ち込みになる
+
+## 6. fail-closed
 
 次のいずれかが崩れたら、観測を続けずに escalation して停止する。**観測していない observer が居るのに、居るように見える状態を作らない。**
 
@@ -173,15 +218,15 @@ orchestrator の起床経路は「worker の質問」「observer の escalation�
   - **§1 の宛先を既に持っているなら、止まる前に `SendMessage` で「観測できなかった: 次の起床を armed できず停止する」を必ず送る。** permission の deny で塞がれた場合も同じ — deny は user への説明を求めるだけで、orchestrator への状況通知を妨げない (通知は armed を別手段で達成する回避ではなく報告である)
   - 宛先をまだ持っていないときだけ、user への報告で閉じる
 
-## 6. 周期
+## 7. 周期
 
-**周期に固定値を置かない。** `ScheduleWakeup` で毎回決め直し、**毎 tick loop 指示文 (§1 の形) を `prompt` に渡し直す** (渡し直さないと 1 周期で止まり、以後何も観測されない)。**書き換えるのはカウンタ節・候補節・既見節だけ** — 宛先と skill 読み直しの文面はそのまま運ぶ。**これは §1 で `/loop` を armed した後の話** で、最初の armed をこれで代用しない。
+**周期に固定値を置かない。** `ScheduleWakeup` で毎回決め直し、**毎 tick loop 指示文 (§1 の形) を `prompt` に渡し直す** (渡し直さないと 1 周期で止まり、以後何も観測されない)。**書き換えるのはカウンタ節・候補節・既見節・deploy 節だけ** — 宛先と skill 読み直しの文面はそのまま運ぶ。**これは §1 で `/loop` を armed した後の話** で、最初の armed をこれで代用しない。
 
 - 変化速度に合わせる — PR merge は分〜時間オーダー、pane 生死は数分オーダー
 - 非終端 entry が 0 なら長めに取る (1200s+ 目安)。**台帳が空でも候補プールの観測は止まらない**が、新しい候補の検知はこの間隔ぶん遅れる
 - clamp は `[60, 3600]`
 
-## 7. 自分の性質
+## 8. 自分の性質
 
-- **作業ツリーを持たない** (`pane_spawn` に `worktree` / `cwd` が渡されない)。観測しかしないので repo root で起動し、その repo の permission 設定をそのまま引く
+- **作業ツリーを持たない** (`pane_spawn` に `worktree` / `cwd` が渡されない)。**そのため checkout の root で起動する** — §5 が引くのはこの checkout で、パスの導出は要らない (最初から正しい場所に居る)。permission 設定もその repo のものをそのまま引く
 - **loop は無限には続かない** — dynamic loop は数日で aged out する。止まった自分を自分で復帰させようとしない (死活の保証は自分の担当ではなく、orchestrator が起床のたびに確保し直す)
