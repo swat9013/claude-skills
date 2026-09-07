@@ -1,4 +1,4 @@
-"""dispatch 台帳 (state.json + events.jsonl) の読み書き。
+"""dispatch 台帳 (state.json + events.jsonl + signals.jsonl) の読み書き。
 
 spec §3: 外部 store (tracker / pane / git) が「現実」、台帳は「意図と記録」。本 module は
 記録の永続化と phase 遷移の合法性検証だけを持ち、「何をすべきか」の判断は一切持たない。
@@ -10,13 +10,19 @@ spec §3: 外部 store (tracker / pane / git) が「現実」、台帳は「意�
   を advisory lock (`fcntl.flock`) の内側で完結させる
 - state.json は temp + `os.replace` の atomic write。途中で落ちても半端な JSON を残さない
 - events.jsonl は lock 下の append-only。state.json の上書きで消える履歴をここが保全する
+- signals.jsonl も lock 下の append-only。events.jsonl が entry 1 件のライフサイクルを記録
+  するのに対し、こちらは **entry に紐づかない事象も同じ 1 本へ書く** project 単位の stream
+  で、主語は `subject` が持つ。観測から作り直せない状態 (何をもう送ったか) の durable な
+  置き場で、読み手はこの stream を読み直して状態を再計算する
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import tempfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,7 +33,12 @@ import vocabulary
 STATE_VERSION = 1
 STATE_FILENAME = "state.json"
 EVENTS_FILENAME = "events.jsonl"
+SIGNALS_FILENAME = "signals.jsonl"
 LOCK_FILENAME = ".lock"
+
+# ref 集合の安定 key の長さ (sha256 hexdigest の先頭 N 文字)。集合の同一性判定にしか使わない
+# ので全長は要らず、短いほうが escalation の文面へ写したときに読める
+SET_KEY_LENGTH = 12
 
 # 台帳 root。環境変数で差し替えられるのはテストと検証のため — 実運用では既定を使う
 # ディレクトリ名 / 環境変数名は server 改名 (issue-dispatch → dispatch-ops) 後も旧名のまま — live 台帳の移行回避 (ADR 0028)
@@ -121,6 +132,109 @@ def open_ledger(cwd=None, root=None, run=repo_key_mod.run_git):
     return Ledger(path, repo_key=resolved["repo_key"])
 
 
+@dataclass(frozen=True)
+class EntryView:
+    """台帳 entry 1 件の読み取り面。**entry の構造を知るのは本 class だけ**。
+
+    消費側 (resolve / worktree) が `(entry["issue"] or {}).get("repo")` を書ける限り、schema の
+    知識は module 境界を越えて散り、欄の意味 (`issue.repo` は issue 置き場ではなく**実装 repo**
+    — ADR 0036 §4) を読み解く責務まで一緒に散る。述語の名前でその意味をここへ閉じる。
+
+    **dict の subclass にしない** — 「まだ掘れる」逃げ道を残すと、述語を足す代わりに掘る側へ
+    倒れて収束しない。
+
+    `raw` は tool 応答へそのまま載せる dict (`Ledger._view` の出力)。**出力整形のためだけ**に
+    開いてあり、判断に使う値は述語から採る。欄が欠けた entry (手で編集された state / 台帳導入
+    前の記録) でも属性参照で落ちない — 落とすと「保護したつもりの worktree が消える」に化ける。
+
+    view は in-memory のみで、state.json / events.jsonl の形式には触らない (ADR 0028 / 0036 の
+    live 台帳を移行しない方針)。
+    """
+
+    raw: dict
+
+    @property
+    def issue_ref(self):
+        return self.raw.get("issue_ref")
+
+    @property
+    def phase(self):
+        return self.raw.get("phase")
+
+    @property
+    def updated_at(self):
+        return self.raw.get("updated_at")
+
+    @property
+    def tracker(self):
+        return self._issue.get("tracker")
+
+    @property
+    def implementation_repo(self):
+        """**この issue を実装する repo** の識別子 (issue 置き場ではない — ADR 0036 §4)。"""
+        return self._issue.get("repo")
+
+    @property
+    def recorded_worktree(self):
+        """台帳が記録した作業ツリーのパス (未記録なら None)。"""
+        return self._agent.get("worktree")
+
+    @property
+    def recorded_pane_id(self):
+        """台帳が記録した pane id (未記録 / 駐機で降ろした後は None)。"""
+        return self._agent.get("pane_id")
+
+    @property
+    def recorded_prs(self):
+        """台帳が記録した PR record の列 (要素の綴りは `vocabulary.PR_FIELDS`)。"""
+        return self.raw.get("prs") or []
+
+    @property
+    def slug(self):
+        """issue slug (`i386` / `proj-9`)。綴れない ref は `refs.RefError` を投げる。"""
+        return refs.format_issue_slug(self.issue_ref)
+
+    @property
+    def compact(self):
+        """一覧を走査するための 1 行射影 (entry 全体の代わりに載せる dict)。
+
+        全 entry を数えたり phase を見比べたりするだけの用途に entry 全体を配ると、数十件の
+        台帳で数万トークンを食う。`raw` と違い**述語から組む** — 射影する欄が増えても schema の
+        知識は本 class の外へ出ない。
+        """
+        return {
+            "issue_ref": self.issue_ref,
+            "phase": self.phase,
+            "repo": self.implementation_repo,
+            "worktree": self.recorded_worktree,
+            "pr_count": len(self.recorded_prs),
+            "updated_at": self.updated_at,
+        }
+
+    @property
+    def is_terminal(self):
+        """終端 phase か (履歴であって現況の突合先が無い)。"""
+        return self.phase in vocabulary.TERMINAL_PHASES
+
+    @property
+    def is_protected(self):
+        """作業ツリーを掃除から守る phase か。"""
+        return self.phase in vocabulary.PROTECTED_PHASES
+
+    @property
+    def is_reclaimable(self):
+        """作業ツリーを回収してよい phase か。"""
+        return self.phase in vocabulary.RECLAIM_PHASES
+
+    @property
+    def _issue(self):
+        return self.raw.get("issue") or {}
+
+    @property
+    def _agent(self):
+        return self.raw.get("agent") or {}
+
+
 class Ledger:
     """1 project 分の台帳ディレクトリ (`<root>/<key>/`)。
 
@@ -134,6 +248,7 @@ class Ledger:
         self.repo_key = repo_key or self.directory.name
         self.state_path = self.directory / STATE_FILENAME
         self.events_path = self.directory / EVENTS_FILENAME
+        self.signals_path = self.directory / SIGNALS_FILENAME
         self.lock_path = self.directory / LOCK_FILENAME
 
     # --- public API ---------------------------------------------------------
@@ -341,25 +456,153 @@ class Ledger:
             self._append_event(record)
         return record
 
+    def log_signal(self, subject, kind, *, fields=None, refs=None, actor=DEFAULT_ACTOR):
+        """project 単位の signal stream (signals.jsonl) へ 1 行足す。
+
+        `log_event` との違いは主語の縛り — あちらは台帳 entry の履歴なので issue ref を
+        要求するが、**observer が運ぶ状態には issue に紐づかない事象がある** (候補プールの
+        出現 / deploy の前提が成立しない)。`subject` を ref として検証しないのはそのためで、
+        検証を掛けると pseudo-ref を切る羽目になる。issue に紐づく事象は `subject` に
+        issue ref (`gh#386`) を置いて同じ 1 本へ書く。
+
+        `refs` を渡すと**重複除去とソートを server が行い、`refs` と安定 key を書く**。同じ
+        集合なら同じ key になるので、読み手は集合を持ち回らずに「前と同じ集合か」を判定
+        できる。正規化を server 側に置くのは、並び順や重複で key が揺れると同一性の判定に
+        使えなくなるため。`refs` を渡さない signal は両方 null (集合を伴わない事象)。
+
+        `kind` と `subject` の語彙は検証しない (`event` と同じ理由 — 何を書くかは呼び出し側の
+        ポリシー)。空だけは撥ねる: 主語も種別も無い行は後から誰にも読み解けない。
+        """
+        subject = _require_text(subject, "subject", "この signal が何についてかを文字列で渡す")
+        kind = _require_text(kind, "kind", "何が起きたかの種別を文字列で渡す")
+        normalized_refs = _normalize_ref_set(refs)
+        signal = {
+            "ts": now_iso(),
+            "actor": actor,
+            "subject": subject,
+            "kind": kind,
+            "refs": normalized_refs,
+            "key": _set_key(normalized_refs),
+            "fields": fields or {},
+        }
+        with self._locked():
+            self._append_line(self.signals_path, signal)
+        return signal
+
+    def read_signals(self, since=None, subject=None, kind=None, limit=None):
+        """signal stream を読む (`since` 以降 / `subject` / `kind` で絞り、`limit` で末尾を取る)。
+
+        **`since` はその ts の行を含む** (境界は取りこぼすより重複させる)。`now_iso` は秒
+        精度なので同じ秒に複数行が並びうる。排他にすると同秒の兄弟行が読み手へ届かないまま
+        落ち、欠落は読み手側に何の信号も出さない。重複は読み手が潰せる。
+
+        **`limit` が返すのは古い側ではなく新しい側の N 行**。stream は消えないので、周期的に
+        読む側が「最新の 1 行」を採るたびに全履歴を受け取ることになる。
+        """
+        if limit is not None and (not isinstance(limit, int) or limit < 1):
+            raise LedgerError("limit は 1 以上の整数で渡す")
+        boundary = _normalize_boundary(since, "since")
+        signals = []
+        for signal in self._read_stream(self.signals_path):
+            if boundary is not None and signal.get("ts", "") < boundary:
+                continue
+            if subject is not None and signal.get("subject") != subject:
+                continue
+            if kind is not None and signal.get("kind") != kind:
+                continue
+            signals.append(signal)
+        return signals[-limit:] if limit is not None else signals
+
+    def signals_view(self, since=None, subject=None, kind=None, limit=None):
+        """tool 応答用の signal 一覧。どの台帳を見ているかを毎回添える。"""
+        signals = self.read_signals(since=since, subject=subject, kind=kind, limit=limit)
+        return {
+            "repo_key": self.repo_key,
+            "ledger_dir": str(self.directory),
+            "count": len(signals),
+            "signals": signals,
+        }
+
+    def read_events(self, since=None):
+        """entry のライフサイクル履歴 (events.jsonl) を読む (`since` 以降だけに絞れる)。
+
+        境界の解釈 (`_normalize_boundary`) と欠損・破損の扱い (`_read_stream`) を `read_signals`
+        と共有する — **`since` はその ts の行を含み**、まだ 1 行も書いていない台帳は空を返し、
+        壊れた行では loud に落ちる。片方だけ規律が違うと、同じ境界を渡した呼び出しが stream
+        ごとに違う解釈を受ける。**揃うのはこの解釈までで、2 本を 1 つの lock 窓では読まない**
+        (`_read_stream` は path ごとに lock を取り直す)。
+        """
+        boundary = _normalize_boundary(since, "since")
+        events = []
+        for event in self._read_stream(self.events_path):
+            if boundary is not None and event.get("ts", "") < boundary:
+                continue
+            events.append(event)
+        return events
+
+    def changes_since(self, since_ts):
+        """`since_ts` 以降に起きたことを件数と対象 ref へ畳んだ射影 (tool `changes_since` の実体)。
+
+        報告はチャット出力なので、**前回の報告内容は compaction を跨ぐと失われる**。前回の
+        報告時刻さえ渡せば「その後に何が動いたか」を 2 本の stream から作り直せる、という
+        のが本 method の存在理由 (前回値を保存する新しい欄も file も増やさない)。
+
+        群の内訳と `since_ts` の契約は tool 側の docstring (`main.py`) が正本。ここに残すのは
+        実装の側の理由 2 つ:
+
+        - **群ごとの畳み方は `_transition_groups` / `_event_groups` / `_signal_groups` が持つ。**
+          本 method は窓を切って渡すだけで、どの key で束ねるかを知らない
+        - **row をそのまま出力へ写す経路を作らない。** 件数と対象しか出さないので、
+          `note` / `summary` / `pane_send` の `text` が差分へ漏れる経路が構造的に無い —
+          漏らすと context を食わずに差分を読むという目的が自己否定される
+        """
+        boundary = _normalize_boundary(since_ts, "since_ts")
+        events = self.read_events(since=boundary)
+        signals = self.read_signals(since=boundary)
+        transition_rows = [row for row in events if row.get("event") == "transition"]
+        other_rows = [row for row in events if row.get("event") != "transition"]
+        return {
+            "repo_key": self.repo_key,
+            "ledger_dir": str(self.directory),
+            "since_ts": boundary,
+            "counts": {
+                "transitions": len(transition_rows),
+                "events": len(other_rows),
+                "signals": len(signals),
+            },
+            "transitions": _transition_groups(transition_rows),
+            "events": _event_groups(other_rows),
+            "signals": _signal_groups(signals),
+        }
+
     def list_entries(self, phases=None):
-        """記帳済み entry の一覧 (phase で絞り込み可能)。"""
+        """記帳済み entry の一覧 (phase で絞り込み可能)。**`EntryView` の列を返す**。
+
+        tool 応答の dict を返す他の method と返り値の型が違うのは意図した非対称 — 本 method
+        だけが server 内部 (resolve / worktree) の消費者を持ち、そこに entry の構造を知らせ
+        ないために typed view を配る。tool 面へ出る method は MCP 応答そのものなので dict の
+        まま (`raw` を経た出力整形は `EntryView` の docstring)。
+        """
         if phases is not None:
             phases = [vocabulary.require_phase(phase) for phase in phases]
         with self._locked() as state:
             entries = [
-                self._view(ref, entry)
+                EntryView(self._view(ref, entry))
                 for ref, entry in state["dispatches"].items()
                 if phases is None or entry["phase"] in phases
             ]
-        entries.sort(key=lambda item: (item["updated_at"] or "", item["issue_ref"]))
+        entries.sort(key=lambda item: (item.updated_at or "", item.issue_ref))
         return entries
 
-    def list_view(self, phases=None):
+    def list_view(self, phases=None, compact=False):
         """tool 応答用の一覧。どの台帳を見ているかと phase 語彙を毎回添える。
 
         `_view` が entry 1 件に repo_key / ledger_dir を添えるのと同じ理由 (診断) で、
         一覧にも台帳の所在を載せる。phase 語彙を返すのは、呼び出し側が絞り込みに使える
         値を応答から読めるようにするため。
+
+        `compact` が切り替えるのは entries の中身だけで、台帳の所在・phase 語彙・件数は
+        どちらでも据え置く (診断のために毎回添える設計は射影の有無と独立)。
         """
         entries = self.list_entries(phases)
         return {
@@ -367,7 +610,7 @@ class Ledger:
             "ledger_dir": str(self.directory),
             "phases": list(vocabulary.PHASES),
             "count": len(entries),
-            "entries": entries,
+            "entries": [entry.compact if compact else entry.raw for entry in entries],
         }
 
     def get(self, issue_ref):
@@ -382,7 +625,7 @@ class Ledger:
     # --- internals ----------------------------------------------------------
 
     def _view(self, issue_ref, entry):
-        """tool 応答用の entry。どの台帳を見ているかを毎回添える。
+        """tool 応答用の entry dict。どの台帳を見ているかを毎回添える。
 
         repo_key / ledger_dir を返すのは診断のため — server プロセスの cwd が期待と
         ずれると別 repo の台帳を書いてしまい、症状 (「記帳したのに出てこない」) から
@@ -403,6 +646,26 @@ class Ledger:
         """
         self.directory.mkdir(parents=True, exist_ok=True)
         return str(self.directory)
+
+    def _read_stream(self, path):
+        """jsonl の stream を lock の内側で読む (未作成なら lock も取らずに空)。
+
+        **append は不可分ではない** — `_append_line` は buffered writer で書くので、
+        `pane_send` のように pane へ送った prompt 全文を載せた 1 行は複数回の write に
+        割れうる。lock を取らずに読むと、その途中を読んだ読み手が**壊れていない file を
+        壊れていると報告する** (再実行すれば通る「破損」は、実在する破損の信号を薄める)。
+
+        書き手の `_locked` と違い共有 lock なので、読み手同士は待たない。state.json を
+        読まないのも意図した差 — stream の読みに state の健全性を巻き込まない。
+        """
+        if not path.exists():
+            return []
+        with open(self.lock_path, "a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            try:
+                return _parse_jsonl(path)
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     @contextmanager
     def _locked(self):
@@ -454,14 +717,160 @@ class Ledger:
             raise LedgerError(f"{self.state_path} を書けない: {exc}") from exc
 
     def _append_event(self, event):
-        line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
+        self._append_line(self.events_path, event)
+
+    def _append_line(self, path, record):
+        """jsonl へ 1 行 append する (lock は呼び出し側が握っている前提)。"""
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
         try:
-            with open(self.events_path, "a", encoding="utf-8") as handle:
+            with open(path, "a", encoding="utf-8") as handle:
                 handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
         except OSError as exc:
-            raise LedgerError(f"{self.events_path} に追記できない: {exc}") from exc
+            raise LedgerError(f"{path} に追記できない: {exc}") from exc
+
+
+def _parse_jsonl(path):
+    """実在する jsonl を 1 行 1 record へ解く (壊れた行は loud)。
+
+    壊れた行を黙って飛ばすと、履歴の欠落が読み手に何の信号も出さない。**未作成かどうかは
+    問わない** — 台帳が空か否かの判定は lock を取る前に済ませる話なので `_read_stream` が持つ。
+    """
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise LedgerError(f"{path} に壊れた行がある: {exc}") from exc
+    return records
+
+
+def _normalize_boundary(value, name):
+    """stream を絞る境界を `now_iso` と同じ書式 (UTC 秒精度 + `Z`) へ正規化する (未指定は None)。
+
+    `ts` との比較は文字列比較なので、`+09:00` 付きの正当な ISO8601 をそのまま渡すと
+    **辞書順が時刻順とずれ、静かに全件 / 0 件へ倒れる**。窓そのものが狂う誤りが「変化なし」
+    という正常な形の答えになるため、境界は書式を検証してから比較する。**2 本の stream の
+    reader が同じ 1 つの正規化を通る** — 片方だけ検証すると、同じ境界を渡した射影が
+    stream ごとに違う窓を見る。
+
+    offset の無い naive な値は UTC と決めつけずに撥ねる — 決めつけると、手元時刻を
+    渡した呼び出しが時差の分だけずれた窓を黙って受け取る。小数秒は切り捨てる (窓が広がる
+    側 = 取りこぼさない側)。
+    """
+    if value is None:
+        return None
+    text = _require_text(value, name, "ISO8601 (例 2026-09-02T04:00:00Z) で渡す")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise LedgerError(
+            f"{name} を時刻として読めない: {text!r} (ISO8601 で渡す。例 2026-09-02T04:00:00Z)"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise LedgerError(
+            f"{name} に timezone が無い: {text!r} (`Z` か offset を付けて渡す。例 2026-09-02T04:00:00Z)"
+        )
+    utc = parsed.astimezone(timezone.utc).replace(microsecond=0)
+    return utc.isoformat().replace("+00:00", "Z")
+
+
+def _transition_groups(rows):
+    """phase 遷移の行を `from` → `to` の対ごとに畳む。"""
+    return [
+        {"from": key[0], "to": key[1], "count": count, "refs": refs}
+        for key, count, refs in _tally(
+            rows,
+            lambda row: (row.get("from") or "", row.get("to") or ""),
+            lambda row: row.get("issue"),
+        )
+    ]
+
+
+def _event_groups(rows):
+    """phase 遷移以外の events.jsonl の行を `event` ごとに畳む。"""
+    return [
+        {"event": key[0], "count": count, "refs": refs}
+        for key, count, refs in _tally(
+            rows,
+            lambda row: (row.get("event") or "",),
+            lambda row: row.get("issue"),
+        )
+    ]
+
+
+def _signal_groups(rows):
+    """signal を `kind` + `fields.topic` の対ごとに畳む。
+
+    対象を `refs` ではなく `subjects` で持つのは、signal の主語が issue ref とは限らない
+    ため (候補プール / deploy)。行が伴う `refs` (候補集合そのもの) は畳まない — 最新の
+    集合が要るなら `signal_read` が 1 行で返す。
+    """
+    return [
+        {"kind": key[0], "topic": key[1] or None, "count": count, "subjects": subjects}
+        for key, count, subjects in _tally(
+            rows,
+            lambda row: (row.get("kind") or "", _signal_topic(row) or ""),
+            lambda row: row.get("subject"),
+        )
+    ]
+
+
+def _signal_topic(signal):
+    """signal の `fields.topic` (空・非文字列は topic 無しと同じ扱い)。"""
+    topic = (signal.get("fields") or {}).get("topic")
+    return topic if isinstance(topic, str) and topic.strip() else None
+
+
+def _tally(rows, group_of, target_of):
+    """行を group key で束ね、`(key, 件数, 対象の列)` を件数の多い順に返す。
+
+    並びを出現順でなく件数順にするのは、報告の `changed` 1 行が「何がいちばん動いたか」
+    から読まれるため。同数のときは key の辞書順で止める (同じ入力から同じ差分が出る)。
+    """
+    groups = {}
+    for row in rows:
+        bucket = groups.setdefault(group_of(row), {"count": 0, "targets": set()})
+        bucket["count"] += 1
+        target = target_of(row)
+        if target is not None:
+            bucket["targets"].add(target)
+    ordered = sorted(groups.items(), key=lambda item: (-item[1]["count"], item[0]))
+    return [(key, bucket["count"], sorted(bucket["targets"])) for key, bucket in ordered]
+
+
+def _require_text(value, name, hint):
+    """空でない文字列を要求して strip した値を返す。"""
+    if not isinstance(value, str) or not value.strip():
+        raise LedgerError(f"{name} が空 ({hint})")
+    return value.strip()
+
+
+def _normalize_ref_set(refs):
+    """ref 集合を重複除去 + ソートした列にする (未指定は None のまま)。"""
+    if refs is None:
+        return None
+    if not isinstance(refs, list):
+        raise LedgerError("refs は配列で渡す")
+    for ref in refs:
+        if not isinstance(ref, str) or not ref.strip():
+            raise LedgerError(f"refs に空でない文字列でない要素がある: {ref!r}")
+    return sorted({ref.strip() for ref in refs})
+
+
+def _set_key(refs):
+    """ref 集合の安定 key (集合が同じなら同じ key)。集合を伴わない signal は None。
+
+    集合そのものを持ち回らずに同一性を判定するための短縮表現で、衝突しても実害が出ない
+    用途 (同じ集合か違う集合か) にしか使わないため全長を持たない。
+    """
+    if refs is None:
+        return None
+    canonical = json.dumps(refs, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:SET_KEY_LENGTH]
 
 
 def _normalize_agent(agent):

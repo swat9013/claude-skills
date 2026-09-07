@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dispatch v2 dashboard</title>
+<style>
+  /* ── layer 1: primitive (Radix Colors の値を inline) ───────────────
+   * **CDN を引かない**。localhost の運用画面にネットワーク依存を足さないため、かつ
+   * この page は素の `vm` で評価されて表示規則を検査される (tests/render_dashboard_page.js)。
+   * step 11 は step 1/2 の背景に対して WCAG AA (4.5:1) を満たす段。 */
+  :root {
+    color-scheme: light dark;
+    --slate-1: #fcfcfd;
+    --slate-2: #f9f9fb;
+    --slate-3: #f0f0f3;
+    --slate-6: #dddde3;
+    --slate-11: #60646c;
+    --slate-12: #1c2024;
+    --amber-11: #ab6400;
+    --red-11: #ce2c31;
+    --red-3: #ffdbdc;
+    --green-11: #218358;
+
+    --text-sm: 0.8125rem;
+    --text-base: 0.875rem;
+    --text-md: 1.09375rem;
+    --text-lg: 1.25rem;
+    --leading-tight: 1.2;
+    --leading-normal: 1.55;
+
+    --space-0-5: 0.25rem;
+    --space-1: 0.5rem;
+    --space-1-5: 0.75rem;
+    --space-2: 1rem;
+    --space-3: 1.5rem;
+    --space-4: 2rem;
+
+    --radius: 6px;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    --font-data: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --slate-1: #111113;
+      --slate-2: #18191b;
+      --slate-3: #212225;
+      --slate-6: #3c3e42;
+      --slate-11: #b0b4ba;
+      --slate-12: #eeeef0;
+      --amber-11: #ffca16;
+      --red-11: #ff9592;
+      --red-3: #3b1219;
+      --green-11: #3dd68c;
+    }
+  }
+
+  /* ── layer 2: semantic ─────────────────────────────────────────────
+   * **「未観測」と「異常」を別 token で持つ**。未観測は「まだ分からない」で、alert は
+   * 「分かっていて悪い」。同じ色に寄せると画面の主題 (見えないものを見えると分かる) が消える。 */
+  :root {
+    --background: var(--slate-1);
+    --surface: var(--slate-2);
+    --raised: var(--slate-3);
+    --foreground: var(--slate-12);
+    --muted: var(--slate-11);
+    --border: var(--slate-6);
+    --unobserved: var(--amber-11);
+    --alert: var(--red-11);
+    --alert-surface: var(--red-3);
+    --ok: var(--green-11);
+  }
+
+  /* ── layer 3: component ─────────────────────────────────────────── */
+  body {
+    margin: 0;
+    padding: var(--space-2) var(--space-3) var(--space-4);
+    background: var(--background);
+    color: var(--foreground);
+    font: var(--text-base)/var(--leading-normal) var(--font-ui);
+  }
+  header { max-width: 72rem; }
+  h1 {
+    font-size: var(--text-lg);
+    line-height: var(--leading-tight);
+    margin: 0 0 var(--space-0-5);
+  }
+  h2 { font-size: var(--text-md); margin: 0 0 var(--space-1); }
+  .meta { color: var(--muted); font-size: var(--text-sm); margin: var(--space-0-5) 0 0; }
+  /* 読めているかどうかの 1 行。**成功時と失敗時で同じ位置に出す** — 位置が動くと、
+     読めていないことに気付くのが遅れる */
+  .status { font-family: var(--font-data); font-size: var(--text-sm); color: var(--muted); }
+  .status.alert { color: var(--alert); font-weight: 600; }
+
+  section { max-width: 72rem; }
+  .project { margin-top: var(--space-3); }
+
+  /* 要判断 band。左罫線の色は装飾で、意味は必ず文字列側が持つ */
+  .attention {
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--alert);
+    border-radius: var(--radius);
+    background: var(--surface);
+    padding: var(--space-1-5) var(--space-2);
+    margin: var(--space-2) 0 var(--space-3);
+  }
+  .attention.clear { border-left-color: var(--ok); }
+  .attention.unreadable { border-left-color: var(--unobserved); }
+  .attention-line { margin-top: var(--space-0-5); }
+  .attention-line:first-of-type { margin-top: 0; }
+
+  .panel {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-1-5);
+    margin: var(--space-1) 0;
+    font-size: var(--text-sm);
+  }
+
+  .table-scroll { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--font-data);
+    font-size: var(--text-sm);
+  }
+  th, td {
+    border-bottom: 1px solid var(--border);
+    padding: var(--space-0-5) var(--space-1);
+    text-align: left;
+    vertical-align: top;
+  }
+  /* sticky にはしない — 表を横スクロールの容器へ入れた時点で容器が scrollport になり、
+     縦スクロールでは固定されない (効いているつもりの宣言を残さない) */
+  thead th {
+    background: var(--background);
+    color: var(--muted);
+    font-weight: normal;
+    font-family: var(--font-ui);
+    white-space: nowrap;
+    border-bottom: 1px solid var(--foreground);
+  }
+  tbody tr.needs-attention td:first-child { box-shadow: inset 3px 0 0 var(--alert); }
+  /* note と worktree は 1 行ぶん下げて全幅に置く。**折り返して切らない** —
+     縦に伸びても情報は残るが、切ると残らない */
+  td.detail {
+    border-bottom: 2px solid var(--border);
+    color: var(--muted);
+    padding-top: 0;
+    white-space: pre-wrap;
+  }
+  tr.has-detail td { border-bottom: none; }
+
+  .tag {
+    display: inline-block;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--raised);
+    padding: 0 var(--space-0-5);
+    margin-right: var(--space-0-5);
+  }
+  .tag.alert { color: var(--alert); border-color: var(--alert); background: var(--background); }
+  /* 打ち切り済みは塗る — 配送中と**枠線の有無でも**区別が付くようにする (色だけに寄せない) */
+  .tag.cutoff { background: var(--alert-surface); font-weight: 600; }
+  .tag.unobserved { color: var(--unobserved); border-color: var(--unobserved); }
+  .unobserved { color: var(--unobserved); }
+  .alert { color: var(--alert); }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: var(--space-1) 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>dispatch v2 dashboard</h1>
+  <div class="status" id="as-of"></div>
+  <p class="meta">
+    events.jsonl が正本。この画面は daemon が書いた SQLite の投影を読むだけで、
+    記帳も外部への作用もしない。
+  </p>
+</header>
+<div id="body"><p class="empty">読み込み中…</p></div>
+
+<script>
+const POLL_MS = 5000;
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+/** 観測由来の欄が「届いていない」か。**null と undefined を 1 箇所で判定する** —
+ * 欄ごとに書くと、そのうち 1 つが falsy 判定に化けて「未観測」が「無い」に潰れる。 */
+function isUnobserved(value) {
+  return value === null || value === undefined;
+}
+
+/** 未観測を理由付きで出す。理由まで欠けていたら、欠けていること自体を出す。 */
+function unobserved(reason) {
+  return el("span", "unobserved", reason || "未観測 (理由が投影に無い)");
+}
+
+/** escalation 1 件。**回数と配送の状態を必ず両方出す**。
+ *
+ * 配送が終わったかは投影の `delivery_cut_off` が名乗る (根拠は性質の宣言と再送上限の 2 つで、
+ * 判定は台帳側が持つ)。**理由の出し分けにだけ `permanent` を見る** — `permanent` は `attempts`
+ * が 1 のまま打ち切られるので、回数を添えても何が起きたか読めない (gh#930)。どちらも台帳が
+ * 持つ 2 値なので `isUnobserved` を通さない (通すと、存在しない「未観測」を画面が発明する)。 */
+function escalationTag(escalation) {
+  const cutOff = escalation.delivery_cut_off;
+  // **欠けていたら推測しない**。`permanent` から導き直すと、上限で止まった escalation が
+  // 「配送中」に化けて gh#930 の誤読がそのまま戻る — 欠けている事実を出す
+  if (isUnobserved(cutOff)) {
+    const tag = el("span", "tag alert", `${escalation.rule_id} ×${escalation.attempts}`);
+    tag.appendChild(unobserved(" 配送の状態が投影に無い"));
+    return tag;
+  }
+  const delivery = escalation.permanent
+    ? "打ち切り (再送しない)"
+    : cutOff
+      ? "打ち切り (再送の上限に到達)"
+      : "配送中";
+  const tag = el("span", "tag alert", `${escalation.rule_id} ×${escalation.attempts} ${delivery}`);
+  if (cutOff) tag.classList.add("cutoff");
+  return tag;
+}
+
+// COLUMNS の描画関数は **すべて WorkOrder を受ける**。1 つだけ別のものを受ける形にすると、
+// 呼び出し側の 1 行が静かに間違っても空欄が出るだけで気付けない
+function sessionCell(workOrder) {
+  const session = workOrder.session;
+  if (!session) return el("span", "muted", "Session 無し");
+  const cell = document.createDocumentFragment();
+  cell.appendChild(el("span", "tag", session.lifecycle));
+  // ended_reason は ended のときだけ持つ欄 (台帳が ended 遷移で必須にしている) なので、
+  // 無いことは未観測ではない。activity は alive の間の観測なので、無いことに 2 通りある
+  if (session.ended_reason) cell.appendChild(el("span", "muted", session.ended_reason));
+  if (!isUnobserved(session.activity)) {
+    cell.appendChild(el("span", "tag", session.activity));
+  } else if (session.lifecycle === "alive") {
+    cell.appendChild(unobserved("activity 未観測 (SessionRuntime の観測がまだ届いていない)"));
+  }
+  if (session.activity_raw && session.activity_raw !== session.activity) {
+    cell.appendChild(el("span", "muted", `(${session.activity_raw})`));
+  }
+  if (session.handle) cell.appendChild(el("span", "muted", ` ${session.handle}`));
+  return cell;
+}
+
+function clCell(workOrder) {
+  if (isUnobserved(workOrder.cls)) return unobserved(workOrder.cls_reason);
+  if (workOrder.cls.length === 0) return el("span", "muted", "紐づく CL 無し");
+  const cell = document.createDocumentFragment();
+  for (const cl of workOrder.cls) {
+    const tag = el("span", "tag", cl.status ? `${cl.cl_ref} ${cl.status}` : `${cl.cl_ref} (状態未観測)`);
+    if (!cl.status) tag.classList.add("unobserved");
+    if (cl.status === "conflict") tag.classList.add("alert");
+    cell.appendChild(tag);
+    // **未解決 thread は 3 状態**: 数えられなかった (null) / 数えて 0 件 / N 件。
+    // null を 0 と同じ無表示に潰すと、park してよいかの判断が変わる
+    if (isUnobserved(cl.unresolved_threads)) {
+      cell.appendChild(unobserved("未解決 thread 未観測"));
+    } else if (cl.unresolved_threads > 0) {
+      cell.appendChild(el("span", "alert", `未解決 ${cl.unresolved_threads}`));
+    }
+  }
+  return cell;
+}
+
+function escalationCell(workOrder) {
+  if (workOrder.escalations.length === 0) return el("span", "muted", "—");
+  const cell = document.createDocumentFragment();
+  for (const escalation of workOrder.escalations) cell.appendChild(escalationTag(escalation));
+  return cell;
+}
+
+function issueCell(workOrder) {
+  const cell = document.createDocumentFragment();
+  cell.appendChild(el("span", null, workOrder.issue_ref));
+  if (isUnobserved(workOrder.issue)) {
+    cell.appendChild(el("span", null, " "));
+    cell.appendChild(unobserved(workOrder.issue_reason));
+    return cell;
+  }
+  const state = el("span", "tag", workOrder.issue.state);
+  if (workOrder.issue.state === "closed") state.classList.add("alert");
+  cell.appendChild(state);
+  return cell;
+}
+
+const COLUMNS = [
+  ["issue", issueCell],
+  ["phase", (wo) => el("span", "tag", wo.phase)],
+  ["Session", sessionCell],
+  ["CL", clCell],
+  ["判断待ち", escalationCell],
+  ["更新", (wo) => el("span", "muted", wo.updated_at)],
+];
+
+/** WorkOrder 1 件から「人の手が要る理由」と「数えられなかったぶん」を返す**唯一の写像**。
+ *
+ * band の集計・行の強調はどちらもここから導く。同じ判定を欄ごとに書くと、そのうち 1 つが
+ * 未観測の guard を落として「数えられなかった」が「無い」に潰れる — この画面が既に 2 度
+ * 作った症状で、判定条件が増えたときに写経した箇所が別々にずれる。 */
+function workOrderAttention(workOrder) {
+  const escalations = workOrder.escalations.map((escalation) => ({
+    subject: workOrder.issue_ref,
+    escalation,
+  }));
+  if (isUnobserved(workOrder.cls)) {
+    return {
+      escalations,
+      conflicts: [],
+      threads: [],
+      unobservedCls: 1,
+      uncountedStatus: 0,
+      uncountedThreads: 0,
+    };
+  }
+  const conflicts = [];
+  const threads = [];
+  let uncountedStatus = 0;
+  let uncountedThreads = 0;
+  for (const cl of workOrder.cls) {
+    // status と thread 数は**別々に**数える。CL 本体ごと観測できていなければ両方落ちるが、
+    // 片方だけ落ちる置き場もある (thread を数えられない tracker) ので、まとめて捨てると
+    // 数えられている側まで「分からない」に倒れる
+    if (isUnobserved(cl.status)) uncountedStatus += 1;
+    else if (cl.status === "conflict") conflicts.push(`${workOrder.issue_ref} ${cl.cl_ref}`);
+    if (isUnobserved(cl.unresolved_threads)) uncountedThreads += 1;
+    else if (cl.unresolved_threads > 0) {
+      threads.push(`${workOrder.issue_ref} ${cl.cl_ref} 未解決 ${cl.unresolved_threads}`);
+    }
+  }
+  return { escalations, conflicts, threads, unobservedCls: 0, uncountedStatus, uncountedThreads };
+}
+
+/** 行を強調するか。**強調は文字列で既に出ている事実の補助**で、これだけが根拠になる欄は無い。 */
+function needsAttention(workOrder) {
+  const found = workOrderAttention(workOrder);
+  return found.escalations.length + found.conflicts.length + found.threads.length > 0;
+}
+
+/** note と worktree の行。**折り返しも切り詰めもせず全文を出す**。
+ *
+ * 表の 6 列から降ろしたのは、note の折り返しが行高を支配して他の列のスキャンを潰すため。
+ * どちらも台帳が持つ欄 (観測ではない) なので、無いことに「未観測」の可能性は無い —
+ * したがって両方空なら行ごと出さない。 */
+function detailRow(workOrder) {
+  if (!workOrder.note && !workOrder.worktree_path) return null;
+  const row = el("tr");
+  const cell = el("td", "detail");
+  cell.colSpan = COLUMNS.length;
+  if (workOrder.note) cell.appendChild(el("span", null, workOrder.note));
+  if (workOrder.worktree_path) {
+    cell.appendChild(el("span", "muted", ` worktree: ${workOrder.worktree_path}`));
+  }
+  row.appendChild(cell);
+  return row;
+}
+
+function workOrderTable(workOrders) {
+  const table = el("table");
+  const head = el("thead");
+  const headRow = el("tr");
+  for (const [label] of COLUMNS) headRow.appendChild(el("th", null, label));
+  head.appendChild(headRow);
+  table.appendChild(head);
+  const bodyRows = el("tbody");
+  for (const workOrder of workOrders) {
+    const detail = detailRow(workOrder);
+    const row = el("tr", detail ? "has-detail" : null);
+    if (needsAttention(workOrder)) row.classList.add("needs-attention");
+    for (const [, render] of COLUMNS) {
+      const cell = el("td");
+      cell.appendChild(render(workOrder));
+      row.appendChild(cell);
+    }
+    bodyRows.appendChild(row);
+    if (detail) bodyRows.appendChild(detail);
+  }
+  table.appendChild(bodyRows);
+  // 狭い窓では body ごと横に伸ばさず、表だけを横スクロールさせる (他の欄は読めたまま残る)
+  const scroller = el("div", "table-scroll");
+  scroller.appendChild(table);
+  return scroller;
+}
+
+/** 人の手が要るものを数え、**数えられなかったぶんを同じ場所で名乗る**。
+ *
+ * daemon は機械的に決まることしか記帳しないので、人がこの画面を開く理由は判断待ちにある。
+ * だから最初に目に入る位置へ集める — が、集計は「観測して 0 件」を作る操作でもある。
+ * 投影が落ちた project・CL を観測できていない WorkOrder・数えられなかった thread は、
+ * **件数と同じ band の中で** 全体でないことを名乗らせる (不変条件 5 を band の高さで作り直さない)。 */
+//: 数えられなかったぶんの言い方。**この表が数える対象の全量**で、accumulator の初期値もここから
+//: 作る — 別々に並べると片方だけ増えたときに、警告が黙って出ないまま数が全体に見える
+const UNCOUNTED_LABELS = {
+  failedProjects: "投影できていない project",
+  workOrdersWithUnobservedCls: "CL を観測できていない WorkOrder",
+  clsWithUnobservedStatus: "状態を観測できていない CL",
+  clsWithUncountedThreads: "未解決 thread を数えられない CL",
+};
+
+function attentionCounts(overview) {
+  const pending = [];
+  const conflicts = [];
+  const threads = [];
+  const failed = overview.failed_projects || [];
+  // 数えられなかったぶんは**数だけ**を持ち、文言は描画側が付ける (集計に文を作らせない)
+  const uncounted = Object.fromEntries(Object.keys(UNCOUNTED_LABELS).map((kind) => [kind, 0]));
+  uncounted.failedProjects = failed.length;
+  for (const project of overview.projects) {
+    for (const escalation of project.escalations) {
+      pending.push({ subject: `${project.project_key} (WorkOrder 外)`, escalation });
+    }
+    for (const workOrder of project.work_orders) {
+      const found = workOrderAttention(workOrder);
+      pending.push(...found.escalations);
+      conflicts.push(...found.conflicts);
+      threads.push(...found.threads);
+      uncounted.workOrdersWithUnobservedCls += found.unobservedCls;
+      uncounted.clsWithUnobservedStatus += found.uncountedStatus;
+      uncounted.clsWithUncountedThreads += found.uncountedThreads;
+    }
+  }
+  return { pending, conflicts, threads, uncounted };
+}
+
+function attentionListLine(label, items, toNode) {
+  const line = el("div", "attention-line");
+  line.appendChild(el("span", null, `${label} ${items.length} 件: `));
+  for (const item of items) line.appendChild(toNode(item));
+  return line;
+}
+
+function attentionSection(overview) {
+  const section = el("section", "attention");
+  section.appendChild(el("h2", null, "要判断"));
+  // 投影が読めていないときは**数えない**。0 件と読ませないために、件数の欄ごと出さない
+  if (overview.reason) {
+    section.className = "attention unreadable";
+    section.appendChild(unobserved("投影が読めないので、人の手が要るものを数えられない"));
+    return section;
+  }
+  const { pending, conflicts, threads, uncounted } = attentionCounts(overview);
+  const caveats = Object.entries(UNCOUNTED_LABELS).filter(([kind]) => uncounted[kind] > 0);
+  const total = pending.length + conflicts.length + threads.length;
+  if (total === 0) {
+    if (caveats.length === 0) section.className = "attention clear";
+    section.appendChild(
+      el("div", "attention-line", "人の手が要るものは、観測できた範囲で 0 件")
+    );
+  }
+  if (pending.length > 0) {
+    section.appendChild(
+      attentionListLine("判断待ち", pending, ({ subject, escalation }) => {
+        const item = document.createDocumentFragment();
+        item.appendChild(el("span", "muted", `${subject} `));
+        item.appendChild(escalationTag(escalation));
+        return item;
+      })
+    );
+  }
+  if (conflicts.length > 0) {
+    section.appendChild(
+      attentionListLine("conflict の CL", conflicts, (text) => el("span", "tag alert", `${text} conflict`))
+    );
+  }
+  if (threads.length > 0) {
+    section.appendChild(
+      attentionListLine("未解決 thread のある CL", threads, (text) => el("span", "tag alert", text))
+    );
+  }
+  for (const [kind, label] of caveats) {
+    section.appendChild(
+      el(
+        "div",
+        "attention-line unobserved",
+        `※ ${label} が ${uncounted[kind]} 件あるので、この数は全体ではない`
+      )
+    );
+  }
+  // 欄ごとに数えるので、両方欠けた CL 1 件は 2 行に出る。**件数の合計を CL の数と読ませない**
+  if (uncounted.clsWithUnobservedStatus > 0 && uncounted.clsWithUncountedThreads > 0) {
+    section.appendChild(
+      el(
+        "div",
+        "attention-line unobserved",
+        "※ 上の 2 行は欄ごとの数なので、同じ CL が両方に出ていることがある"
+      )
+    );
+  }
+  return section;
+}
+
+function observationLine(project) {
+  const line = el("div");
+  line.appendChild(el("span", "muted", `台帳の投影 ${project.projected_at}`));
+  for (const [subject, status] of Object.entries(project.observations)) {
+    line.appendChild(el("span", "muted", " / "));
+    line.appendChild(el("span", null, `${subject}: `));
+    if (status.reason) {
+      line.appendChild(unobserved(status.reason));
+    } else {
+      line.appendChild(el("span", "muted", status.observed_at || "観測済み"));
+    }
+  }
+  if (project.anomaly_count > 0) {
+    line.appendChild(el("span", "alert", ` / 正本から捨てた欠け ${project.anomaly_count} 件`));
+  }
+  return line;
+}
+
+function candidateLine(project) {
+  const line = el("div");
+  line.appendChild(el("span", null, "候補: "));
+  if (isUnobserved(project.candidates)) {
+    line.appendChild(unobserved(project.observations.candidates.reason));
+    return line;
+  }
+  if (project.candidates.length === 0) {
+    line.appendChild(el("span", "muted", "観測して 0 件"));
+    return line;
+  }
+  for (const candidate of project.candidates) {
+    line.appendChild(el("span", "tag", candidate.issue_ref));
+  }
+  return line;
+}
+
+function projectSection(project) {
+  const section = el("section", "project");
+  section.appendChild(el("h2", null, project.project_key));
+  const panel = el("div", "panel");
+  panel.appendChild(observationLine(project));
+  panel.appendChild(candidateLine(project));
+  if (project.escalations.length > 0) {
+    const orphan = el("div");
+    orphan.appendChild(el("span", "alert", "WorkOrder に紐づかない判断待ち: "));
+    for (const escalation of project.escalations) orphan.appendChild(escalationTag(escalation));
+    panel.appendChild(orphan);
+  }
+  section.appendChild(panel);
+  if (project.work_orders.length === 0) {
+    section.appendChild(el("p", "empty", "WorkOrder はまだ 1 件も無い"));
+  } else {
+    section.appendChild(workOrderTable(project.work_orders));
+  }
+  return section;
+}
+
+function render(overview) {
+  const status = document.getElementById("as-of");
+  status.className = "status";
+  status.textContent = `daemon が答えた時刻 ${overview.as_of}`;
+  const body = el("div");
+  const failed = overview.failed_projects || [];
+  // **人の手が要るものを最初に置く** — 判断待ちが無いことも含めて、ここを読めば
+  // 「今すぐ何かする必要があるか」が決まる
+  body.appendChild(attentionSection(overview));
+  if (overview.reason) {
+    body.appendChild(el("p", "unobserved", overview.reason));
+  } else if (overview.projects.length === 0 && failed.length === 0) {
+    // **投影に失敗した project が居るときは「まだ無い」と言い切らない** — 全 project の
+    // 投影が落ちた状態を「dispatch していない」と読ませない
+    body.appendChild(el("p", "empty", "daemon が抱えている project がまだ無い"));
+  }
+  for (const failure of failed) {
+    const line = el("p", "unobserved");
+    line.appendChild(el("span", null, `${failure.project_key}: 投影できていない — `));
+    line.appendChild(el("span", null, failure.reason));
+    line.appendChild(el("span", "muted", ` (${failure.failed_at})`));
+    body.appendChild(line);
+  }
+  for (const project of overview.projects) body.appendChild(projectSection(project));
+  document.getElementById("body").replaceChildren(body);
+}
+
+//: **最後に描けた**時刻。読めた時刻ではない — 読めても描けなければ画面には何も残らないので、
+//: 「今見えているものは何か」を名乗れるのは描けた時刻だけ
+let lastDrawnAt = null;
+
+/** 今の表示が何なのかを 1 行で名乗る。**今見えているものと、その理由を必ず両方出す**。
+ *
+ * 空表示に化けさせないための行 (daemon の停止と「dispatch していない」を分ける)。画面に
+ * 残っている内容は最後に描けた時点のものなので、黙って残すと古い「判断待ち 0 件」を今の
+ * 0 件と読む。 */
+function reportBroken(what) {
+  const status = document.getElementById("as-of");
+  status.className = "status alert";
+  const shown = lastDrawnAt
+    ? `以下は ${lastDrawnAt} 時点の内容`
+    : "まだ 1 度も描けていない (以下は空で、判断待ちが無いという意味ではない)";
+  status.textContent = `${what} — ${shown}`;
+}
+
+async function poll() {
+  let overview;
+  try {
+    const response = await fetch("/api/overview", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    overview = await response.json();
+  } catch (error) {
+    reportBroken(`daemon から読めない: ${error.message}`);
+    return;
+  }
+  try {
+    render(overview);
+    lastDrawnAt = overview.as_of;
+  } catch (error) {
+    // **読めたのに描けないことを「読めない」に混ぜない** — 直す先が daemon 側か画面側かが
+    // 変わるうえ、読めた事実に反する断言 ("まだ 1 度も…") を出すことになる
+    reportBroken(`読めた投影を描けない: ${error.message}`);
+  }
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

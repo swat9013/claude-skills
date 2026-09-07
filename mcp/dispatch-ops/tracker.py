@@ -63,7 +63,8 @@ ISSUE_LIST_STATES = ("open", "closed", "all")
 # 名前付きで取り出して adapter はこれを使う
 ROLE_CLOSES, ROLE_MENTION = vocabulary.PR_ROLES
 ORDERINGS = ("updated", "created", "number")
-# assignee filter の sentinel。login を渡せばその人の担当分、sentinel は担当有無で絞る
+# assignee filter の sentinel。**人の担当**で絞るためのもので、AI の claim 信号ではない
+# (claim は label — `issue_claim` / `issue_unclaim`)。login を渡せばその人の担当分
 ASSIGNEE_NONE = "none"
 ASSIGNEE_ANY = "any"
 
@@ -317,7 +318,8 @@ class TrackerPort:
     # path を叩く。`observe_pr_refs` が撃つ前に名指しで落とすための宣言
     pr_detail_requires_repo = False
 
-    # PR の review thread を観測・resolve できるか (ADR 0039)。**既定は False で、実装した
+    # PR の review thread を観測・resolve・返信できるか (ADR 0039)。3 つは同じ discussion API
+    # の上に乗っていて片方だけ動く状態が無いので、flag は 1 つのまま。**既定は False で、実装した
     # adapter だけが名乗る**。未対応の adapter は `require_review_threads` が撃つ前に名指しで
     # 落ちる — 空配列を返すと「未解決 thread が 0 件」= レビュー対応済みと読まれ、駐機した
     # worker が再入されないまま静かに滞留する (`blocked: null` と `false` を分ける規則と同じ)
@@ -358,10 +360,6 @@ class TrackerPort:
         """repo の open PR → 内部語彙 dict の列 (+ head_branch / closes_issues / repo)。"""
         raise NotImplementedError
 
-    def set_assignee(self, number, action, repo):
-        """assignee を設定 (`claim`) / 解除 (`unclaim`) する。"""
-        raise NotImplementedError
-
     def post_comment(self, number, body, repo):
         """issue にコメントを投稿する。"""
         raise NotImplementedError
@@ -381,6 +379,18 @@ class TrackerPort:
 
     def resolve_review_thread(self, thread_id):
         """review thread 1 件を resolve する → {"id", "resolved"} (操作後の観測)。"""
+        raise NotImplementedError
+
+    def reply_review_thread(self, thread_id, body):
+        """review thread 1 件へ返信する → {"comment_id"} (tracker が発行した返信の識別子)。
+
+        識別子の型は tracker ごとに違う (gh は GraphQL node id、glab は数値) ので **str へ
+        揃える**。呼び出しの成否ではなく「返信が実際に付いた」ことの根拠として返す。
+
+        thread id は返さない。resolve は操作後の thread を往復させるが、返信の応答は
+        note / comment 1 件で thread の識別子を持たない tracker がある (glab) ため、
+        入口が入力の thread_id をそのまま添える。
+        """
         raise NotImplementedError
 
     # --- repo scope -------------------------------------------------------------
@@ -657,7 +667,7 @@ class TrackerPort:
     # --- review thread (ADR 0039) --------------------------------------------------
 
     def require_review_threads(self):
-        """review thread の観測・resolve の可否を CLI 起動前に確かめる。
+        """review thread の観測・resolve・返信の可否を CLI 起動前に確かめる。
 
         **未対応を空 (未解決 0 件) で表さない。** 「観測していない」と「観測して未解決が
         0 件」は読み手にとって正反対の意味を持つ — 後者はレビュー対応済みと読まれ、
@@ -666,7 +676,8 @@ class TrackerPort:
         """
         if not self.supports_review_threads:
             raise TrackerError(
-                f"{self.tracker} adapter は review thread の観測・resolve が未実装 — "
+                f"{self.tracker} adapter は review thread の観測・resolve が未実装 "
+                "(返信も同じ discussion API に乗るので撃てない) — "
                 "**未解決 0 件として扱わない** (「観測していない」を「レビュー対応済み」と"
                 "読むと、指摘の付いた PR が駐機したまま滞留する)"
             )
@@ -749,15 +760,38 @@ class TrackerPort:
             "resolved": thread["resolved"],
         }
 
+    def review_thread_reply(self, thread_id, body):
+        """review thread 1 件へ返信する (対応した worker 自身が返信する — ADR 0039)。
+
+        返す `comment_id` は tracker が発行した返信の識別子で、「呼び出しが成功した」とは
+        別物。返信の付いていない thread を成功で覆わない。
+        """
+        self.require_review_threads()
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise TrackerError("thread_id が空 (返信する thread の id を文字列で渡す)")
+        if not isinstance(body, str) or not body.strip():
+            raise TrackerError("body が空 (返信する本文を文字列で渡す)")
+        reply = self.reply_review_thread(thread_id.strip(), body)
+        return {
+            "tracker": self.tracker,
+            "action": "reply",
+            "thread_id": thread_id.strip(),
+            "comment_id": reply["comment_id"],
+        }
+
     # --- operate ------------------------------------------------------------------
 
-    def issue_claim(self, issue_ref, repo=None):
-        """assignee を自分に設定する。"""
-        return self._assignee_result(issue_ref, "claim", repo)
+    def issue_claim(self, issue_ref, claim_label, repo=None):
+        """claim label を付けて「AI が着手中」を tracker 上に立てる。
 
-    def issue_unclaim(self, issue_ref, repo=None):
-        """assignee を解除して候補プールへ返す。"""
-        return self._assignee_result(issue_ref, "unclaim", repo)
+        綴りは project の宣言 (`issue.claim_label`) が持ち、呼び出し側が渡す — **本 module は
+        どの label が claim を意味するかを決めない** (`repo` と同じ境界)。
+        """
+        return self._claim_result(issue_ref, claim_label, "claim", repo)
+
+    def issue_unclaim(self, issue_ref, claim_label, repo=None):
+        """claim label を外して候補プールへ返す。"""
+        return self._claim_result(issue_ref, claim_label, "unclaim", repo)
 
     def issue_comment(self, issue_ref, body, repo=None):
         """issue にコメントを投稿する (汎用 tracker 操作)。"""
@@ -808,15 +842,27 @@ class TrackerPort:
         """実際に tracker へ投げる件数。adapter の 1 回取得上限で頭打ちにする。"""
         return min(limit, self.max_fetch) if self.max_fetch else limit
 
-    def _assignee_result(self, issue_ref, action, repo):
+    def _claim_result(self, issue_ref, claim_label, action, repo):
+        """claim label を 1 枚だけ付け外しする (`issue_label` と同じ CLI 経路)。
+
+        空の綴りは CLI を起動する前に落とす — 付かなかった claim を `ok: true` で覆うと、
+        二重 dispatch を塞いだつもりの issue が候補プールに残ったままになる。
+        """
         self.require_repo_scope(repo)
+        if not isinstance(claim_label, str) or not claim_label.strip():
+            raise TrackerError(
+                "claim_label が空 (project の宣言 `issue.claim_label` の綴りを渡す)"
+            )
+        label = claim_label.strip()
         number = self.issue_number(issue_ref)
-        self.set_assignee(number, action, repo)
+        add, remove = ([label], []) if action == "claim" else ([], [label])
+        self.edit_labels(number, add, remove, repo)
         return {
             "tracker": self.tracker,
             "repo": repo,
             "issue_ref": self.issue_ref(number),
             "action": action,
+            "claim_label": label,
             "ok": True,
         }
 

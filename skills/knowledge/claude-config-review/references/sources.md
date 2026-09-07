@@ -44,7 +44,7 @@ Claude Code の仕様が不明 / 古い / 矛盾しているときに、どの�
 ## 既知の罠
 
 - **古い記事のサンプル**: deprecated API 呼び出しを今もコピペで紹介する第三者記事が多い。公式 docs と日付を必ず照合する。
-- **撤回されたモデル ID を引用する記事**: モデル ID は時々変わる ([models](./models.md))。記事の例より公式 docs を信じる。
+- **撤回されたモデル ID を引用する記事**: モデル ID は時々変わる ([models](../../../steering/write-for-harness/references/models.md))。記事の例より公式 docs を信じる。
 - **非公式ブログのベストプラクティス**: 公式 prompt engineering ガイドと矛盾するケースがある。公式優先。
 - **changelog の解釈ミス**: GitHub の release notes には「破壊的変更」と書かれていない破壊的変更が混じることがある。怪しいときは issues を一度検索する。
 

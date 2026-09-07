@@ -49,6 +49,13 @@ RESOLVE_REVIEW_THREAD_MUTATION = (
     " resolveReviewThread(input: {threadId: $threadId}) { thread { id isResolved } } }"
 )
 
+# review thread へ返信する mutation。要る入力は thread id と本文だけ (introspection で確認)
+REPLY_REVIEW_THREAD_MUTATION = (
+    "mutation($threadId: ID!, $body: String!) {"
+    " addPullRequestReviewThreadReply("
+    "input: {pullRequestReviewThreadId: $threadId, body: $body}) { comment { id } } }"
+)
+
 
 class GhAdapter(tracker.TrackerPort):
     tracker = "gh"
@@ -217,6 +224,30 @@ class GhAdapter(tracker.TrackerPort):
             )
         return {"id": thread["id"], "resolved": bool(thread.get("isResolved"))}
 
+    def reply_review_thread(self, thread_id, body):
+        """本文は `-f` (生文字列) で渡す。`-F` は型付きなので、数字だけの本文が数値へ、
+        `@` 始まりが file 読み込みへ化ける。
+        """
+        raw = tracker.run_json(
+            [
+                "gh", "api", "graphql",
+                "-f", f"query={REPLY_REVIEW_THREAD_MUTATION}",
+                "-F", f"threadId={thread_id}",
+                "-f", f"body={body}",
+            ]
+        )
+        comment = (
+            ((raw.get("data") or {}).get("addPullRequestReviewThreadReply") or {}).get(
+                "comment"
+            )
+            or {}
+        )
+        if not comment.get("id"):
+            raise tracker.TrackerError(
+                f"review thread {thread_id} の返信応答を読めない: {raw!r}"
+            )
+        return {"comment_id": str(comment["id"])}
+
     def cwd_repo(self):
         """`gh` が cwd から解決する repo slug (repo 未指定の観測に印を付けるため)。"""
         return tracker.run_json(["gh", "repo", "view", "--json", "nameWithOwner"])[
@@ -224,12 +255,6 @@ class GhAdapter(tracker.TrackerPort):
         ]
 
     # --- 操作 -------------------------------------------------------------------
-
-    def set_assignee(self, number, action, repo):
-        flag = "--add-assignee" if action == "claim" else "--remove-assignee"
-        tracker.run_checked(
-            ["gh", "issue", "edit", str(number), *repo_flag(repo), flag, "@me"]
-        )
 
     def post_comment(self, number, body, repo):
         tracker.run_checked(

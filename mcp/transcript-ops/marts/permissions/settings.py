@@ -18,14 +18,24 @@ from pathlib import Path
 
 from . import udf
 
-# `Tool(pattern)` 形式を解体する。
-PERMISSION_ENTRY_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*(?:\((.*)\))?\s*$")
+# `Tool(pattern)` 形式を解体する。tool 名の位置に wildcard (`mcp__foo__*`) を許すのは
+# 公式 doc の "Tool name wildcards" 節がその形を定めるため。**許さないと regex 自体が
+# 外れ**、`tool = raw` の fallback 経由で同じ値に落ちる — 結果は同じでも「解釈できた」と
+# 「解釈できずに素通しした」が同じ見た目になり、被覆判定 (`entry_tool_covers`) が
+# 偶然に乗る (#916)。許す文字は `udf.TOOL_NAME_WILDCARD_CHARS` と同じ集合。
+PERMISSION_ENTRY_RE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_*?-]*)\s*(?:\((.*)\))?\s*$")
 
 # 設定に書かれた文字列の保存上限 (mart は抜粋を出す。原型は settings.json が正本)。
 SETTINGS_EXCERPT_LIMIT = 200
 
 PERMISSION_CATEGORIES = ("allow", "deny", "ask")
 SANDBOX_CATEGORY = "sandbox_excluded_commands"
+
+# `WebFetch(domain:example.com)` の接頭辞。**pattern からは剥がして持つ** —
+# 境界で生の設定文字列を照合用の値 (hostname pattern) へ変換し、matcher 側に
+# 接頭辞の知識を持たせない。
+DOMAIN_PREFIX = "domain:"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -50,11 +60,19 @@ def parse_permission_entry(raw: str, category: str, source_path: str,
                            scope: str) -> PermissionEntry:
     """`Bash(git diff:*)` 等を分解し matcher の確度ラベルを付ける。
 
-    match_kind: `exact_tool` (括弧なし) / `exact_command` / `prefix` (`xxx:*`) /
-    `glob` (`*` や `?` を含む)。
+    match_kind: `exact_tool` (括弧なし) / `domain` (`domain:<host pattern>`) /
+    `exact_command` / `prefix` (`xxx:*`) / `glob` (`*` や `?` を含む)。
 
-    confidence が `glob` だけ `approx` なのは、fnmatch が Claude Code 本体の
-    matcher と揺れうるため — **確度は数値の隣に置く**。
+    confidence が `approx` なのは wildcard を含む pattern — fnmatch も domain の
+    wildcard 規則も Claude Code 本体の matcher と揺れうるため。**確度は数値の隣に
+    置く**。
+
+    **`domain:` は `:*` より先に見る**。後に回すと `WebFetch(domain:*)` が
+    「`domain` で始まる command」の prefix entry として解釈され、URL とは永久に
+    突合しない (#873)。ただし Bash の pattern は command 行そのものなので、
+    `domain:` で始まっても command として読む — Bash 側で剥がすと `raw` と
+    `pattern` の対応が崩れ、`(tool, pattern)` を鍵にする sandbox 対の突合が
+    別 entry に当たる。
     """
     match = PERMISSION_ENTRY_RE.match(raw)
     tool = match.group(1) if match else raw.strip()
@@ -63,6 +81,12 @@ def parse_permission_entry(raw: str, category: str, source_path: str,
         return PermissionEntry(raw=raw, category=category, source_path=source_path,
                                scope=scope, tool=tool, pattern="",
                                confidence="exact", match_kind="exact_tool")
+    if tool != "Bash" and pattern.startswith(DOMAIN_PREFIX):
+        pattern = pattern[len(DOMAIN_PREFIX):].strip()
+        confidence = "approx" if "*" in pattern or "?" in pattern else "exact"
+        return PermissionEntry(raw=raw, category=category, source_path=source_path,
+                               scope=scope, tool=tool, pattern=pattern,
+                               confidence=confidence, match_kind="domain")
     if pattern.endswith(":*"):
         match_kind, confidence = "prefix", "exact"
     elif "*" in pattern or "?" in pattern:

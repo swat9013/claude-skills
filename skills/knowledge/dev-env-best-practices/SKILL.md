@@ -44,10 +44,8 @@ staleness 判定はこの表の「最終取得日」を single source とする�
    - 最終取得日が現在から 1 年以上前 → 再調査を提案する（自動では始めない）。既存 reference は staleness を明示すれば暫定適用してよい。更新調査の完了後、reference を差し替えて index の日付を更新する
 3. **miss** → 新規調査を提案する。完了したレポートを `references/<言語またはFW>-dev-env-best-practices.md` として skill 内に保存し、index に行を追加する
 
+reference と index の書き込み先は plugin repo ([swat9013/swat-skills](https://github.com/swat9013/swat-skills)) の `skills/knowledge/dev-env-best-practices/`。この skill は references/ ごと swat-skills plugin 同梱で配布されるので、上流の repo を編集した分だけが次の更新後も残る。
+
 ## 調査の委譲
 
 新規・更新調査は `mattpocock-skills` plugin の `research` skill に委譲する。観点リストを調査観点として埋め込んだ調査依頼文を組み立ててから渡す (依頼文に観点を入れないと、調査軸がこの skill の網羅性基準からずれる)。同 skill は model からも起動できるので、Skill tool 経由で直接呼んでよい。
-
-## 更新の罠
-
-この skill は references/ も含めて swat-skills plugin 同梱。index や reference の更新は [plugin repo](https://github.com/swat9013/swat-skills) の `skills/knowledge/dev-env-best-practices/` に対して行う。install 済みの plugin ディレクトリを直接書き換えても上流には還らず、次の更新で失われる。

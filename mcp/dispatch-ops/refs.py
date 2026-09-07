@@ -32,8 +32,8 @@ PR_PATTERNS = {
 # 綴りは番号体系の有無で 2 通りに分かれる:
 #
 # - number slug (`i386`): gh / glab。**tracker を持てない** のが ref との違い — 逆写像
-#   (slug → ref) には tracker を補う必要があり、それは「1 repo = 1 tracker」を知っている
-#   呼び出し側 (server) の責務
+#   (slug → ref) には tracker を補う必要がある。補って写す規則は `lift_issue_ref` が持ち、
+#   どの tracker を渡すかだけが「1 repo = 1 tracker」を知っている呼び出し側 (server) の判断
 # - key slug (`swatcf-14`): jira。番号体系が無く key が識別子なので、key を小文字化した
 #   ものを綴りにする。ref の key は `[A-Z][A-Z0-9]*` なので小文字化は可逆で、**slug 単体で
 #   ref へ戻せる** (tracker を補う必要が無い)
@@ -112,6 +112,23 @@ def format_pr_ref(tracker, number):
     return parse_pr_ref(f"{tracker}!{number}")["ref"]
 
 
+def format_number_slug(number):
+    """番号 → number slug (`i<N>`)。`parse_number_slug` の逆写像。
+
+    綴りを組み立てる経路も本 module に置く。番号だけを持つ観測元 (worktree の一覧) が自前で
+    `i` を前置すると、綴りを増やしたときに pane 側と drift して join が黙って壊れる。
+
+    正準形にならない番号 (0 / 負 / 文字列) は raise する — 読み戻せない綴りを label に載せると、
+    その worktree は追跡対象から静かに外れる。
+    """
+    slug = f"i{number}"
+    # 正準性は往復 (組み立て → 読み戻し) で確かめる。綴りを増やしたときに検査が自動で追随する。
+    # `number` が None のときだけ「読めなかった」を表す None と一致してしまうので先に弾く
+    if number is None or parse_number_slug(slug) != number:
+        raise RefError(f"number slug にできない番号: {number!r} (形式: 正の整数)")
+    return slug
+
+
 def format_issue_slug(issue_ref):
     """issue ref → issue slug (pane label / worktree ディレクトリ名の共通表記)。
 
@@ -121,7 +138,7 @@ def format_issue_slug(issue_ref):
     """
     parsed = parse_issue_ref(issue_ref)
     if parsed["number"] is not None:
-        return f"i{parsed['number']}"
+        return format_number_slug(parsed["number"])
     return parsed["key"].lower()
 
 
@@ -146,7 +163,7 @@ def parse_issue_label(label):
     分かれているのをそのまま返す:
 
     - number slug (`i386`) → `number` のみ。tracker を持たないので ref へは戻せない
-      (持ち上げは「1 repo = 1 tracker」を知っている `resolve` の責務)
+      (持ち上げは `lift_issue_ref`。tracker を渡すのが `resolve` の責務)
     - key slug (`swatcf-14`) → `ref` のみ (`jira:SWATCF-14`)。番号は他 tracker の番号空間と
       混ざるので**返さない** (混ぜると同番号の `i<N>` pane / worktree と取り違える)
     """
@@ -165,13 +182,43 @@ def slug_is_self_describing(issue_ref):
 
     key slug (`swatcf-14`) は tracker を綴りに含むので、pane label のような **tracker を
     持てない場所**から ref へ戻せる。number slug (`i386`) は戻せず、逆写像には「1 repo =
-    1 tracker」を知っている呼び出し側が tracker を補う必要がある (`resolve` の責務)。
+    1 tracker」を知っている呼び出し側が tracker を補う必要がある (`lift_issue_ref`)。
 
     `number is None` と書かずに往復で確かめるのは、slug の綴りを増やしたときに本関数が
     自動で追随するため — 綴りと判定を別々に書くと、片方だけ増えて join が黙って壊れる。
     """
     parsed = parse_issue_label(format_issue_slug(issue_ref))
     return parsed is not None and parsed["ref"] == parse_issue_ref(issue_ref)["ref"]
+
+
+def lift_issue_ref(tracker, observation):
+    """pane / worktree の観測 1 件 → 中立 issue ref。写せなければ None。
+
+    観測は slug の 2 綴りに合わせて issue を 2 通りに名乗る。**どちらを優先し、tracker を
+    どう補うかの規則は本 module 唯一のここに置く** — 綴りを作る側 (`format_issue_slug` /
+    `parse_issue_label`) と同じ場所に置くことで、綴りを増やしたときに持ち上げが追随しない
+    まま join が黙って壊れるのを防ぐ:
+
+    - `issue_ref`: key slug (jira) は自己記述なので観測が ref をそのまま名乗る。**名乗りを
+      優先する** — `swatcf-14` を `gh#14` と読むような取り違えはこの優先で起きない
+    - `issue_number`: number slug (`i<N>`) は tracker を持てないので、issue 置き場の
+      `tracker` (「1 repo = 1 tracker」) で写す
+
+    写せないときに raise しないのは、この経路が **観測 1 件を索引へ入れられるか** の判定
+    だから。issue 置き場が番号体系を持たない (jira) 環境にも `i<N>` の worktree / pane は
+    在りうる (別 project の作業ツリー等) ので、そこで raise すると join が丸ごと落ちる。
+    写せなかった観測を残すのは呼び出し側の責務 (`resolve` の `unmappable_observations`)。
+    """
+    named = observation.get("issue_ref")
+    if named is not None:
+        return named
+    number = observation.get("issue_number")
+    if number is None:
+        return None
+    try:
+        return format_issue_ref(tracker, number=number)
+    except RefError:
+        return None
 
 
 def require_free_label(label):

@@ -28,6 +28,24 @@ META_NOTES = (
     "「この skill が消費させた総量」とは読まない。",
     "sufficient_for_relative_judgment が false なら相対判定は成立しない — "
     "観測不足であって不使用の証拠ではない。",
+    "sessions[] の母集団は「skill invocation を持つ session ∪ コード編集を持つ "
+    "session」。編集したが skill を 1 つも呼ばなかった session も載るので、"
+    "has_code_edit == true を coverage の分母に取れる (loaded_skills が空の行が"
+    "未遵守側)。編集も skill invocation も無い session は載らない。",
+    "first_code_edit_ts / first_skill_invoke_ts は順序判定用の 2 欄で、UTC "
+    "ISO-8601 に正規化済み (そのまま大小比較してよい)。first_skill_invoke_ts が "
+    "first_code_edit_ts より前 = 「編集に着手する前に skill を呼んだ」。",
+    "first_skill_invoke_ts は session 内の**最初の skill invoke** であって特定 "
+    "skill のものではない。loaded_skills が 2 件以上ある session では、対象 skill "
+    "自身が編集より前だったかは本 mart からは確定しない。",
+    "coverage の分母は sessions[] の行を数える。meta.distinct_sessions は "
+    "invocation 由来のままで sessions[] より小さく、そこから取ると未遵守 "
+    "session が消える。",
+    "sessions[] の ts 欄は正規化済みで、units[].excerpts[].timestamp (生 ts の"
+    "転記) とは表記が違う。2 系統を混ぜて大小比較しない。",
+    "時刻の付かない record (ts 欠損・解釈不能) は初回時刻の算出から外れる。"
+    "該当分しか無ければ ts 欄は null で、最古にも最新にも倒していない — "
+    "null を「編集前」とも「編集後」とも読まない。",
 )
 
 

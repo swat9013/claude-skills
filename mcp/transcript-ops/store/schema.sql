@@ -74,7 +74,8 @@ CREATE INDEX IF NOT EXISTS record_uuid_idx ON record (record_uuid);
 -- 判定を 1 箇所に固定するのは、2 scanner が別々に判定していた間に `is_error` 欠落時の
 -- 解釈が逆になり、同一 record について 2 mart が矛盾した答えを返したため (#476)。
 --
--- tool 入力は `command` / `target_path` / `input_excerpt` の 3 列へ正規化する。
+-- tool 入力は `command` / `target_path` / `target_url` / `input_excerpt` の 4 列へ
+-- 正規化する。
 -- 生の input JSON は保存しない — Write / Edit の input は file 全文を含み、
 -- 全 mart が要求しない量になる (input 本文を捨てる選択: ADR 0031)。集約キー
 -- (permissions の command_head 等) は本表からの導出なので query 層の UDF が作る。
@@ -88,7 +89,18 @@ CREATE TABLE IF NOT EXISTS tool_use (
     command       TEXT NOT NULL DEFAULT '',
     -- file path 系 tool の照合対象 (file_path / path / notebook_path の最初の 1 つ)
     target_path   TEXT NOT NULL DEFAULT '',
+    -- v3 (#873): URL を引数に取る tool の照合対象。`WebFetch(domain:<host>)` は
+    -- hostname で突合するため command にも target_path にも収まらず、専用列が無いと
+    -- **現役の allow entry が match 0 件 = 未使用**に化ける
+    target_url    TEXT NOT NULL DEFAULT '',
     input_excerpt TEXT NOT NULL DEFAULT '',
+    -- v4 (#888): input の top-level key **名だけ**を改行区切りで持つ (値は持たない)。
+    -- `Tool(param:value)` 形の param rule は「その param を渡した呼び出し」にしか
+    -- 当たらないため、param 名が窓内で 1 度も現れていなければ match 0 は真の観測、
+    -- 現れているなら値を持たない本 store では照合が成立しない。この 2 つを分ける
+    -- 観測がここにしか無い。**値を持たないので生 input を保存しない方針は保つ**
+    -- (key 名は tool の入力 schema 由来で、利用者の content を含まない)
+    input_keys    TEXT NOT NULL DEFAULT '',
     outcome_base  TEXT NOT NULL,
     denial_kind   TEXT NOT NULL DEFAULT '',
     result_text   TEXT NOT NULL DEFAULT '',

@@ -8,6 +8,14 @@
         "${CLAUDE_PLUGIN_ROOT}/mcp/dispatch-ops/main.py"
       ]
     },
+    "dispatch-v2": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--script",
+        "${CLAUDE_PLUGIN_ROOT}/mcp/dispatch-v2/main.py"
+      ]
+    },
     "transcript-ops": {
       "command": "uv",
       "args": [

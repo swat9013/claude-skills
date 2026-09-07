@@ -45,7 +45,9 @@ def _revoke_candidate(sufficient_threshold: int) -> RuleSpec:
             Condition("matcher_exact",
                       "matcher_confidence が exact。approx (glob の fnmatch 近似) は "
                       "~ 展開と ** 意味論を本体 matcher どおりに再現しないため、"
-                      "発火中の entry でも 0 が出る"),
+                      "発火中の entry でも 0 が出る。unmatchable は照合対象そのものが"
+                      "観測に無く、0 が不使用の証拠になりえない (理由は "
+                      "rule_inputs の unmatchable_reason)"),
             Condition("no_sandbox_pair",
                       "同一 (tool, pattern) の sandbox.excludedCommands entry が無い "
                       "(あれば連動削除の判断が要る)"),
@@ -152,6 +154,14 @@ def evaluate(axis_a: list[dict], entries: list[settings_mod.PermissionEntry],
                 inputs={
                     "match_count": match_count,
                     "matcher_confidence": row["matcher_confidence"],
+                    # unmatchable の理由は 1 つではない (列が空 / param rule)。
+                    # near_misses には failed_condition しか出ないので、どちらで
+                    # 落ちたかはここに置かないと読み手が辿れない
+                    "unmatchable_reason": row.get("unmatchable_reason"),
+                    # 0 でなければ match_count は確認できた範囲の下限。**条件には
+                    # しない** — 何件までなら 0 を不使用の証拠と見なすかは閾値の
+                    # policy で、確定は読み手に残す
+                    "unobserved_input_count": row.get("unobserved_input_count", 0),
                     "category": row["category"],
                     "total_events": total_events,
                     "sandbox_pair": key in pairs,

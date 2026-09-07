@@ -552,9 +552,10 @@ class PanePort:
         return {
             "pane_id": pane.get("pane_id"),
             "label": label or None,
-            # number slug (`i<N>`) は tracker を持てないので ref へは戻さない (join は
-            # resolve の責務)。key slug (jira) は逆に自己記述なので ref だけを返し、番号は
-            # 返さない — 別 tracker の番号空間に混ぜると同番号の `i<N>` と取り違える
+            # number slug (`i<N>`) は tracker を持てないので ref へは戻さない (持ち上げは
+            # `refs.lift_issue_ref` が tracker を受け取って行う)。key slug (jira) は逆に
+            # 自己記述なので ref だけを返し、番号は返さない — 別 tracker の番号空間に混ぜると
+            # 同番号の `i<N>` と取り違える
             "issue_number": slug["number"] if slug else None,
             "issue_ref": slug["ref"] if slug else None,
             # `tracked` は「issue 由来か」であって「番号で join できるか」ではない
@@ -628,7 +629,7 @@ class PanePort:
     def _require_agent_field(pane_id, detail):
         """応答に agent field があることを確かめる。
 
-        欠落を null (= セッション終了) と誤読すると、追跡 pane を誤って回収し assignee
+        欠落を null (= セッション終了) と誤読すると、追跡 pane を誤って回収し claim label
         まで外すことになる。読めなかったときは観測失敗として即座に表面化させる。
 
         どの pane に掛けるかは呼び出し側が決める — 誤読が高くつくのは台帳と繋がる

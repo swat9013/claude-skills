@@ -45,9 +45,9 @@ DEFAULT_DAYS = contract.DEFAULT_DAYS
 
 # `refined_event` の SELECT 列順。scoped_event への INSERT 列順と 1:1 で対応する。
 SCOPED_EVENT_COLUMNS = (
-    "tool", "command", "command_head", "target_path", "input_excerpt",
-    "session_id", "ts", "ts_epoch", "cwd", "outcome", "denial_kind",
-    "denial_reason_label",
+    "tool", "command", "command_head", "target_path", "target_url",
+    "input_excerpt", "input_keys", "session_id", "ts", "ts_epoch", "cwd",
+    "outcome", "denial_kind", "denial_reason_label",
 )
 
 # section の `settings_sources` に出す reason (= その section の分母そのもの)。
@@ -59,6 +59,9 @@ PERMISSION_ENTRY_COLUMNS = (
     "raw", "category", "source_path", "scope", "tool", "pattern", "confidence",
     "match_kind",
 )
+
+# `covered_tool` の列順 (`covered_tool_rows` が返す tuple の並びと 1:1)。
+COVERED_TOOL_COLUMNS = ("entry_no", "tool", "match_kind", "pattern")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -103,17 +106,50 @@ def _scope_roots(section: str, repo_root: Path) -> str:
 
 
 def _load_scoped_events(conn: sqlite3.Connection, statements: dict[str, str],
-                        cutoff_epoch: float, scope_roots: str) -> None:
+                        cutoff_epoch: float, scope_roots: str) -> list[str]:
+    """section の実行を積み、**そこに現れた tool 名を返す**。
+
+    戻り値を持つのは `_load_config_layer` の入力にするため (#916)。被覆表は
+    `scoped_event` に現れた tool 名を母集団に取るので、config 側を先に積むと表が
+    静かに空になり「全部未収載」という答えが error なしで出る。**順序の前提を
+    docstring ではなくシグネチャで表す** — 戻り値を受け取らないと次を呼べない。
+    """
     conn.execute(statements["clear_scoped_event"])
     conn.execute(
         f"INSERT INTO scoped_event ({', '.join(SCOPED_EVENT_COLUMNS)}) "
         + statements["refined_event"],
         {"cutoff_epoch": cutoff_epoch, "scope_roots": scope_roots},
     )
+    return [row["tool"] for row in conn.execute(statements["observed_tool"])]
 
 
-def _load_permission_entries(conn: sqlite3.Connection, statements: dict[str, str],
-                             entries: list[settings_mod.PermissionEntry]) -> None:
+def covered_tool_rows(entries: list[settings_mod.PermissionEntry],
+                      observed_tools: list[str]) -> list[tuple]:
+    """entry × 実行 tool 名の被覆表 (両軸の join の母集団, #916)。
+
+    完全一致では表せない被覆 — server 単位の `mcp__foo` と tool 名 wildcard の
+    `mcp__foo__*` — を**関係として持ち出す**。被覆の意味は `udf.entry_tool_covers`
+    にあり、ここは entry と観測 tool の総当たりを取るだけ。
+
+    **実測の桁 (cost の根拠、この 1 箇所が正本)**: 観測された tool 名は 40 種前後
+    しか無いので総当たりは entry 161 × tool 40 = 6,440 回で足りる。同じ述語を join に
+    置くと tool 名の index が効かず、entry 数 × 実行数 (161 × 33,858 = 545 万) になる。
+    """
+    return [(entry_no, tool, entry.match_kind, entry.pattern)
+            for entry_no, entry in enumerate(entries, start=1)
+            for tool in observed_tools
+            if udf.entry_tool_covers(entry.category, entry.tool, tool)]
+
+
+def _load_config_layer(conn: sqlite3.Connection, statements: dict[str, str],
+                       entries: list[settings_mod.PermissionEntry],
+                       observed_tools: list[str]) -> None:
+    """config 層 1 つ分の entry 表と被覆表を**同じ呼び出しで**積み直す。
+
+    層ごとに 2 度呼ばれる (#513 の global 突合 → section) ので、被覆表を別に組むと
+    2 度目が 1 度目の `entry_no` を指したまま残り、entry 名は正しいのに件数だけ
+    別 entry へ載る — error にはならず、静かに間違った答えが出る。
+    """
     conn.execute(statements["clear_permission_entry"])
     conn.executemany(
         f"INSERT INTO permission_entry ({', '.join(PERMISSION_ENTRY_COLUMNS)}) "
@@ -121,9 +157,138 @@ def _load_permission_entries(conn: sqlite3.Connection, statements: dict[str, str
         [tuple(getattr(entry, column) for column in PERMISSION_ENTRY_COLUMNS)
          for entry in entries],
     )
+    conn.execute(statements["clear_covered_tool"])
+    conn.executemany(
+        f"INSERT INTO covered_tool ({', '.join(COVERED_TOOL_COLUMNS)}) "
+        f"VALUES ({', '.join('?' * len(COVERED_TOOL_COLUMNS))})",
+        covered_tool_rows(entries, observed_tools),
+    )
 
 
 # --- 集計の組み立て ----------------------------------------------------------
+
+def matcher_input_availability(conn: sqlite3.Connection,
+                               statements: dict[str, str]) -> dict[str, dict]:
+    """tool 別に、matcher が読む各列が非空だった event 数 (#873)。"""
+    return {row["tool"]: dict(row)
+            for row in conn.execute(statements["matcher_input_availability"])}
+
+
+def observed_param_names(conn: sqlite3.Connection,
+                         statements: dict[str, str]) -> dict[str, frozenset[str]]:
+    """tool 別に、窓内の呼び出しが 1 度でも渡した input param 名 (#888)。
+
+    param rule (`Bash(run_in_background:true)`) の照合対象は列ではなく **その param
+    を渡した呼び出しの有無**なので、`matcher_input_availability` (列の非空数) では
+    拾えない。公式 doc が "A parameter the model omits is never matched" と定める
+    ため、**窓内に 1 度も渡されていない param 名の 0 件は真の観測**になる。
+
+    `availability` と同じく `scoped_event` から引く — section scope を揃えないと、
+    「この窓で 0 件だった」という同じ主張が 2 つの母集団から出る。
+    """
+    names: dict[str, set[str]] = collections.defaultdict(set)
+    for row in conn.execute(statements["observed_input_keys"]):
+        names[row["tool"]].update(
+            key for key in row["input_keys"].split(ingest.INPUT_KEYS_SEPARATOR) if key)
+    return {tool: frozenset(keys) for tool, keys in names.items()}
+
+
+def unmatchable_reason(entry: settings_mod.PermissionEntry,
+                       availability: dict[str, dict],
+                       param_names: dict[str, frozenset[str]],
+                       match_count: int) -> str | None:
+    """照合が成立していない理由。成立しているなら `None` (#873 / #888)。
+
+    **戻り値が非 None なら `matcher_confidence` は宣言値より `unmatchable` が勝つ**
+    (優先順の解決は `matcher_confidence` が持つ)。`unmatchable` は **match_count 0 を
+    「未使用」と読ませないための札**で、理由は 2 つある。
+
+    - `input_column_empty` (#873): 窓内にその tool の実行が在るのに、matcher が読む
+      列がどの実行でも空だった (`WebFetch(domain:…)` が URL 列を持たなかった間の
+      実害がこれ)。**一部の実行にだけ列が無い場合は札を付けない** — 実測ではその差の
+      実体は `__unparsedToolInput` (入力を解釈できず error になった呼び出し) で、
+      tool が実行されていない以上 permission entry を行使しようがない。これを
+      「照合できなかった実行」に数えると、実 lake の 3 件が Read の全 entry (20 件超)
+      を判定不能へ落とす。差は `unobserved_input_count` として出し判断は読み手に残す
+    - `param_rule` (#888): `Tool(<param>:<value>)` 形で、その param 名を渡した実行が
+      窓内に在る。**本 server は param の値を store に持たないので照合できない**。
+      逆に 1 度も渡されていない param 名なら 0 件は真の観測なので札を付けない
+
+    **非 MCP の tool 名 glob (deny / ask の `B*` / `*`) には札を付けない** (#916)。
+    公式 doc では本体が当てるので match 0 は実装側の限界だが、**A 軸にだけ札を足すと
+    B 軸と矛盾する** — B 軸 unit は札を持てないので、同じ `ask: ["B*"]` について
+    A 軸「照合不能・revoke 不可」/ B 軸「その Bash 実行は全件未収載 = この rule を
+    追加しろ」が同時に出る (2 巡目レビューで実測)。補償は両軸そろえて別 issue で行う。
+
+    tool 自体の実行が窓内に 1 件も無い 0 は照合不能ではない — 「その tool を
+    使わなかった」という真の観測なので、宣言どおりの確度をそのまま残す。**本体が
+    rule ごと skip する括弧付き `mcp__…` も同じ**で、こちらは 0 が「rule として
+    存在していない」を意味する (#916)。
+
+    `match_count` を見るのは、**param 名と同名の command を持つ prefix rule**
+    (`ask` の `Bash(timeout:*)` 等) を取り違えないため。1 件でもマッチしていれば
+    command prefix として現に機能している証拠なので param rule 側へ倒さない。
+    これは `unmatchable` が必ず `match_count == 0` を伴うという不変条件
+    (読み手の契約) も同時に守る。片方だけ変えないこと。
+    """
+    if udf.is_skipped_mcp_rule(entry.match_kind, entry.tool):
+        # 本体が rule ごと skip する形は照合不能ではなく**不在**。札を付けると
+        # 死んだ entry が revoke 候補から消える (`param_rule_name` と同じ扱い)
+        return None
+    if match_count == 0 and entry.tool in param_names:
+        param = udf.param_rule_name(entry.category, entry.tool, entry.match_kind,
+                                    entry.pattern)
+        if param and param in param_names[entry.tool]:
+            return "param_rule"
+    column = udf.matcher_input_column(entry.match_kind, entry.tool)
+    counts = availability.get(entry.tool)
+    if column is None or counts is None:
+        return None
+    return "input_column_empty" if counts[column] == 0 else None
+
+
+def matcher_confidence(entry: settings_mod.PermissionEntry,
+                       reason: str | None) -> str:
+    """A 軸 entry 行に出す確度 (宣言値・skip・照合不能の 3 者を 1 箇所で解く)。
+
+    優先順は `unmatchable` > skip される rule の `exact` > 宣言値。
+
+    **skip される rule は pattern を照合しない**ので、pattern 側の wildcard に付く
+    `approx` (fnmatch が本体 matcher と揺れうる、という札) は意味を持たない — 0 は
+    近似ではなく確定値なので `exact` へ倒す (#916)。倒さないと `mcp__foo__bar(*)` の
+    ように pattern が glob の形だけが `revoke_candidate` の `matcher_exact` 条件で
+    落ち、**contract が「revoke 候補に出るのが正しい」と定める死んだ entry が、
+    括弧の中身次第で出たり出なかったりする**。`unmatchable_reason` /
+    `unobserved_input_count` と同じ述語から引いて 3 列を揃える。
+    """
+    if reason:
+        return "unmatchable"
+    if udf.is_skipped_mcp_rule(entry.match_kind, entry.tool):
+        return "exact"
+    return entry.confidence
+
+
+def unobserved_input_count(entry: settings_mod.PermissionEntry,
+                           availability: dict[str, dict]) -> int:
+    """matcher が読む列を持たなかった、その tool の実行数 (#873)。
+
+    0 でなければ **match_count は確認できた範囲の下限**。`revoke_candidate` の
+    条件にはしない — 何件までなら 0 を不使用の証拠と見なすかは閾値の policy で、
+    server が確定してよい判断ではない (ADR 0032)。数だけ出して読み手へ渡す。
+
+    **本体が rule ごと skip する形は 0 を返す** (#916)。skip される rule に「下限」は
+    無く (照合が成立していないのではなく rule が存在しない)、非 0 を出すと
+    `unmatchable_reason: null` の隣に「まだ確かめられていない実行がある」という
+    読めない札が並ぶ。判定は `unmatchable_reason` と同じ述語から引く。
+    """
+    if udf.is_skipped_mcp_rule(entry.match_kind, entry.tool):
+        return 0
+    column = udf.matcher_input_column(entry.match_kind, entry.tool)
+    counts = availability.get(entry.tool)
+    if column is None or counts is None:
+        return 0
+    return counts["event_count"] - counts[column]
+
 
 def build_axis_a(conn: sqlite3.Connection, statements: dict[str, str],
                  entries: list[settings_mod.PermissionEntry],
@@ -180,6 +345,8 @@ def build_axis_a(conn: sqlite3.Connection, statements: dict[str, str],
             bucket.append({"tool": tool, "command_head": command_head,
                            "count": combo["count"]})
 
+    availability = matcher_input_availability(conn, statements)
+    param_names = observed_param_names(conn, statements)
     rows: list[dict] = []
     for entry_no, entry in enumerate(entries, start=1):
         def _ordered(counts: dict[str, int], entry_no: int = entry_no) -> dict:
@@ -188,14 +355,18 @@ def build_axis_a(conn: sqlite3.Connection, statements: dict[str, str],
                                key=lambda item: outcome_first_seq[(entry_no, item[0])]))
 
         outcomes = _ordered(breakdown.get(entry_no, {}))
+        match_count = sum(outcomes.values())
+        reason = unmatchable_reason(entry, availability, param_names, match_count)
         rows.append({
             "entry": entry.raw,
             "category": entry.category,
             "source_path": entry.source_path,
             "scope": entry.scope,
             "match_kind": entry.match_kind,
-            "matcher_confidence": entry.confidence,
-            "match_count": sum(outcomes.values()),
+            "matcher_confidence": matcher_confidence(entry, reason),
+            "unmatchable_reason": reason,
+            "unobserved_input_count": unobserved_input_count(entry, availability),
+            "match_count": match_count,
             "outcome_breakdown": outcomes,
             "outcome_breakdown_early": _ordered(
                 half_breakdown["early"].get(entry_no, {})),
@@ -208,31 +379,55 @@ def build_axis_a(conn: sqlite3.Connection, statements: dict[str, str],
     return rows
 
 
-def axis_b_matches(conn: sqlite3.Connection,
-                   statements: dict[str, str]) -> dict[tuple[str, str], list[dict]]:
-    """B 軸 key × **現在 load 済みの** permission_entry の match。
+@dataclasses.dataclass(frozen=True)
+class AxisBCoverage:
+    """B 軸 unit を **1 つの config 層**で照合した結果 (#889)。
+
+    `matches` は unit ごとの (entry, category, scope, matched_event_count)、
+    `uncovered` は unit ごとの「その層のどの entry にも当たらなかった event 数」。
+    **後者は前者から導けない** — 1 event が複数 entry にマッチしうるので entry 別の
+    件数を足すと過大になる。同じ 1 文の LEFT JOIN から両方を取り出す。
+    """
+
+    matches: dict[tuple[str, str], list[dict]]
+    uncovered: dict[tuple[str, str], int]
+
+
+def axis_b_coverage(conn: sqlite3.Connection,
+                    statements: dict[str, str]) -> AxisBCoverage:
+    """B 軸 unit × **現在 load 済みの** permission_entry の被覆。
 
     どの層を突き合わせるかは呼び出し側が `permission_entry` に何を積んだかで決まる
     (section の config / global の config)。
     """
     matches: dict[tuple[str, str], list[dict]] = collections.defaultdict(list)
-    for row in conn.execute(statements["axis_b_config_matches"]):
-        matches[(row["tool"], row["command_head"])].append(
+    uncovered: dict[tuple[str, str], int] = {}
+    for row in conn.execute(statements["axis_b_coverage"]):
+        key = (row["tool"], row["command_head"])
+        if row["entry_no"] is None:
+            uncovered[key] = row["n"]
+            continue
+        matches[key].append(
             {"entry": row["entry_raw"], "category": row["category"],
-             "scope": row["scope"]})
-    return matches
+             "scope": row["scope"], "matched_event_count": row["n"]})
+    return AxisBCoverage(matches=matches, uncovered=uncovered)
 
 
 def build_axis_b(conn: sqlite3.Connection, statements: dict[str, str],
-                 matches: dict[tuple[str, str], list[dict]],
-                 global_matches: dict[tuple[str, str], list[dict]]) -> list[dict]:
+                 coverage: AxisBCoverage,
+                 global_coverage: AxisBCoverage) -> list[dict]:
     """tool × command_head × outcome の集計 + 対応 entry。
 
     `config_matches` は当該 section の config (project section なら project +
     project_local) だけを見る。**それが空でも「どこにも収載されていない」ではない**
-    ので、global 層の match を `global_config_matches` に別列で出す (#513: 空の
-    `config_matches` を promote の証拠に使うと、global で既に許可されている entry を
-    section 層へ重複追加する提案になる)。section `global` では両者が同じ集合を指す。
+    ので、global 層の被覆を `global_config_matches` / `global_uncovered_event_count`
+    に別列で出す (#513: 空の `config_matches` を promote の証拠に使うと、global で
+    既に許可されている entry を section 層へ重複追加する提案になる)。section
+    `global` では両者が同じ値を指す。
+
+    **収載の有無は unit 内の全 event で決まる** (#889)。`matched_event_count` が
+    entry ごとの被覆件数、`uncovered_event_count` がどの entry にも当たらなかった
+    件数で、両者が食い違う unit (= 部分被覆) はここでしか読めない。
     """
     grouped: dict[tuple[str, str], dict] = {}
     for row in conn.execute(statements["axis_b"]):
@@ -252,9 +447,13 @@ def build_axis_b(conn: sqlite3.Connection, statements: dict[str, str],
             "count": bucket["count"],
             "outcomes": dict(sorted(bucket["outcomes"].items(),
                                     key=lambda kv: -bucket["outcomes"][kv[0]])),
-            "config_matches": [match["entry"]
-                               for match in matches.get((tool, command_head), [])],
-            "global_config_matches": global_matches.get((tool, command_head), []),
+            "config_matches": coverage.matches.get((tool, command_head), []),
+            "uncovered_event_count": coverage.uncovered.get(
+                (tool, command_head), 0),
+            "global_config_matches": global_coverage.matches.get(
+                (tool, command_head), []),
+            "global_uncovered_event_count": global_coverage.uncovered.get(
+                (tool, command_head), 0),
         }
         for (tool, command_head), bucket in ordered
     ]
@@ -487,7 +686,8 @@ def build_derived_views(axis_a: list[dict], axis_b: list[dict],
     """
     zero_match = [
         {"entry": row["entry"], "category": row["category"], "scope": row["scope"],
-         "matcher_confidence": row["matcher_confidence"]}
+         "matcher_confidence": row["matcher_confidence"],
+         "unmatchable_reason": row["unmatchable_reason"]}
         for row in axis_a if row["match_count"] == 0
     ]
 
@@ -513,7 +713,11 @@ def build_derived_views(axis_a: list[dict], axis_b: list[dict],
     units: list[dict] = []
     omitted = 0
     for row in axis_b:
-        if row["config_matches"] or row["count"] < contract.UNLISTED_MIN_COUNT:
+        # 収載床は unit 全体の件数ではなく**未被覆件数**に当てる (#889)。
+        # 「config_matches が空か」で切っていた頃は、5,000 件中 4,999 件が収載済みの
+        # unit と 5 件全部が未収載の unit が同じ扱いになり、部分被覆が観測から消えた。
+        # 閾値 (UNLISTED_MIN_COUNT) の値そのものは policy なので動かさない (ADR 0032)
+        if row["uncovered_event_count"] < contract.UNLISTED_MIN_COUNT:
             continue
         permission_relevant = (
             row["tool"] == "Bash"
@@ -524,7 +728,10 @@ def build_derived_views(axis_a: list[dict], axis_b: list[dict],
             omitted += 1
             continue
         units.append(row)
-    units.sort(key=lambda row: (-row["count"], row["tool"], row["command_head"]))
+    # 並べ替えも未被覆件数で行う。総件数で並べると、ほぼ全件が収載済みの巨大 unit が
+    # 全件未収載の小さな unit を top-N から押し出す
+    units.sort(key=lambda row: (-row["uncovered_event_count"], -row["count"],
+                                row["tool"], row["command_head"]))
 
     grouped: dict[tuple, dict] = {}
     for sequence in bypass_sequences:
@@ -624,26 +831,28 @@ def build_section(
     """
     entries = settings_mod.collect_permission_entries(
         section_name, request.repo_root, request.global_settings)
-    _load_scoped_events(conn, statements, cutoff_epoch,
-                        _scope_roots(section_name, request.repo_root))
+    observed_tools = _load_scoped_events(
+        conn, statements, cutoff_epoch,
+        _scope_roots(section_name, request.repo_root))
 
     # global 層の突合を**先に**済ませる (#513)。順序が逆だと permission_entry の
     # 最終状態が global の entry になり、以降の A 軸集計・rule 評価が section の
     # entry を正とする前提が崩れる
-    global_matches = None
+    global_coverage = None
     if section_name != "global":
-        _load_permission_entries(conn, statements,
-                                 settings_mod.collect_permission_entries(
-                                     "global", request.repo_root,
-                                     request.global_settings))
-        global_matches = axis_b_matches(conn, statements)
-    _load_permission_entries(conn, statements, entries)
+        _load_config_layer(conn, statements,
+                           settings_mod.collect_permission_entries(
+                               "global", request.repo_root,
+                               request.global_settings),
+                           observed_tools)
+        global_coverage = axis_b_coverage(conn, statements)
+    _load_config_layer(conn, statements, entries, observed_tools)
 
     summary = conn.execute(statements["event_summary"]).fetchone()
     axis_a = build_axis_a(conn, statements, entries, split_epoch)
-    matches = axis_b_matches(conn, statements)
-    axis_b = build_axis_b(conn, statements, matches,
-                          matches if global_matches is None else global_matches)
+    coverage = axis_b_coverage(conn, statements)
+    axis_b = build_axis_b(conn, statements, coverage,
+                          coverage if global_coverage is None else global_coverage)
     bypass = build_bypass_sequences(conn, statements, request.bypass_lookahead,
                                     request.bypass_max_gap_seconds)
     return {
@@ -690,6 +899,8 @@ def build(request: Request) -> dict:
         conn.execute(statements["create_scoped_event"])
         conn.execute(statements["create_scoped_event_index"])
         conn.execute(statements["create_permission_entry"])
+        conn.execute(statements["create_covered_tool"])
+        conn.execute(statements["create_covered_tool_index"])
         anomalies = store_mod.anomalies(conn)
         firings = [dict(row) for row in
                    conn.execute(statements["hook_firings"],

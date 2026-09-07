@@ -49,8 +49,8 @@ CROSS_REPO_RECURRENCE = RuleSpec(
                   "貼り付け境界より前の人間記述だけで規範が復元できるか "
                   "(貼り戻された assistant 応答を規範として帰属させない)"),
         Condition("container_classification",
-                  "器が coding-principles / engineering-judgment のどちらか、"
-                  "あるいは決まらないか"),
+                  "反映先の器が決まるか (器の実体とその分類は消費側 SKILL.md が持つ — "
+                  "rule 層は器を名指ししない)"),
     ),
     thresholds={"min_repo_count": MIN_REPO_COUNT},
 )

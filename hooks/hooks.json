@@ -7,10 +7,6 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-worktree-escape.py"
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/inject-skill-guide.py"
           }
         ]
       }

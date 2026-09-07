@@ -1,7 +1,7 @@
 ---
 name: inventory-project-values
 disable-model-invocation: true
-description: 実行中の project の標準 transcript から、ユーザーが手入力したプロンプト (直近 30 日 / 60 字以上) を決定的に観測し、同一規範の再出現回数を判定材料にして project 規範の候補を証拠 anchor 付きで具体化する棚卸し。反映先は cwd repo の CLAUDE.md 常時ルール / `.claude/rules/<topic>.md` の 2 種と、器が決まらない保留。候補ごとに AskUserQuestion で人間が採否を判定し、承認分だけを worktree + PR で反映する。判定は常に人間、無人 commit はゼロ。Use when「project 規範の棚卸し」「フィードバックから規範を抽出」「却下・訂正から学ぶ」「CLAUDE.md を更新」「rules を更新」「inventory-project-values」「棚卸し」.
+description: 実行中 project の transcript から手入力プロンプトを観測し、再出現した規範を証拠 anchor 付きで候補化して、候補ごとの人間判定を経た承認分だけを cwd repo の CLAUDE.md / `.claude/rules/` へ反映する棚卸し。
 ---
 
 # inventory-project-values
@@ -12,14 +12,14 @@ description: 実行中の project の標準 transcript から、ユーザーが�
 
 1. **決定的観測**: `scan_prompts` tool が transcript を走査し、手入力 prompt だけの mart JSON を出す (手順 1)。`select_candidates` tool が mart を長さ・repo・正規形の完全一致で絞り込み、読み順を確定した slice を出す (手順 2)。どちらの tool も「どれがフィードバックか」「どれが規範か」を**知らない**
 2. **LLM 具体化 (このメインコンテキスト)**: slice を読み、同一規範ごとに束ねた候補・反映 diff 案を証拠 anchor 付きで組み立てる。**判定はしない** (手順 3)
-3. **人間判定**: 採否を選ぶのは常に人間。候補ごとに AskUserQuestion で提示し (手順 4)、**承認された候補だけ**を worktree + PR で反映する (手順 5)
+3. **人間判定**: 採否を選ぶのは常に人間。候補ごとに AskUserQuestion で提示し (手順 4)、**承認された候補だけ**を反映する (手順 5)
 
 本 skill は他の inventory 系のような高確度 / 低確度の 2 層化を**しない**。規範の抽出は本質的に内容判断であり、閾値解釈の余地がない決定的シグナルが存在しないため、**全候補が AskUserQuestion を通る**。承認なしの write はゼロ。
 
 ## スコープ (改変不可の境界)
 
 - **読み対象**: `~/.claude/projects/**/*.jsonl` (標準 transcript) のみ。走査・抽出は tool の責務で、LLM が transcript を直接読むことはしない。**cwd の repo の prompt だけ**を候補にする (手順 2 の repo 既定解決)
-- **書き対象**: **cwd repo の `CLAUDE.md` / `.claude/rules/<topic>.md`** のみ。どちらの器に置くかは**手順 4 で人間が選ぶ** (skill が器を決めるのは禁止。手順 5)。**AskUserQuestion での人間承認後に worktree + PR で**行い、main の working tree を直接編集しない
+- **書き対象**: **cwd repo の `CLAUDE.md` / `.claude/rules/<topic>.md`** のみ。どちらの器に置くかは**手順 4 で人間が選ぶ** (skill が器を決めるのは禁止。手順 5)。**AskUserQuestion での人間承認後にだけ**行う。変更の届け方 (作業ツリーを分けるか / branch を切るか / PR にするか) は実行 project の運用に従う
 - **除外**: `~/.claude/CLAUDE.md` (global) / cwd repo 以外のファイル
 - **非依存**: claude-mem / dotfiles / herdr。すべて標準 transcript と cwd repo 内 file のみ
 
@@ -44,7 +44,7 @@ mart は**全 project 横断**で作られる (transcript の lake は project �
 
 ### 2. 候補の絞り込み (決定的)
 
-**mart 全件を読まない。** mart は千 prompt / 数百 KB 規模になり、LLM に全件を読ませる前提は成立しない。読む順序は tool が決める:
+**読むのは tool が出す slice だけで、読み順も tool が決める。** mart は千 prompt / 数百 KB 規模になり、LLM に全件を読ませる前提は成立しない。
 
 `mcp__plugin_swat-skills_transcript-ops__select_candidates` に `mart` = 手順 1 の path を渡して呼ぶ。
 
@@ -138,23 +138,23 @@ slice の `candidates` を `rank` 順に読み、**同一規範ごとに束ね�
 | **`.claude/rules/<topic>.md`** | 特定ファイル群の編集時だけ効く細則 (`paths:` で発火条件を絞れるもの) | 既存 rules への追記、または `paths:` を宣言した新規 rules |
 | **器が決まらない** | 上 2 つのどちらでもない / 判断材料が足りない (例: 応答規範・skill 化した方がよいもの) | **反映しない**。レポートに器の候補と含意を残し、必要なら issue 起票を提案するところで止まる |
 
-分類の軸は「発火条件で絞れるか」の 1 点。絞れる規約を CLAUDE.md 直書きにすると無関係セッションで毎回ロードされ high-signal が薄まり、逆に `paths:` の無い rules は CLAUDE.md と等価になる。
+分類の軸は「発火条件で絞れるか」の 1 点。絞れる規約を CLAUDE.md 直書きにすると無関係セッションで毎回ロードされ high-signal が薄まり、逆に `paths:` の無い rules は CLAUDE.md と等価になる。**`paths:` で発火条件を絞れる規範だけを rules 側の選択肢に載せ、絞れないものは CLAUDE.md 側の器を選ぶ。**
 
 `器が決まらない` は消化しきれなかった残りではなく、**正規の分類**として AskUserQuestion に載せる。
 
 #### 3-5. 具体化の前に必ず Read する reference
 
-反映先が harness ファイルなので、diff 案を書く前に同一 plugin 内の以下を Read する。**手順 4 の選択肢を組み立てるより前に読み終える** — 器の選択肢に載せた後で読むと、既存 checklist との衝突が PR 作成後に発覚して事後裁定になる:
+反映先が harness ファイルなので、diff 案を書く前に同一 plugin 内の以下を Read する。**手順 4 の選択肢を組み立てるより前に読み終える** — 器の選択肢に載せた後で読むと、既存 checklist との衝突が反映後に発覚して事後裁定になる:
 
-- 常に**両方**: `${CLAUDE_SKILL_DIR}/../../knowledge/claude-config-review/references/claude-md.md` と同 `rules.md` (器の 2 択がこの 2 つなので、片方だけ読んで両方を選択肢に並べない)
+- 常に**両方**: `${CLAUDE_SKILL_DIR}/../write-for-harness/references/components/claude-md.md` と同 `rules.md` (器の 2 択がこの 2 つなので、片方だけ読んで両方を選択肢に並べない)
 - `器が決まらない` の候補で**新規 skill を選択肢に挙げるなら、挙げる前に**同 `skill.md` も読む
 - 反映先の現状把握: cwd repo の `CLAUDE.md` と `.claude/rules/*.md` (既存記述との重複・矛盾を diff 案で指摘するため)
 
 **`${CLAUDE_SKILL_DIR}` 展開後の構造** (相対 path の暗算ミスで File not found を誘発しないよう明示。plugin root の実 path は install 形態で変わるので、ここでは書かない):
 
 - `${CLAUDE_SKILL_DIR}` = `<plugin root>/skills/steering/inventory-project-values`
-- 展開後 = `<plugin root>/skills/knowledge/claude-config-review/references/<name>.md`
-- **`..` は 2 回**で category 階層を抜けて `skills/` に戻る。1 回だと `skills/steering/knowledge/...` を指し File not found
+- 展開後 = `<plugin root>/skills/steering/write-for-harness/references/components/<name>.md`
+- **`..` は 1 回**で `skills/steering/` に戻る (参照先が同じ category なので category 階層は抜けない)
 
 reference の checklist を提案文面に**引用しない**。用語と判断軸を借りるのみ。
 
@@ -170,17 +170,28 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 - 採用された候補だけが手順 5 に進む。見送り・保留はレポートに残す
 - **判定を LLM が代行しない**。「明らかに採用でしょう」と読める候補も必ず問う (3 段階モデルの不変条件)
 
-### 5. 承認分の反映 (worktree + PR)
+### 5. 承認分の反映
 
-採用された候補のみ、**cwd repo の** 1 つの worktree で反映して PR にする。**main の working tree は直接編集しない。無人 commit はゼロ** (この時点で人間承認は済んでいるが、commit 前に diff を提示する)。
+採用された候補のみ、**cwd repo の**反映先ファイルへ書く。**人間承認を得ていない write はゼロ**で、書き終えたら diff を提示する。
 
-- **CLAUDE.md**: 常時ルールの該当節に追記する。既存規範との重複は追記せず「既に defend 済み」としてレポートに落とす
-- **`.claude/rules/<topic>.md`**: 既存 rules に足すか、`paths:` を宣言した新規 rules を作る。新規作成時は `paths:` の glob が対象ファイルを正確に捉えているかを確認し、その repo の CLAUDE.md が rules 索引を持つなら索引更新も同じ diff に含める
-- **器が決まらなかった候補は反映しない**。「近いから CLAUDE.md に入れておく」は本 skill の最も起きやすい逸脱であり、規範の所在を歪める
-- **`session_id` を反映先ファイルに書かない。** transcript は消えるため、session ID を証拠に据えると規範が単独で完結しなくなる。証拠 anchor (session_id / timestamp / repo) を残すのは**手順 6 のレポートと PR body だけ**
-- **原文から読み取れない事実を断定形で書かない。** 手順 3-3 の「原文の意味を拡張しない」は反映時にも効き続ける。補足が要るなら `推測:` を付けるか、書かない
-- worktree を作り (`EnterWorktree` があればそれを使う。なければ `git worktree add`)、反映 → commit → PR 作成まで進む
-- PR body には「どの候補を採用したか」を再出現回数と証拠 anchor 付きで書く。手順 6 のレポート summary 表をそのまま貼れる形にする
+**変更の届け方は実行 project の運用に従う** — 作業ツリーを分けるか・branch を切るか・PR にするかを本 skill は決めない。反映先 repo の規約に従って運ぶ。
+
+**規範文を書く工程は `write-for-harness` に委ねる。** 本 skill の責務は観測・候補化・人間判定と反映先の指定までで、harness ファイルの文面規範を本 skill は持たない。順序は次の 3 段で固定する:
+
+1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。** args はその候補の**反映先 path 1 本**で、新規 `.claude/rules/<topic>.md` を起こす候補だけは `新規: rules <目的>` を渡す (まだ存在しない path を渡すと委譲先が対象 file を解決できない)。候補・証拠 anchor・反映 diff 案は同一 context に載ったまま渡るので、args に足す必要はない。5-1 の制約は args へ混ぜず、invoke 直前の同一 turn のテキストで宣言する
+2. **新規 rules を起こした候補は、対象 repo の CLAUDE.md が rules 索引表を持つなら CLAUDE.md を args にもう 1 回 invoke して索引行を足す。** 委譲先は args の file しか書き換えないので、この 1 回を省くと新規 rules が索引に載らないまま反映が終わる
+3. **全候補の反映が済んだら diff を提示する**
+
+- **反映するのは器が決まった候補だけ。** 器が決まらなかった候補はレポートに器の候補と含意を残すところで止める (「近いから CLAUDE.md に入れておく」は規範の所在を歪める)
+- 採否の説明が要るときは手順 6 のレポート summary 表を使う (再出現回数と証拠 anchor はそこに揃っている)
+- `write-for-harness` が反映を完了せずに終わった候補は、理由を問わず**承認済み・未反映**としてレポートと報告に残す (承認が黙って消えないようにする)。停止の理由と復旧の案内は `write-for-harness` が返した文をそのまま伝え、本 skill では解釈も再記述もしない
+
+#### 5-1. invoke 時に文面で添える制約
+
+`write-for-harness` は棚卸し側の制約を知らないので、invoke のたびに渡す:
+
+- **反映先ファイルには規範文だけを書き、証拠 anchor (session_id / timestamp / repo) は書かない。** anchor は手順 6 のレポートに置く — transcript は消えるため、session ID を証拠に据えると規範が単独で完結しなくなる
+- **原文から読み取れる範囲で書く。** 手順 3-3 の「原文の意味を拡張しない」は反映時にも効き続ける。補足が要るなら `推測:` を付ける
 
 ### 6. Markdown レポート組み立て
 
@@ -197,41 +208,6 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 **観測由来の事実と LLM 推測の分離**: 証拠欄には slice の値と原文をそのまま転記する。解釈には `推測:` prefix を付けて 1 行に留める。
 
-## 責務
-
-- 規範の**判定は常に人間** (候補ごとの AskUserQuestion。3 段階モデル不変)
-- tool は絞り込み (長さ / repo / 正規形の完全一致) と整列まで。bucket / 発話型 / 器の分類を tool に持たせない
-- LLM は束ね・候補・証拠・反映 diff 案の具体化まで。承認なしの write はゼロ
-- 承認後の反映先は **cwd repo の CLAUDE.md / `.claude/rules/`** のみ。器の決定は人間に返し、決まらなければ反映しない
-- global CLAUDE.md / 他 repo への波及は機能外
-- 網羅は約束しない (束ね漏れ許容。3-2)
-
-## 罠
-
-| 症状 | 原因 | 対応 |
-|---|---|---|
-| mart 全件を読もうとする | 全部読めば漏れないという直感 | 手順 2 の slice を読む。読み順は tool が決める (`rank` 昇順) |
-| 他 project の prompt を候補にする | mart は全 project 横断で作られるので、絞らないと混ざる | 手順 2-1。`repo` は既定で cwd に解決される。`all_repos` の結果を cwd repo へ反映しない |
-| cwd が git 管理外で失敗する | project 外で起動した | `repo` か `all_repos: true` を明示する。黙って全 repo に倒す実装にはしない (失敗が正しい) |
-| 定型除外に隠れた規範を見落とす | 除外を tool 任せにして `boilerplate_forms` を読まない | 手順 2-3。定型一覧は第 2 の候補源。逐語反復された規範が定型判定される経路は実在する |
-| 読んでいない候補に断定的な除外理由を書く | slice も全件全文読みできず、足切りしたことがレポート上で見えなくなる | 手順 3 の読了予算。全文読み / 足切りの内訳をレポート §5 に provenance として出し、未読 record には理由を書かない |
-| assistant の文章をユーザーの規範として採る | 手入力 prompt に、ユーザーが貼り戻した assistant 応答が混じる | 手順 3-1 の貼り付け境界チェック。人間記述だけで復元できないものは informational へ |
-| 候補を 1 発話 = 1 件で出す | slice が発話単位なので、そのまま候補にしてしまう | 手順 3-2 の束ね。再出現回数が判定材料の中心で、束ねないとその情報が消える |
-| 束ね漏れを欠陥として報告する / 網羅しようとして止まる | 「棚卸し = 全件網羅」と読んだ | 手順 3-2。拾い漏れは再指示で頻度が上がり次回拾われる。網羅ではなく反復の検出を約束する skill |
-| 文字数降順のまま AskUserQuestion に出す | slice の `rank` を提示順と読んだ | 手順 4。`rank` は読み順。提示順は出現回数降順 (長さは規範圧を表さない) |
-| 反映先ファイルに session ID を書く | 手順 3-3 の証拠 anchor をそのまま反映先へ持ち込む | 手順 5。transcript は消えるため規範が単独完結しなくなる。session ID はレポートと PR body だけに残す |
-| 原文にない事実を断定形で書く | 散文で書き切るうちに、原文から復元できない詳細が混じる | 手順 5。手順 3-3 の「意味を拡張しない」は反映時にも効く。裏が取れないなら `推測:` を付けるか書かない |
-| reference を反映直前に読み、PR 後に衝突が出る | 3-5 の Read を「編集の直前」と読む | 手順 3-5。**手順 4 の選択肢を組む前**に `claude-md.md` / `rules.md` の両方を読み終える |
-| 長文を要約しただけの候補が並ぶ | 探すあてがないまま読んだ | 手順 3-1 の 4 発話型を探索観点として明示的に当てる。型に当たらない record は informational へ |
-| 301 字以上を無条件に規範扱いする | 長さを判定に使った | 長さは絞り込みの入口まで。この帯にはエラーログ・調査資料の貼り付けが混じる。判定は人間 |
-| `paths:` の無い rules を作る | rules を CLAUDE.md の分割先としか見ていない | `paths:` が無い rules は CLAUDE.md と等価で常時ロードされる。発火条件で絞れないなら CLAUDE.md 側の器を選ぶ |
-| 器が決まらない候補を CLAUDE.md に押し込む | 「近いから」で分類が擦り抜ける | 手順 5。器の決定は人間に返し、決まらなければ反映しない。押し込みは規範の所在を歪める |
-| 短文帯・定型の除外が report に出ない | tool が絞ったので気づかない | 手順 6 §2 / §3。`meta.band_histogram` と `boilerplate_forms` の転記を省かない |
-| 「明らかに採用」の候補を問わずに反映する | 承認コストを節約したくなる | 全候補が AskUserQuestion を通る。本 skill は高確度層を持たない |
-| 候補が多すぎて途中で止める | AskUserQuestion は 1 回 4 問まで | 4 件ずつ繰り返す。打ち切る場合は件数と出現回数の範囲をレポートに明記する |
-| main で反映してしまう | 承認後の勢いで編集する | 手順 5。必ず worktree + PR。CLAUDE.md の常時ルール (worktree 必須) が優先する |
-
 ## 参照
 
 - 関連 skill: `inventory-claude-md` (別軸: CLAUDE.md / `.claude/rules/` の静的観測) / `inventory-permissions` (別軸: permission) / `inventory-skill-mcp` (別軸: skill / MCP 実績)
-- reference (Read 対象): `${CLAUDE_SKILL_DIR}/../../knowledge/claude-config-review/references/{claude-md,rules,skill}.md`

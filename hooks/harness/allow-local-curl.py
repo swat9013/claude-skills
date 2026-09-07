@@ -75,6 +75,18 @@ LONG_OTHER_VALUE = {
 LOOPBACK_EXTRA = {"0.0.0.0", "::", "[::]"}
 
 
+class _Finished(Exception):
+    """判定が確定したことを main() へ運ぶ。stdout へ書く本文を持つ。
+
+    判定関数が直接 stdout / exit を触らないのは、テストが hook を import して in-process で
+    呼べるようにするため (subprocess 起動を省く)。process 境界に触るのは末尾の wrapper だけ。
+    """
+
+    def __init__(self, stdout_text: str) -> None:
+        super().__init__(stdout_text)
+        self.stdout_text = stdout_text
+
+
 def passthrough() -> None:
     """判定を settings (ask) に委ねる。
 
@@ -84,22 +96,19 @@ def passthrough() -> None:
     委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard
     の一致を見る)。
     """
-    sys.stdout.write(
+    raise _Finished(
         '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
     )
-    sys.exit(0)
 
 
 def emit_allow() -> None:
-    json.dump(
+    raise _Finished(json.dumps(
         {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
             "permissionDecisionReason": "loopback 宛 curl を自動許可",
         }},
-        sys.stdout,
-    )
-    sys.exit(0)
+    ))
 
 
 def is_loopback(host: str | None) -> bool:
@@ -236,9 +245,10 @@ def build_out_roots(cwd: str) -> list[str]:
     return roots
 
 
-def main() -> None:
+def judge(stdin_text: str) -> None:
+    """payload を判定し、確定したら _Finished を送出する (必ず送出して終わる)。"""
     try:
-        data = json.loads(sys.stdin.read())
+        data = json.loads(stdin_text)
     except (ValueError, TypeError):
         passthrough()
     command = (data.get("tool_input") or {}).get("command") or ""
@@ -286,5 +296,16 @@ def main() -> None:
     passthrough()
 
 
+def main(stdin_text: str) -> tuple[int, str]:
+    """hook の純粋な入口。(exit code, stdout 本文) を返す。"""
+    try:
+        judge(stdin_text)
+    except _Finished as finished:
+        return 0, finished.stdout_text
+    raise AssertionError("judge() は必ず _Finished で終わる")
+
+
 if __name__ == "__main__":
-    main()
+    exit_code, stdout_text = main(sys.stdin.read())
+    sys.stdout.write(stdout_text)
+    sys.exit(exit_code)

@@ -167,6 +167,8 @@ class Invocation:
     unit_id: str
     session_id: str
     timestamp: str
+    # 順序判定の機構 (unix 秒)。表示は timestamp、比較は本欄。ts 欠損・解釈不能は None
+    ts_epoch: float | None
     project_dir: str
     user_prompt: str
     tool_input: str
@@ -254,6 +256,30 @@ def build_skill_resolver(enumerated_skills: list[dict]) -> dict[str, Any]:
     return {"known_skill_ids": known_ids, "skill_md_paths": md_paths}
 
 
+# --- session attribute --------------------------------------------------------
+
+def new_session_attrs() -> dict:
+    """session attribute の初期値 (`build_sessions_section` が読む欄の全集合)。"""
+    return {"has_code_edit": False, "has_plan_mode": False,
+            "first_code_edit_epoch": None}
+
+
+def earliest_epoch(*epochs: float | None) -> float | None:
+    """順序の付く epoch のうち最小。全部 None (順序不明) なら None。"""
+    known = [e for e in epochs if e is not None]
+    return min(known) if known else None
+
+
+def epoch_to_iso(epoch: float | None) -> str | None:
+    """unix 秒 → UTC ISO-8601。**2 つの ts 欄を同じ表記へ揃えるための正規化**で、
+    転記した生 ts ではない — 表記が揃っていないと読み手が 2 欄を比較できない。
+    """
+    if epoch is None:
+        return None
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).isoformat().replace(
+        "+00:00", "Z")
+
+
 # --- store への問い合わせ ------------------------------------------------------
 
 def collect_from_store(
@@ -301,7 +327,7 @@ def collect_from_store(
             invocations.append(Invocation(
                 unit_type="skill", unit_id=skill_id,
                 session_id=str(row["session_id"]), timestamp=row["ts"],
-                project_dir=project_dir,
+                ts_epoch=row["ts_epoch"], project_dir=project_dir,
                 user_prompt=truncate(f"/{row['command_name']}", EXCERPT_TEXT_LIMIT),
                 tool_input="", outcome="success", attribution_skill=None,
                 channel=CHANNEL_COMMAND,
@@ -328,7 +354,7 @@ def collect_from_store(
         invocations.append(Invocation(
             unit_type=unit_type, unit_id=unit_id,
             session_id=str(row["session_id"]), timestamp=row["ts"],
-            project_dir=project_dir,
+            ts_epoch=row["ts_epoch"], project_dir=project_dir,
             # user_prompt / tool_input は ingest 側で既に INPUT_EXCERPT_LIMIT (200
             # = EXCERPT_TEXT_LIMIT) へ truncate 済み。ここで truncate() を再適用すると
             # `s.strip()` が 200 字スライスの末尾空白まで剥がし、旧実装 (1 回だけ
@@ -346,13 +372,12 @@ def collect_from_store(
         tool, sid = row["tool"], str(row["session_id"])
         context.note_tool_use(tool, sid)
         if tool in CODE_EDIT_TOOLS:
-            session_attrs.setdefault(
-                sid, {"has_code_edit": False, "has_plan_mode": False})[
-                "has_code_edit"] = True
+            attrs = session_attrs.setdefault(sid, new_session_attrs())
+            attrs["has_code_edit"] = True
+            attrs["first_code_edit_epoch"] = earliest_epoch(
+                attrs["first_code_edit_epoch"], row["first_ts_epoch"])
         if tool in PLAN_MODE_TOOLS:
-            session_attrs.setdefault(
-                sid, {"has_code_edit": False, "has_plan_mode": False})[
-                "has_plan_mode"] = True
+            session_attrs.setdefault(sid, new_session_attrs())["has_plan_mode"] = True
 
     context.listing_sessions = {
         str(row["session_id"])
@@ -522,26 +547,35 @@ def build_sessions_section(
     invocations: list[Invocation],
     session_attrs: dict[str, dict],
 ) -> list[dict]:
-    """session 単位で loaded_skills / has_code_edit / has_plan_mode を出す。
+    """session 単位で loaded_skills / session attribute / 初回時刻 2 欄を出す。
 
-    - skill invocation を 1 度以上持つ session だけを載せる。載るのは「skill load が
-      **発生した** session」であって「発生し得た session」ではない — coverage の
-      分母をどちらに取るかは、has_code_edit / has_plan_mode を材料に LLM 段階が決める
+    - 載せるのは **skill invocation を持つ session ∪ コード編集を持つ session**。
+      編集して skill を 1 つも呼ばなかった session は coverage の未遵守側そのもので、
+      落とすと分母が分子に一致して誘導効果が測れなくなる (#736)
+    - `first_code_edit_ts` / `first_skill_invoke_ts` は「編集より前に invoke したか」の
+      順序を出すための欄。どの skill を思想系とみなすかは LLM 段階のまま (ADR 0032)
     - 出力は session_id 昇順で決定的にする
     """
-    per_session: dict[str, set[str]] = collections.defaultdict(set)
+    loaded_skills: dict[str, set[str]] = collections.defaultdict(set)
+    first_skill_invoke: dict[str, float | None] = {}
     for inv in invocations:
         if inv.unit_type != "skill":
             continue
-        per_session[inv.session_id].add(inv.unit_id)
+        loaded_skills[inv.session_id].add(inv.unit_id)
+        first_skill_invoke[inv.session_id] = earliest_epoch(
+            first_skill_invoke.get(inv.session_id), inv.ts_epoch)
+    edited_sessions = {sid for sid, attrs in session_attrs.items()
+                       if attrs.get("has_code_edit")}
     out: list[dict] = []
-    for sid in sorted(per_session):
+    for sid in sorted(set(loaded_skills) | edited_sessions):
         attrs = session_attrs.get(sid) or {}
         out.append({
             "session_id": sid,
-            "loaded_skills": sorted(per_session[sid]),
+            "loaded_skills": sorted(loaded_skills.get(sid, ())),
             "has_code_edit": bool(attrs.get("has_code_edit", False)),
             "has_plan_mode": bool(attrs.get("has_plan_mode", False)),
+            "first_code_edit_ts": epoch_to_iso(attrs.get("first_code_edit_epoch")),
+            "first_skill_invoke_ts": epoch_to_iso(first_skill_invoke.get(sid)),
         })
     return out
 

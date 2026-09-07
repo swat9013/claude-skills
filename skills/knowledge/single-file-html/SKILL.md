@@ -72,20 +72,9 @@ Also unit-test SVG builders in Node **when any SVG uses computed coordinates** (
 
 **Tier 2 — browser visual:**
 
-Actually render it and look. Three cases, in order of preference:
+Actually render it and look. Re-check what the *current* environment can do before picking a case — a "can't render" belief carried in from earlier may no longer hold (see `references/browser-verify.md`). Three cases, in order of preference:
 1. **Playwright MCP available:** render and inspect per `references/browser-verify.md`.
 2. **Interactive, no MCP:** ask the user to run `! open <file.html>` and report back.
 3. **Non-interactive (e.g. a subagent: no MCP, no user):** do NOT fake it. State that Tier 2 is outstanding and hand back the file path for a browser-capable agent/human to finish. Do not claim visual correctness.
 
 **Never claim "done" / "renders correctly" without Tier 1 passing AND Tier 2 completed via case 1 or 2 (case 3 is an explicit hand-off, not a completion).**
-
-## Common mistakes
-
-| Mistake | Fix |
-|---|---|
-| "Wrote the file, looks complete" | Not verified. Run both tiers. |
-| Pulled in a CDN/font/`<img src>` | Inline or generate it; keep zero deps. |
-| Diagram explained only by text labels | Make geometry carry the meaning. |
-| Reused one abstract chart for every item | Draw each item's specific mechanism. |
-| Carried a stale "can't render" assumption | Re-verify the claim in the current environment (see browser-verify.md). |
-| Hand-built data + markup duplicated per item | One data array, one render loop. |

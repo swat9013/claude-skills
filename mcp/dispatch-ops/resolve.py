@@ -7,7 +7,9 @@
 
 **join の鍵は中立 issue ref**。number slug (`i<N>`) の観測は tracker を持たない `issue_number`
 までしか返せない (spec §4.4 の #404 / #405 註) ので、「1 repo = 1 tracker」を知っている本 module が
-`refs.format_issue_ref` で ref へ写す。key slug (`swatcf-14`、jira) の観測は slug 自体が自己記述
+issue 置き場の tracker を渡して `refs.lift_issue_ref` に写させる (**持ち上げ規則そのものは綴りの
+正本である refs が持つ** — 綴りを増やしたとき持ち上げが追随しないと join が黙って壊れる)。
+key slug (`swatcf-14`、jira) の観測は slug 自体が自己記述
 なので写す必要が無く、**番号を持たない ref でも pane / worktree とは突き合わせられる** — 照合は
 tracker への到達性と無関係に成立するから (issue #575)。写せないのは番号を持つ別 tracker の entry
 だけで、それは**黙って落とさず `unjoinable` として報告する** — `derive_tidy_scope` の `unmappable`
@@ -41,11 +43,18 @@ project の実装 repo は複数ありうる (ADR 0036) ので、join の鍵は 
 **確定は呼び出し側のまま**で、server は phase を提案しない (ADR 0032 の出力契約: 候補 + 導出過程 +
 未判定条件まで)。
 
-外部 store の観測 (`observe_stores`) も本 module が組み立てる。**port は引数で受け取り、本 module は
-port を生成しない** — どの backend を立てるかは tool 層の責務。観測する entry の選別 (`_observable_entries`)
-と `join` の `checked` 判定が同じ module に居るので、「観測しなかった entry は未検査として扱う」という
-噛み合わせを module の外から保証しなくてよい。
+外部 store の観測 (`observe_stores`) も本 module が組み立てる。**port は scope から受け取り、どの
+backend を立てるかの判断は scope を組み立てた tool 層が持つ** — 本 module は port を選ばない。観測する
+entry の選別 (`_observable_entries`) と `checked` 判定が同じ module に居るので、「観測しなかった entry は
+未検査として扱う」という噛み合わせを module の外から保証しなくてよい。
+
+観測束は名前のある object (`Observation`) で運ぶ。**「その entry のその store を見たか」(`checked`) を
+答えるのはこの object 1 箇所**で、`join` も drift 判定も問うだけにする — 判定が呼び出し側へ散ると、
+store を 1 つ足すたびに「未観測を空と読む」経路が新しく増える。
 """
+
+from dataclasses import dataclass, field
+from typing import Any
 
 import pane as pane_mod
 import refs
@@ -58,6 +67,21 @@ import worktree as worktree_mod
 # **撃つ対象も未観測の意味も別**なので store を分ける — 「PR は見たが review thread は
 # 見ていない」(未対応 adapter / 非 parked entry) を 1 つの `checked` で潰さないため
 STORES = ("issues", "prs", "panes", "worktrees", "review_threads")
+
+# entry 1 件ずつ撃つ store。**`items` の鍵がそのまま「見た entry」の集合**になるので `checked` は
+# 鍵の有無で決まる。残り (panes / worktrees) は entry を選ばず一括で撮るので、`checked` は
+# 「その entry の索引の鍵を作れたか」(= join できるか) で決まる
+PER_ENTRY_STORES = ("issues", "prs", "review_threads")
+
+# entry の現況 (`observed` / `checked`) の欄 → その値を持つ store。**欄名の正本はここ 1 箇所**で、
+# 出力契約の綴りと store 名の対応が 2 箇所に写らないようにする
+ENTRY_STORES = {
+    "issue": "issues",
+    "prs": "prs",
+    "review_threads": "review_threads",
+    "pane": "panes",
+    "worktree": "worktrees",
+}
 
 # phase の部分集合は vocabulary の属性表から導出したものを使う (直書きすると phase 追加時に
 # 黙って古いまま通る)。各軸の意味と「値が同じでも意味が別の軸は統合しない」規約は
@@ -98,25 +122,97 @@ DRIFT_KINDS = {
 
 
 class ResolveError(ValueError):
-    """join の入力が組み立て規約に合わない (未知の store / 未知の drift kind)。"""
+    """観測束 / drift の組み立てが規約に合わない (未知の store / 未知の drift kind)。"""
 
 
-# --- 観測の受け渡し ------------------------------------------------------------------
+# --- 観測束 --------------------------------------------------------------------------
+
+
+@dataclass
+class StoreObservation:
+    """外部 store 1 つの観測。
+
+    `items` が None なら未観測で、**「見て 0 件」とは別物**。`error` が None ならそもそも観測しに
+    行っていない (意図的な未観測)。`errors` は entry 単位で失敗した分 (ref → 理由) で、その entry
+    だけが未検査になる。
+    """
+
+    items: Any = None
+    error: str | None = None
+    errors: dict = field(default_factory=dict)
+
+    @property
+    def was_observed(self):
+        return self.items is not None
+
+    def report(self):
+        """出力の `stores` block に載せる 1 store 分。"""
+        return {"observed": self.was_observed, "error": self.error, "errors": self.errors}
 
 
 def observed(items, errors=None):
     """観測できた store。`errors` は entry 単位で失敗した分 (ref → 理由)。"""
-    return {"items": items, "error": None, "errors": dict(errors or {})}
+    return StoreObservation(items=items, errors=dict(errors or {}))
 
 
 def unobserved(error=None):
     """観測しなかった / できなかった store。`error` が None なら意図的に観測していない。"""
-    return {"items": None, "error": None if error is None else str(error), "errors": {}}
+    return StoreObservation(error=None if error is None else str(error))
 
 
-def empty_observation():
-    """全 store 未観測の観測束 (呼び出し側が観測できたものだけ差し替える)。"""
-    return {name: unobserved() for name in STORES}
+class Observation:
+    """外部 store 5 つの観測束 (`join` の入力)。
+
+    渡さなかった store は未観測で埋まる。`STORES` に無い名前は組み立て時に落とす — 観測側と
+    join 側が別々の store 名で育つと、片方が書いた観測をもう片方が黙って読み飛ばす。
+
+    `worktree_root` は台帳が相対で記録したパスを解く基準 (観測した clone の root)。store の中では
+    なく束が持つ — store の中に入れると出力の `stores` block へ漏れる。
+    """
+
+    def __init__(self, *, worktree_root=None, **stores):
+        unknown = sorted(set(stores) - set(STORES))
+        if unknown:
+            raise ResolveError(f"未知の store: {unknown} (既知: {', '.join(STORES)})")
+        self._stores = {
+            name: stores[name] if name in stores else unobserved() for name in STORES
+        }
+        self.worktree_root = worktree_root
+
+    def store(self, name):
+        """store 1 つの観測 (組み立て途中の追記もこれ経由で行う)。"""
+        return self._stores[name]
+
+    def items(self, name):
+        """store の観測本体。未観測なら None。"""
+        return self._stores[name].items
+
+    def for_entry(self, name, issue_ref):
+        """entry 1 件ずつ撃った store の観測値。未観測 / 撃たなかった entry は None。"""
+        return (self._stores[name].items or {}).get(issue_ref)
+
+    def checked(self, name, issue_ref, *, joinable):
+        """その entry のその store を**見たか**。`observed` の null を読み分ける唯一の鍵。
+
+        規則は 1 つ — 「store を観測していて、その entry で失敗しておらず、その entry が観測の
+        対象だった」。対象だったかの判定だけが store の撃ち方で分かれる (`PER_ENTRY_STORES` は
+        `items` の鍵、一括観測は索引の鍵を作れたか = `joinable`)。
+
+        `errors` を先に見るのは一括観測側のため (記録パスの probe に失敗した worktree は、
+        一覧を観測していても未検査)。entry ごとに撃つ store では `items` と `errors` が排他なので
+        結果は変わらない — **その排他性が崩れるとこの規則が黙って壊れる**ので、観測側
+        (`_observe_*`) は同じ ref を両方へ書かないこと。
+        """
+        store = self._stores[name]
+        if not store.was_observed or issue_ref in store.errors:
+            return False
+        if name in PER_ENTRY_STORES:
+            return issue_ref in store.items
+        return joinable
+
+    def report(self):
+        """出力の `stores` block。"""
+        return {name: store.report() for name, store in self._stores.items()}
 
 
 # --- 台帳 entry の選別 ---------------------------------------------------------------
@@ -132,7 +228,7 @@ def select_entries(entries, scope_ref=None):
     if scope_ref is None:
         return list(entries)
     ref = refs.parse_issue_ref(scope_ref)["ref"]
-    return [entry for entry in entries if entry.get("issue_ref") == ref]
+    return [entry for entry in entries if entry.issue_ref == ref]
 
 
 def joinability(entry, tracker):
@@ -147,8 +243,8 @@ def joinability(entry, tracker):
     - それ以外 (番号を持つ別 tracker): 写せない。番号だけで照合すると同じ番号の `i<N>`
       worktree / pane を取り違える
     """
-    issue_ref = entry.get("issue_ref")
-    tracker_of_entry = (entry.get("issue") or {}).get("tracker")
+    issue_ref = entry.issue_ref
+    tracker_of_entry = entry.tracker
     if tracker_of_entry == tracker:
         return issue_ref, None
     if issue_ref is not None and refs.slug_is_self_describing(issue_ref):
@@ -170,55 +266,57 @@ def observable_at_tracker(entry, tracker):
     未実装 tracker (Jira) の project では port 自体が None なので、entry 側の tracker と
     「一致する」形で撃ちに行かせない。
     """
-    return tracker is not None and (entry.get("issue") or {}).get("tracker") == tracker
+    return tracker is not None and entry.tracker == tracker
 
 
 # --- 外部 store の観測 ----------------------------------------------------------------
 
 
-def observe_stores(
-    entries,
-    *,
-    issue_tracker,
-    tracker_port,
-    pr_port,
-    pane_port,
-    worktree_port,
-    include_prs,
-    repo=None,
-    pr_repo=None,
-):
-    """4 つの port を観測して `join` に渡す観測束を組み立てる (store は 5 つ — PR 置き場の
+def observe_stores(entries, scope, *, include_prs, repo=None, pr_repo=None):
+    """scope の port を観測して `join` に渡す観測束を組み立てる (store は 5 つ — PR 置き場の
     port が PR と review thread の 2 store を埋める)。
 
-    port は引数で受ける — 生成 (どの backend / tracker を立てるか) は tool 層の責務で、
-    本 module は渡された port を使うだけ。`repo` / `pr_repo` も同じで、どの repo を見るかは
-    宣言を読んだ呼び出し側が決め、本 module は adapter へ素通しする。
+    port は scope から引く — どの backend / tracker を立てるかは scope を組み立てた tool 層の
+    判断で、本 module は選ばない。repo 識別子の実効値 (**明示引数 > 宣言 > 未指定**) も scope に
+    解かせる。呼び出し側で解いてから渡すと、同じ解決規則が tool 層と本 module に二重化する。
 
-    **issue 置き場と PR 置き場の port を別に受ける** (#576)。1 つに束ねると、issue 置き場が
+    **issue 置き場と PR 置き場の port を別に引く** (#576)。1 つに束ねると、issue 置き場が
     未実装 tracker (Jira) の project で PR 置き場 (GitLab) の MR まで観測できなくなり、駐機
-    した worktree の MR が merged でも検知されない。`issue_tracker` は port と別に渡す —
-    adapter が無い置き場でも tracker 名は判っており、number slug の持ち上げに要るため。
+    した worktree の MR が merged でも検知されない。tracker 名は port と別に引く — adapter が
+    無い置き場でも tracker 名は判っており、number slug の持ち上げに要るため。
+
+    PR 置き場の repo は宣言でも決まらなければ issue 置き場へ倒す (置き場が 1 つだった頃の挙動)。
     """
-    observation = empty_observation()
-    observation["panes"] = _observe_store(
-        lambda: pane_port.observe_panes()["panes"], pane_mod.PaneError
-    )
-    observation["worktrees"] = _observe_store(
+    issue_tracker = scope.issue_tracker_name()
+    pane_port = scope.get_pane()
+    worktree_port = scope.get_worktrees()
+    pr_port = scope.get_pr_adapter_optional()
+    issue_scope = scope.issue_repo(repo)
+    pr_scope = scope.pr_repo(pr_repo)
+    if pr_scope is None:
+        pr_scope = issue_scope
+
+    panes = _observe_store(lambda: pane_port.observe_panes()["panes"], pane_mod.PaneError)
+    worktrees = _observe_store(
         lambda: worktree_port.observe()["worktrees"], worktree_mod.WorktreeError
     )
-    # 台帳が相対で記録したパスを解く基準。無いと記録と観測を突き合わせられない (未検査扱い)
-    observation["worktrees"]["root"] = worktree_port.root
-    _add_recorded_worktrees(observation["worktrees"], entries, worktree_port, issue_tracker)
-    observation["issues"] = _observe_issues(tracker_port, entries, repo)
-    pr_scope = pr_repo if pr_repo is not None else repo
-    observation["prs"] = _observe_prs(pr_port, entries, pr_scope) if include_prs else unobserved()
-    observation["review_threads"] = (
-        _observe_review_threads(pr_port, entries, observation["prs"], pr_scope)
+    _add_recorded_worktrees(worktrees, entries, worktree_port, issue_tracker)
+    issues = _observe_issues(scope.get_adapter_optional(), entries, issue_scope)
+    prs = _observe_prs(pr_port, entries, pr_scope) if include_prs else unobserved()
+    review_threads = (
+        _observe_review_threads(pr_port, entries, prs, pr_scope)
         if include_prs
         else unobserved("PR を観測していないので review thread の観測の種が無い")
     )
-    return observation
+    return Observation(
+        issues=issues,
+        prs=prs,
+        panes=panes,
+        worktrees=worktrees,
+        review_threads=review_threads,
+        # 台帳が相対で記録したパスを解く基準。無いと記録と観測を突き合わせられない (未検査扱い)
+        worktree_root=worktree_port.root,
+    )
 
 
 def _add_recorded_worktrees(store, entries, worktree_port, tracker):
@@ -229,9 +327,9 @@ def _add_recorded_worktrees(store, entries, worktree_port, tracker):
     `worktree_missing` が出る** (ADR 0036 の壊れ点 4)。どの clone を回るかは server が知らない
     ままでよい — 見に行く先は entry に記録されたパスだけで、clone の集合は列挙しない。
 
-    観測できなかった entry は `errors` に落とし、`join` が `checked.worktree` を false に
-    する。一覧が丸ごと未観測 (`items` が None) のときは何も足さない — その状態は全 entry が
-    既に未検査で、一部だけ検査済みにすると読み分けが崩れる。
+    観測できなかった entry は `errors` に落とすだけで、それを未検査と読むのは `Observation.checked`
+    (規則を持つのはあちら 1 箇所)。一覧が丸ごと未観測 (`items` が None) のときは何も足さない —
+    その状態は全 entry が既に未検査で、一部だけ検査済みにすると読み分けが崩れる。
 
     一覧に同じ ref が既に在る entry は probe しない (ref 1 つに観測 1 件を保つ)。その一覧の
     ツリーが記録と別のパスなら `join` が `worktree_path_mismatch` を出すので、別 clone の
@@ -241,21 +339,21 @@ def _add_recorded_worktrees(store, entries, worktree_port, tracker):
     一覧へ出ない。**その entry の worktree 観測はこの probe だけが担う** — 記録パスさえあれば
     番号は要らないので、番号を持たない ref でも消失 / 残置は検出できる。
     """
-    if store["items"] is None:
+    if not store.was_observed:
         return
-    seen = {_worktree_ref(item, tracker) for item in store["items"]}
+    seen = {refs.lift_issue_ref(tracker, item) for item in store.items}
     for entry in entries:
         ref, reason = joinability(entry, tracker)
-        recorded = (entry.get("agent") or {}).get("worktree")
+        recorded = entry.recorded_worktree
         if reason is not None or not recorded or ref in seen:
             continue
         try:
             found = worktree_port.probe(recorded, ref)
         except worktree_mod.WorktreeError as exc:
-            store["errors"][entry["issue_ref"]] = str(exc)
+            store.errors[entry.issue_ref] = str(exc)
             continue
         if found is not None:
-            store["items"].append(found)
+            store.items.append(found)
             seen.add(ref)
 
 
@@ -293,7 +391,7 @@ def _live_entries(entries):
     終端 (cleaned / released / spawn_failed) は履歴であって現況の突合先が無く、1 件あたり
     CLI が起動する観測を履歴のために撃つ理由が無い。
     """
-    return [entry for entry in entries if entry["phase"] not in vocabulary.TERMINAL_PHASES]
+    return [entry for entry in entries if not entry.is_terminal]
 
 
 def _observe_issues(adapter, entries, repo=None):
@@ -313,7 +411,7 @@ def _observe_issues(adapter, entries, repo=None):
         return unobserved("issue 置き場の adapter が無い (未実装 tracker)")
     issues, errors = {}, {}
     for entry in _observable_entries(entries, adapter.tracker):
-        issue_ref = entry["issue_ref"]
+        issue_ref = entry.issue_ref
         try:
             issues[issue_ref] = adapter.observe_issue(issue_ref, repo=repo)
         except tracker_mod.TrackerError as exc:
@@ -338,16 +436,15 @@ def _observe_prs(adapter, entries, repo=None):
         return unobserved("PR 置き場の adapter が無い (未実装 tracker)")
     prs, errors = {}, {}
     for entry in _live_entries(entries):
-        issue_ref = entry["issue_ref"]
+        issue_ref = entry.issue_ref
         try:
             if observable_at_tracker(entry, adapter.tracker):
                 prs[issue_ref] = adapter.observe_prs(issue_ref, repo=repo)
                 continue
-            records = entry.get("prs") or []
+            records = entry.recorded_prs
             if not records:
-                entry_tracker = (entry.get("issue") or {}).get("tracker")
                 errors[issue_ref] = (
-                    f"issue 置き場 ({entry_tracker}) が PR 置き場 ({adapter.tracker}) と別で、"
+                    f"issue 置き場 ({entry.tracker}) が PR 置き場 ({adapter.tracker}) と別で、"
                     "台帳にも PR 記録が無い (観測の種が無い)"
                 )
                 continue
@@ -367,7 +464,7 @@ def _observe_review_threads(adapter, entries, prs_store, repo=None):
     観測の種は **PR 観測の結果**で、`role == "closes"` の PR だけを見る。mention された PR の
     指摘は自分の成果への指摘ではない (集約 `status` を closes 限定にしているのと同じ理由)。
 
-    未対応の adapter (glab) は store ごと未観測で返す。**空 (`observed({})`) にしない** —
+    未対応の adapter は store ごと未観測で返す。**空 (`observed({})`) にしない** —
     「全 entry を見て未解決 thread が 1 件も無かった」と読まれ、指摘の付いた PR が駐機した
     まま滞留する。理由は port の 1 箇所 (`require_review_threads`) から採る。
     """
@@ -377,14 +474,14 @@ def _observe_review_threads(adapter, entries, prs_store, repo=None):
         adapter.require_review_threads()
     except tracker_mod.TrackerError as exc:
         return unobserved(exc)
-    if prs_store["items"] is None:
+    if not prs_store.was_observed:
         return unobserved("PR を観測していないので review thread の観測の種が無い")
     threads, errors = {}, {}
     for entry in entries:
-        if entry["phase"] not in REVIEW_THREAD_PHASES:
+        if entry.phase not in REVIEW_THREAD_PHASES:
             continue
-        issue_ref = entry["issue_ref"]
-        observed_prs = prs_store["items"].get(issue_ref)
+        issue_ref = entry.issue_ref
+        observed_prs = prs_store.items.get(issue_ref)
         if observed_prs is None:
             errors[issue_ref] = (
                 "PR を観測できていない entry なので review thread の観測の種が無い"
@@ -403,48 +500,31 @@ def _observe_review_threads(adapter, entries, prs_store, repo=None):
 # --- 突合の入口 -----------------------------------------------------------------------
 
 
-def resolve(
-    entries,
-    *,
-    issue_tracker,
-    tracker_port,
-    pr_port,
-    pane_port,
-    worktree_port,
-    scope_ref=None,
-    include_prs=True,
-    repo=None,
-    pr_repo=None,
-):
+def resolve(entries, scope, *, scope_ref=None, include_prs=True, repo=None, pr_repo=None):
     """台帳 entry と外部 store を突き合わせた現況 + drift (tool `resolve` の実体)。
 
     Args:
         entries: 台帳の全 entry (`scope_ref` の適用は本関数が行う)
-        issue_tracker: issue 置き場の tracker 名 (adapter が無くても判っている)
-        tracker_port: issue 置き場の port。未実装 tracker (Jira) では None
-        pr_port: PR 置き場の port。未実装 / 判定不能なら None
-        pane_port / worktree_port: 観測に使う port
+        scope: server process の scope。置き場の tracker 名・観測に使う 4 つの port・repo
+            識別子の解決をここから引く
         scope_ref: 中立 issue ref。渡すとその issue だけを突き合わせる
         include_prs: 紐づく PR も観測する
-        repo: issue 置き場の repo 識別子 (未指定なら CLI の cwd 推論)
-        pr_repo: PR 置き場の repo 識別子 (未指定なら `repo` へ倒す = 従来挙動)
+        repo: issue 置き場の repo 識別子 (未指定なら宣言 → CLI の cwd 推論)
+        pr_repo: PR 置き場の repo 識別子 (未指定なら宣言 → `repo` へ倒す)
+
+    port を 5 つに割らず scope 1 つで受けるのは、**「resolve が scope の何を要るか」を本 module に
+    持たせる**ため。呼び出し側が port を選んで並べ替える形だと、同じ対応表が tool 層とテストの
+    両方へ写り、port が 1 つ増えるたびに両方を直すことになる。どの backend を立てるかの判断は
+    scope を組み立てた tool 層のまま。
 
     絞り込み → 観測 → join を 1 本にまとめてあるのは、観測した集合と join する集合が
     ずれると drift が誤って出るため (同じ `select_entries` の結果を両方へ渡す)。
     """
     selected = select_entries(entries, scope_ref)
     observation = observe_stores(
-        selected,
-        issue_tracker=issue_tracker,
-        tracker_port=tracker_port,
-        pr_port=pr_port,
-        pane_port=pane_port,
-        worktree_port=worktree_port,
-        include_prs=include_prs,
-        repo=repo,
-        pr_repo=pr_repo,
+        selected, scope, include_prs=include_prs, repo=repo, pr_repo=pr_repo
     )
-    return join(issue_tracker, selected, observation, scope_ref=scope_ref)
+    return join(scope.issue_tracker_name(), selected, observation, scope_ref=scope_ref)
 
 
 # --- join ---------------------------------------------------------------------------
@@ -458,73 +538,45 @@ def join(tracker, entries, observation, scope_ref=None):
             持たない tracker (`jira`) では持ち上げられない観測が出るので、
             `unmappable_observations` に残す
         entries: `select_entries` で絞った台帳 entry の列
-        observation: store 名 → `observed()` / `unobserved()` の束
+        observation: 外部 store の観測束 (`Observation`)
         scope_ref: scope 指定時の中立 issue ref。台帳に無い pane / worktree の検出をその
             issue へ限る (絞った entry 列を台帳の全体と見なして他を全部 orphan にしない)
     """
-    unknown = set(observation) - set(STORES)
-    if unknown:
-        raise ResolveError(f"未知の store: {sorted(unknown)} (既知: {', '.join(STORES)})")
-
-    scope = _scope(scope_ref)
-
-    panes = observation["panes"]["items"]
-    worktrees = observation["worktrees"]["items"]
-    issues = observation["issues"]["items"]
-    prs = observation["prs"]["items"]
-    review_threads = observation["review_threads"]["items"]
+    scope_key = _scope_key(scope_ref)
+    panes = observation.items("panes")
+    worktrees = observation.items("worktrees")
 
     panes_by_ref = _index_by_ref(panes, lambda item: _pane_ref(item, tracker))
-    worktrees_by_ref = _index_by_ref(worktrees, lambda item: _worktree_ref(item, tracker))
+    # worktree は pane と違って除く policy が無いので持ち上げをそのまま索引の鍵にする
+    # (一覧は number slug しか読まないので `issue_number` だけを持ち、記録パスの probe は
+    # 問い合わせた ref を名乗る — 番号を持たない ref はその経路だけで載る)
+    worktrees_by_ref = _index_by_ref(worktrees, lambda item: refs.lift_issue_ref(tracker, item))
 
     current, drift, unjoinable, joined_refs = [], [], [], set()
     for entry in entries:
-        issue_ref = entry.get("issue_ref")
         ref, reason = joinability(entry, tracker)
         if reason is not None:
             unjoinable.append(
-                {"issue_ref": issue_ref, "phase": entry.get("phase"), "reason": reason}
+                {"issue_ref": entry.issue_ref, "phase": entry.phase, "reason": reason}
             )
         else:
             joined_refs.add(ref)
         view = _entry_view(
             entry,
+            observation,
             reason=reason,
-            issue=(issues or {}).get(issue_ref),
-            issue_checked=issues is not None and issue_ref in issues,
-            prs=(prs or {}).get(issue_ref),
-            prs_checked=prs is not None and issue_ref in prs,
-            review_threads=(review_threads or {}).get(issue_ref),
-            # 撃たなかった entry (非 parked) も未検査。「見て 0 件」と読ませない
-            review_threads_checked=(
-                review_threads is not None and issue_ref in review_threads
-            ),
-            pane=panes_by_ref.get(ref) if panes is not None else None,
-            pane_checked=panes is not None and reason is None,
-            worktree=worktrees_by_ref.get(ref) if worktrees is not None else None,
-            worktree_checked=(
-                worktrees is not None
-                and reason is None
-                # 記録パスの観測に失敗した entry は「無かった」ではなく未検査
-                and issue_ref not in observation["worktrees"]["errors"]
-            ),
+            pane=panes_by_ref.get(ref),
+            worktree=worktrees_by_ref.get(ref),
         )
         current.append(view)
-        drift.extend(_entry_drift(view, observation["worktrees"].get("root")))
+        drift.extend(_entry_drift(entry, view, observation.worktree_root))
 
-    drift.extend(_untracked_drift(panes_by_ref, worktrees_by_ref, joined_refs, scope))
+    drift.extend(_untracked_drift(panes_by_ref, worktrees_by_ref, joined_refs, scope_key))
 
     return {
         "tracker": tracker,
-        "scope": scope,
-        "stores": {
-            name: {
-                "observed": observation[name]["items"] is not None,
-                "error": observation[name]["error"],
-                "errors": observation[name]["errors"],
-            }
-            for name in STORES
-        },
+        "scope": scope_key,
+        "stores": observation.report(),
         "count": len(current),
         "current": current,
         "drift_count": len(drift),
@@ -537,57 +589,45 @@ def join(tracker, entries, observation, scope_ref=None):
 # --- entry の現況 --------------------------------------------------------------------
 
 
-def _entry_view(
-    entry,
-    *,
-    reason,
-    issue,
-    issue_checked,
-    prs,
-    prs_checked,
-    review_threads,
-    review_threads_checked,
-    pane,
-    pane_checked,
-    worktree,
-    worktree_checked,
-):
+def _entry_view(entry, observation, *, reason, pane, worktree):
     """台帳 entry 1 件 → 台帳側 (`ledger`) と観測側 (`observed`) を並べた現況。
 
     `observed` の null は「無い」か「見ていない」かが単体では読めないので、必ず
-    `checked` と対で読む (checked が false のときは判定していない)。
+    `checked` と対で読む (checked が false のときは判定していない)。**その `checked` は
+    observation が答える** — ここが判定を持つと、store が増えるたびに規則の写しが増える。
+
+    pane / worktree の観測値だけ引数で受ける。ref 索引は `join` が 1 回だけ作るもので、entry
+    ごとに作り直すと観測件数 × entry 件数の照合になる。
 
     `derived` は同じ入力 (`ledger` + `observed` + `checked`) から機械的に畳んだ派生列
     (`_derived`)。畳み方を呼び出し側で毎回書き直させないために server 側へ置いてある。
+
+    `ledger` block は `EntryView.raw` の該当欄をそのまま写した**出力整形**で、判断には使わない
+    (判断に要る値は `entry` の述語から採る)。応答の外形が台帳の綴りに追従するのはここ 1 箇所。
     """
+    issue_ref = entry.issue_ref
+    raw = entry.raw
     view = {
-        "issue_ref": entry.get("issue_ref"),
-        "phase": entry.get("phase"),
+        "issue_ref": issue_ref,
+        "phase": entry.phase,
         "ledger": {
-            "issue": entry.get("issue"),
-            "agent": entry.get("agent"),
-            "prs": entry.get("prs"),
-            "outcome": entry.get("outcome"),
-            "note": entry.get("note"),
-            "updated_at": entry.get("updated_at"),
+            column: raw.get(column)
+            for column in ("issue", "agent", "prs", "outcome", "note", "updated_at")
         },
         "observed": {
-            "issue": issue,
-            "prs": prs,
-            "review_threads": review_threads,
+            "issue": observation.for_entry("issues", issue_ref),
+            "prs": observation.for_entry("prs", issue_ref),
+            "review_threads": observation.for_entry("review_threads", issue_ref),
             "pane": pane,
             "worktree": worktree,
         },
         "checked": {
-            "issue": issue_checked,
-            "prs": prs_checked,
-            "review_threads": review_threads_checked,
-            "pane": pane_checked,
-            "worktree": worktree_checked,
+            slot: observation.checked(store, issue_ref, joinable=reason is None)
+            for slot, store in ENTRY_STORES.items()
         },
         "unjoinable_reason": reason,
     }
-    view["derived"] = _derived(view)
+    view["derived"] = _derived(entry, view)
     return view
 
 
@@ -605,7 +645,7 @@ DONE_RULES = {
 }
 
 
-def _derived(view):
+def _derived(entry, view):
     """entry 1 件の派生列。**確定はしない** — 出すのは候補と導出過程と未判定条件まで。
 
     ここに置くのは「観測列だけで評価でき、自然言語の解釈を要さない」畳み方だけ
@@ -626,11 +666,11 @@ def _derived(view):
     `checked.prs` が false の entry に `closes_same_repo: []` を返すと「自分の repo に closes
     PR は無い」と読め、成果のある issue を `released` + unclaim へ送る経路に乗る。
     """
-    same_repo, other_repo = _closes_split(view)
+    same_repo, other_repo = _closes_split(entry, view)
     return {
         "closes_same_repo": same_repo,
         "closes_other_repo": other_repo,
-        "mechanical_done": _mechanical_done(view, same_repo),
+        "mechanical_done": _mechanical_done(entry, view, same_repo),
         "unresolved_review_threads": _unresolved_review_threads(view),
     }
 
@@ -667,7 +707,7 @@ def _unresolved_review_threads(view):
     return found
 
 
-def _closes_split(view):
+def _closes_split(entry, view):
     """観測 PR → (entry の repo と一致する closes, 一致しない closes)。判定不能なら (None, None)。
 
     closes は **repo で絞らずに観測される** (cross-repo の closing reference を落とさない
@@ -680,7 +720,7 @@ def _closes_split(view):
     """
     if not view["checked"]["prs"]:
         return None, None
-    entry_repo = (view["ledger"]["issue"] or {}).get("repo")
+    entry_repo = entry.implementation_repo
     if entry_repo is None:
         return None, None
     closes = [
@@ -701,7 +741,7 @@ def _pr_projection(pr):
     return {"ref": pr.get("ref"), "repo": pr.get("repo"), "status": pr.get("status")}
 
 
-def _mechanical_done(view, closes_same_repo):
+def _mechanical_done(entry, view, closes_same_repo):
     """`done` の機械的前提の評価。返すのは候補 (`satisfied`) と導出過程と未判定条件。
 
     `satisfied` は 3 値:
@@ -728,7 +768,7 @@ def _mechanical_done(view, closes_same_repo):
         "satisfied": satisfied,
         "rule_fired": fired,
         "open_predicates": _dedupe(open_predicates),
-        "evidence": _done_evidence(view, closes_same_repo, values),
+        "evidence": _done_evidence(entry, view, closes_same_repo, values),
     }
 
 
@@ -769,11 +809,11 @@ def _done_conditions(view, closes_same_repo):
     return values, blockers
 
 
-def _done_evidence(view, closes_same_repo, values):
+def _done_evidence(entry, view, closes_same_repo, values):
     """`satisfied` をその値にした観測。呼び出し側が判断を再現できる分だけ載せる。"""
     pane = view["observed"]["pane"]
     return {
-        "entry_repo": (view["ledger"]["issue"] or {}).get("repo"),
+        "entry_repo": entry.implementation_repo,
         "pane_absent": values["pane_absent"],
         "pane": (
             None
@@ -810,37 +850,45 @@ def _dedupe(names):
 # --- drift 検出 ----------------------------------------------------------------------
 
 
-def _entry_drift(view, worktree_root=None):
+def _entry_drift(entry, view, worktree_root=None):
     """現況 1 件 → drift record の列。観測していない側面からは 1 件も出さない。
+
+    台帳側の記録は `entry` の述語から採り、観測側は `view` から採る。**下位の判定関数へは
+    dict ではなく記録済みの値そのものを渡す** — `agent` を丸ごと配ると、drift 判定のたびに
+    entry の綴りを開く側が増える。
 
     `worktree_root` は台帳が相対で記録したパスを解く基準 (観測した clone の root)。渡されない
     呼び出しでは相対記録との突合を「判定できない」として飛ばす。
     """
-    issue_ref = view["issue_ref"]
-    phase = view["phase"]
+    issue_ref = entry.issue_ref
+    phase = entry.phase
     checked = view["checked"]
-    agent = view["ledger"]["agent"] or {}
     found = []
 
     if checked["pane"]:
-        found.extend(_pane_drift(issue_ref, phase, agent, view["observed"]["pane"]))
+        found.extend(
+            _pane_drift(issue_ref, phase, entry.recorded_pane_id, view["observed"]["pane"])
+        )
     if checked["worktree"]:
         found.extend(
             _worktree_drift(
-                issue_ref, phase, agent, view["observed"]["worktree"], worktree_root
+                issue_ref,
+                phase,
+                entry.recorded_worktree,
+                view["observed"]["worktree"],
+                worktree_root,
             )
         )
     if checked["issue"]:
         found.extend(_issue_drift(issue_ref, phase, view["observed"]["issue"]))
     if checked["prs"]:
         found.extend(
-            _pr_drift(issue_ref, phase, view["ledger"]["prs"] or [], view["observed"]["prs"])
+            _pr_drift(issue_ref, phase, entry.recorded_prs, view["observed"]["prs"])
         )
     return found
 
 
-def _pane_drift(issue_ref, phase, agent, pane):
-    recorded_id = agent.get("pane_id")
+def _pane_drift(issue_ref, phase, recorded_id, pane):
     if phase in vocabulary.PANE_EXPECTED_PHASES:
         if pane is None:
             return [_drift("pane_missing", issue_ref, phase, {"ledger_pane_id": recorded_id})]
@@ -873,14 +921,13 @@ def _pane_drift(issue_ref, phase, agent, pane):
     return []
 
 
-def _worktree_drift(issue_ref, phase, agent, worktree, root=None):
+def _worktree_drift(issue_ref, phase, recorded, worktree, root=None):
     """worktree の食い違い。**番号が同じでもパスが違えば別のツリー** (ADR 0036)。
 
     観測した `i<N>` が記録と別のパスなら、それは別 clone の同番号ツリーか、記録が作業ツリー
     以外 (clone root 等) を指している。どちらも「在る」と読むと消失も残置も検出できなくなり、
     回収は記録と一致するツリーにしか効かないので、entry は動かないまま木が溜まる。
     """
-    recorded = agent.get("worktree")
     if (
         phase in vocabulary.WORKTREE_EXPECTED_PHASES
         and recorded is not None
@@ -1014,7 +1061,7 @@ def _match_recorded_pr(recorded, observed_prs):
     return (candidates[0] if candidates else None), None
 
 
-def _scope(scope_ref):
+def _scope_key(scope_ref):
     """scope 指定 → 突合に使う中立 ref (未指定なら None)。
 
     索引の鍵が ref なので、scope も ref のまま比べられる。別 tracker の ref を渡された場合は
@@ -1024,7 +1071,7 @@ def _scope(scope_ref):
     return None if scope_ref is None else refs.parse_issue_ref(scope_ref)["ref"]
 
 
-def _untracked_drift(panes_by_ref, worktrees_by_ref, joined_refs, scope):
+def _untracked_drift(panes_by_ref, worktrees_by_ref, joined_refs, scope_key):
     """台帳に対応 entry が無い pane / worktree (spec §3.5 が名指しする外部側の drift)。
 
     scope 指定時はその issue だけを見る — 絞り込んだ entry 列を台帳の全体と誤認すると、
@@ -1036,7 +1083,7 @@ def _untracked_drift(panes_by_ref, worktrees_by_ref, joined_refs, scope):
     """
     found = []
     for issue_ref, worktree in sorted(worktrees_by_ref.items()):
-        if issue_ref in joined_refs or (scope is not None and issue_ref != scope):
+        if issue_ref in joined_refs or (scope_key is not None and issue_ref != scope_key):
             continue
         found.append(
             _drift(
@@ -1047,7 +1094,7 @@ def _untracked_drift(panes_by_ref, worktrees_by_ref, joined_refs, scope):
             )
         )
     for issue_ref, pane in sorted(panes_by_ref.items()):
-        if issue_ref in joined_refs or (scope is not None and issue_ref != scope):
+        if issue_ref in joined_refs or (scope_key is not None and issue_ref != scope_key):
             continue
         found.append(
             _drift(
@@ -1092,7 +1139,7 @@ def _unmappable_observations(tracker, panes, worktrees):
         if (
             item.get("issue_ref") is None
             and number is not None
-            and _number_ref(tracker, number) is None
+            and refs.lift_issue_ref(tracker, item) is None
         ):
             found.append(
                 {"store": "worktrees", "issue_number": number, "path": item.get("path")}
@@ -1103,7 +1150,7 @@ def _unmappable_observations(tracker, panes, worktrees):
             not item.get("is_self")
             and item.get("issue_ref") is None
             and number is not None
-            and _number_ref(tracker, number) is None
+            and refs.lift_issue_ref(tracker, item) is None
         ):
             found.append(
                 {"store": "panes", "issue_number": number, "pane_id": item.get("pane_id")}
@@ -1121,47 +1168,11 @@ def _index_by_ref(items, ref_of):
     return index
 
 
-def _lift(tracker, item):
-    """観測 1 件 → 中立 issue ref。名乗っていればその ref、番号だけなら server の tracker で写す。
-
-    key slug (jira) の観測は `issue_ref` を自分で名乗る。number slug の観測は tracker を
-    持てないので、「1 repo = 1 tracker」を知っている本 module が補う — **番号を別 tracker の
-    ref へ写さない**のがこの持ち上げの要点で、`swatcf-14` を `gh#14` と読むような取り違えは
-    名乗りを優先することで起きない。
-    """
-    ref = item.get("issue_ref")
-    if ref is not None:
-        return ref
-    number = item.get("issue_number")
-    return None if number is None else _number_ref(tracker, number)
-
-
-def _number_ref(tracker, number):
-    """番号 → 中立 issue ref。issue 置き場が番号体系を持たない (jira) なら None。
-
-    例外にしないのは、この経路が **観測 1 件を索引へ入れられるか** の判定だから。issue 置き場が
-    Jira の project にも `i<N>` の worktree / pane は在りうる (別 project の作業ツリー等) ので、
-    そこで raise すると join が丸ごと落ちる。写せなかったことは `unmappable_observations` が残す。
-    """
-    try:
-        return refs.format_issue_ref(tracker, number=number)
-    except refs.RefError:
-        return None
-
-
 def _pane_ref(pane, tracker):
     """自 pane でない追跡 pane の中立 issue ref。
 
-    自 pane を除くのは `pane_watch` と同じ理由 — dispatcher 自身に残骸 label が付いて
-    いると、自分を「その issue の作業 pane」と誤認する。
+    持ち上げそのものは `refs.lift_issue_ref` が担い、本 module が足すのは自 pane を除く
+    policy だけ。自 pane を除くのは `pane_watch` と同じ理由 — dispatcher 自身に残骸 label が
+    付いていると、自分を「その issue の作業 pane」と誤認する。
     """
-    return None if pane.get("is_self") else _lift(tracker, pane)
-
-
-def _worktree_ref(worktree, tracker):
-    """worktree 観測の中立 issue ref。
-
-    一覧 (`observe`) は number slug しか読まないので `issue_number` だけを持ち、記録パスの
-    probe は問い合わせた ref をそのまま名乗る (番号を持たない ref はこちらの経路だけで載る)。
-    """
-    return _lift(tracker, worktree)
+    return None if pane.get("is_self") else refs.lift_issue_ref(tracker, pane)

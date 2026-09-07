@@ -4,12 +4,14 @@
 
 hook の登録を編集する (settings の `hooks` セクション / plugin の `hooks/hooks.json`。両者の違いは「仕様」節) / hook script を新設 or 変更する / hook を**どの event slot に置くか**判断するときに Read する。ops 寄りのログ整形やフォーマッタの変更だけで完結するなら本 doc は不要。
 
+script が Claude へ届ける**注入文の文面**は Inferential なので本 doc の対象外 — [hook-inject](../../../steering/write-for-harness/references/components/hook-inject.md) (`write-for-harness`) が正本。
+
 ## 責務
 
 hook は Claude Code のイベント (tool 実行前後 / セッション開始 / 停止など) をフックして、外部スクリプトを起動する仕組み。Claude 本体ではなくハーネス側で実行される。
 
 - **目的**: 自動的に発火させたい振る舞い (許可 / 拒否 / 観測 / 注入 / 書き換え) を、Claude のメインコンテキストを汚染せずに実装する。
-- **対象外**: Claude に「やってもらいたい」手順 (それは skill の責務 → [skill](./skill.md))。
+- **対象外**: Claude に「やってもらいたい」手順 (それは skill の責務 → [skill](../../../steering/write-for-harness/references/components/skill.md))、注入文の文面 (それは [hook-inject](../../../steering/write-for-harness/references/components/hook-inject.md) の責務)。
 
 ## 仕様
 
@@ -52,7 +54,6 @@ hook を新設・編集する前に確認する。
 - [ ] エラー時に Claude セッションを破壊しないか (× `set -e` で軽微エラーも exit 1 → tool 拒否扱い / ○ 検査系は stdout に warning を出して exit 0、deny したい時だけ意図して exit 1)
 - [ ] 副作用が冪等か (同じ event が複数回発火しても安全か)
 - [ ] 実行時間が短いか (重い処理は別プロセスで非同期化)
-- [ ] hook の出力 (stdout/stderr) が Claude にどう見えるかを確認したか
 
 ## アンチパターン
 
@@ -61,10 +62,9 @@ hook を新設・編集する前に確認する。
 - **非 0 終了の暴発**: hook の細かいエラーで non-zero 終了させると Claude が tool 呼び出し失敗と誤解する。意図しない deny を生む。
 - **harness と ops の混在**: 同一ディレクトリに置くと、ops の変更で harness が壊れるリスクが上がる。
 - **冪等性の欠如**: 同じ event が複数回発火する状況 (リトライなど) で副作用が累積する設計は壊れる。
-- **hook 内から Claude に追加プロンプトを注入しすぎる**: コンテキストが膨らみ、本来のタスクが押し出される。注入は最小限。
 
 ## 参照
 
-- 共通: [architecture](./architecture.md) (hook が埋める slot: C/Guide = SessionStart 注入 / C/Sensor = PreToolUse deny / I/Sensor 連動 = Stop 起点の skill 連携) / [models](./models.md) (hook 内で Claude を呼び出す場合のモデル選定) / [sources](./sources.md) (公式 event 一覧と payload 仕様)
-- 関連: [settings](./settings.md) (`hooks` セクションの event / matcher 登録) / [skill](./skill.md) (hook から起動する手順本体)
+- 共通: [architecture](../../../steering/write-for-harness/references/architecture.md) (hook が埋める slot: C/Guide = SessionStart 注入 / C/Sensor = PreToolUse deny / I/Sensor 連動 = Stop 起点の skill 連携) / [models](../../../steering/write-for-harness/references/models.md) (hook 内で Claude を呼び出す場合のモデル選定) / [sources](./sources.md) (公式 event 一覧と payload 仕様)
+- 関連: [settings](./settings.md) (`hooks` セクションの event / matcher 登録) / [hook-inject](../../../steering/write-for-harness/references/components/hook-inject.md) (注入文の文面) / [skill](../../../steering/write-for-harness/references/components/skill.md) (hook から起動する手順本体)
 - 公式: Claude Code hooks ドキュメント (URL は [sources](./sources.md) 経由で確認)

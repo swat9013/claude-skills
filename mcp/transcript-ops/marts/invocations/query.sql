@@ -16,7 +16,7 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
        tu.block_no AS block_no, tu.tool AS tool, tu.unit_id AS unit_id,
        tu.target_path AS target_path, tu.input_excerpt AS input_excerpt,
        tu.outcome_base AS outcome, tu.attribution_skill AS attribution_skill,
-       r.session_id AS session_id, r.ts AS ts
+       r.session_id AS session_id, r.ts AS ts, r.ts_epoch AS ts_epoch
 FROM tool_use tu
 JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
 JOIN file f ON f.file_id = tu.file_id
@@ -27,7 +27,8 @@ ORDER BY f.project_dir, f.path, r.line_no, tu.block_no
 -- 実呼出しの slash command (`parse_slash_invocation` が ingest 側で確定済み)。
 -- name: slash_events
 SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
-       si.command_name AS command_name, r.session_id AS session_id, r.ts AS ts
+       si.command_name AS command_name, r.session_id AS session_id, r.ts AS ts,
+       r.ts_epoch AS ts_epoch
 FROM slash_invocation si
 JOIN record r ON r.file_id = si.file_id AND r.line_no = si.line_no
 JOIN file f ON f.file_id = si.file_id
@@ -44,14 +45,22 @@ JOIN file f ON f.file_id = ut.file_id
 WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
 ORDER BY f.project_dir, f.path, r.line_no
 
--- 窓内で観測された全 tool_use の (tool, session) の distinct 組。deferred tool の
--- 分子 (`units` に対応 unit 型が無い built-in tool) と session attribute
--- (has_code_edit / has_plan_mode) の両方がこの 1 本から作れる。
+-- 窓内で観測された全 tool_use の (tool, session) 1 組 1 行 + その組の初回時刻。
+-- deferred tool の分子 (`units` に対応 unit 型が無い built-in tool)・session
+-- attribute (has_code_edit / has_plan_mode)・順序 (初回コード編集がいつか) の
+-- 3 つがこの 1 本から作れる。
+--
+-- 初回は `ts` の文字列比較ではなく `ts_epoch` の最小で採る (`ts` が UTC `Z` 表記に
+-- 揃っている保証は store に無く、offset 表記が混ざると文字列順は時刻順と一致
+-- しない)。順序の付く record が 1 つも無い組 (ts 欠損・解釈不能で epoch が NULL)
+-- は NULL で返し、最古にも最新にも倒さない。
 -- name: all_tool_use_sessions
-SELECT DISTINCT tu.tool AS tool, r.session_id AS session_id
+SELECT tu.tool AS tool, r.session_id AS session_id,
+       MIN(r.ts_epoch) AS first_ts_epoch
 FROM tool_use tu
 JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
 WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch) AND tu.tool != ''
+GROUP BY tu.tool, r.session_id
 
 -- 「session に提示された分母」の 1 名前 = 1 行。type 別の意味 (どの type が
 -- どの unit 型か) は presentation 層の観測契約 (`PRESENTED_UNIT_TYPE`)。

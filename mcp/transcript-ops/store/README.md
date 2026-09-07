@@ -62,8 +62,12 @@ store file 名は `store-v<N>-<lake digest>.sqlite3`。**1 lake = 1 store** —
   なって静かに二重計上する。結果側 4 列 (`outcome_base` / `denial_kind` /
   `result_text` / `paired`) は同じ行に畳んである
 - **生の input JSON / prompt 本文は保存しない**。tool 入力は `command` /
-  `target_path` / `input_excerpt` (200 字) の 3 列へ正規化する。集約キー
-  (permissions の `command_head` 等) は本表からの導出なので query 層の UDF が作る
+  `target_path` / `target_url` / `input_excerpt` (200 字) / `input_keys` (top-level
+  key **名だけ**。値は持たない) の 5 列へ正規化する。集約キー
+  (permissions の `command_head` 等) は本表からの導出なので query 層の UDF が作る。
+  **matcher が読む引数の種類が増えたら列を足す** — 既存列に相乗りさせると、
+  照合規則の違う 2 種類の値が 1 列に混ざる (`WebFetch(domain:…)` は hostname 一致、
+  path 系 entry は glob)
 
 ## 変更手順
 

@@ -69,10 +69,20 @@ RESULT_TEXT_LIMIT = 4000
 # matcher が file path 系 tool の照合に使う input key (先に見つかった 1 つを採る)。
 TARGET_PATH_KEYS = ("file_path", "path", "notebook_path")
 
+# matcher が URL を引数に取る tool の照合に使う input key。**path 系と混ぜない** —
+# `WebFetch(domain:<host>)` は hostname 一致、path 系 entry は glob と照合規則が
+# 別なので、同じ列に入れると片方の pattern がもう片方の値に当たる (#873)。
+TARGET_URL_KEYS = ("url",)
+
 # tool_use.unit_id の抽出元 input key。Skill / Agent の識別引数は input JSON の
 # 中にしか無く、command / target_path の枠に収まらないため専用 key 表を持つ
 # (v2, #498)。
 UNIT_ID_KEYS: dict[str, str] = {"Skill": "skill", "Agent": "subagent_type"}
+
+# `tool_use.input_keys` の区切り。tool の入力 schema 由来の param 名に現れない文字を
+# 選ぶ。**前提は注記でなく `_input_keys` の検査が守る** — JSON object の key は任意
+# 文字を取りうるので、区切りを含む key はそこで落とす。
+INPUT_KEYS_SEPARATOR = "\n"
 
 
 @dataclasses.dataclass
@@ -232,9 +242,10 @@ def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
     )
     conn.executemany(
         "INSERT INTO tool_use (file_id, line_no, block_no, tool_use_id, tool, "
-        "command, target_path, input_excerpt, outcome_base, denial_kind, "
-        "result_text, paired, unit_id, attribution_skill) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "command, target_path, target_url, input_excerpt, input_keys, "
+        "outcome_base, denial_kind, result_text, paired, unit_id, "
+        "attribution_skill) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [(file_id, *t.as_row()) for t in rows.tool_uses],
     )
     conn.executemany(
@@ -304,7 +315,9 @@ class _ToolUseRow:
     tool: str
     command: str
     target_path: str
+    target_url: str
     input_excerpt: str
+    input_keys: str
     outcome_base: str = "unknown"
     denial_kind: str = ""
     result_text: str = ""
@@ -427,14 +440,30 @@ def _collect_tool_uses(rec: dict, line_no: int, parsed: _ParsedFile,
             tool_use_id=tool_use_id,
             tool=tool,
             command=command if isinstance(command, str) else "",
-            target_path=_target_path(block_input),
+            target_path=_first_string(block_input, TARGET_PATH_KEYS),
+            target_url=_first_string(block_input, TARGET_URL_KEYS),
             input_excerpt=truncate(json.dumps(block_input, ensure_ascii=False),
                                    INPUT_EXCERPT_LIMIT),
+            input_keys=_input_keys(block_input),
             unit_id=_unit_id(tool, block_input),
             attribution_skill=attribution,
         ))
         if tool_use_id:
             pending[tool_use_id] = len(parsed.tool_uses) - 1
+
+
+def _input_keys(block_input: dict) -> str:
+    """input の top-level key **名だけ**を 1 列へ畳む (値は持たない)。
+
+    **区切りを含む key は落とす。** JSON object の key は任意文字を取りうるので、
+    そのまま join すると読み出し側の split が 1 つの key を 2 つの断片へ割り、
+    permissions mart が実在しない param 名を観測済みと見なして entry を黙って
+    `param_rule` へ倒す。取りこぼす側へ倒すのは、落ちた key は判別材料にならず
+    entry が宣言どおりの確度で残る (= 修正前と同じ扱い) だけで済むから。
+    """
+    return INPUT_KEYS_SEPARATOR.join(
+        sorted(key for key in map(str, block_input)
+               if INPUT_KEYS_SEPARATOR not in key))
 
 
 def _unit_id(tool: str, block_input: dict) -> str:
@@ -601,8 +630,9 @@ def _collect_user_prompt(rec: dict, line_no: int, parsed: _ParsedFile) -> None:
     ))
 
 
-def _target_path(block_input: dict) -> str:
-    for key in TARGET_PATH_KEYS:
+def _first_string(block_input: dict, keys: tuple[str, ...]) -> str:
+    """`keys` のうち最初に見つかった文字列値 (無ければ空文字)。"""
+    for key in keys:
         value = block_input.get(key)
         if isinstance(value, str):
             return value

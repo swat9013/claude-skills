@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dispatch dashboard</title>
+<style>
+/* トークンは .ai/design/design-tokens.css と同じ値 (出所は dataviz の reference palette)。
+   外部依存ゼロが要件なので @import せず inline する。 */
+:root {
+  --text-xs: 0.64rem; --text-sm: 0.8rem; --text-base: 1rem;
+  --text-md: 1.25rem; --text-lg: 1.5625rem;
+  --leading-tight: 1.1; --leading-normal: 1.5;
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  --space-0-5: 0.25rem; --space-1: 0.5rem; --space-1-5: 0.75rem;
+  --space-2: 1rem; --space-3: 1.5rem; --space-4: 2rem;
+
+  --plane: #f9f9f7; --surface: #fcfcfb;
+  --ink: #0b0b0b; --ink-secondary: #52514e; --ink-muted: #898781;
+  --hairline: #e1e0d9; --axis: #c3c2b7;
+  --ring: rgba(11,11,11,0.10); --wash: rgba(11,11,11,0.04);
+
+  --status-good: #0ca30c; --status-warning: #fab219;
+  --status-serious: #ec835a; --status-critical: #d03b3b;
+  /* status を文字色に使う場面の ink (light surface で warning / good は 3:1 を切るため、
+     dataviz の「文字は text token」規則に従って読める step を別に持つ) */
+  --status-good-ink: #006300; --status-warning-ink: #8a5a00;
+
+  /* 積み上げバーの segment 間に入れる surface gap (dataviz の mark spec: 2px)。
+     8pt grid の外だが、これは余白ではなく mark の輪郭を分ける値 */
+  --mark-gap: 2px;
+
+  --phase-claimed: #86b6ef; --phase-active: #5598e7; --phase-parked: #2a78d6;
+  --phase-done: #1c5cab; --phase-cleaned: #104281;
+  --phase-released: #898781; --phase-spawn_failed: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --plane: #0d0d0d; --surface: #1a1a19;
+    --ink: #ffffff; --ink-secondary: #c3c2b7; --ink-muted: #898781;
+    --hairline: #2c2c2a; --axis: #383835;
+    --ring: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+    /* dark surface では status の step がそのまま 3:1 を超えるので ink を分けない */
+    --status-good-ink: #0ca30c; --status-warning-ink: #fab219;
+    --phase-claimed: #184f95; --phase-active: #256abf; --phase-parked: #3987e5;
+    --phase-done: #6da7ec; --phase-cleaned: #9ec5f4;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: var(--space-3);
+  background: var(--plane); color: var(--ink);
+  font: var(--text-base)/var(--leading-normal) var(--font-sans);
+}
+h1 { font-size: var(--text-lg); line-height: var(--leading-tight); margin: 0 0 var(--space-1); }
+h2 { font-size: var(--text-md); line-height: var(--leading-tight); margin: 0 0 var(--space-1-5); }
+section { margin-bottom: var(--space-4); }
+code, .mono { font-family: var(--font-mono); font-size: var(--text-sm); }
+.muted { color: var(--ink-muted); }
+.secondary { color: var(--ink-secondary); }
+.small { font-size: var(--text-sm); }
+.xs { font-size: var(--text-xs); }
+.nums { font-variant-numeric: tabular-nums; }
+
+.panel {
+  /* 枠は border ではなく hairline ring (dataviz の chrome)。border-bottom は link の下線と
+     予約が衝突するので、面を囲う目的では使わない */
+  background: var(--surface); box-shadow: 0 0 0 1px var(--ring);
+  border-radius: 6px; padding: var(--space-2);
+}
+.row { display: flex; flex-wrap: wrap; gap: var(--space-1-5); align-items: baseline; }
+.spread { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: space-between; }
+
+select, button {
+  font: inherit; font-size: var(--text-sm); color: var(--ink);
+  background: var(--surface); border: 1px solid var(--axis);
+  border-radius: 4px; padding: var(--space-0-5) var(--space-1);
+}
+button:hover { background: var(--wash); }
+button:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--phase-parked); outline-offset: 2px;
+}
+button[aria-pressed="true"] { border-color: var(--phase-parked); background: var(--wash); }
+
+/* --- 未観測 -------------------------------------------------------------------------
+   空や偽値へ潰さないための唯一の表現。破線の枠で「値が無い」と区別できるようにする。 */
+.unobserved {
+  color: var(--ink-muted); font-size: var(--text-sm);
+  border: 1px dashed var(--axis); border-radius: 4px;
+  padding: 0 var(--space-0-5); white-space: nowrap;
+}
+
+/* --- phase 分布バー (ordinal ramp。濃いほど先へ進んでいる) ------------------------- */
+.bar { display: flex; gap: var(--mark-gap); height: 16px; margin: var(--space-1) 0; }
+.bar > div { border-radius: 0; min-width: 3px; }
+.bar > div:first-child { border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
+.bar > div:last-child { border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+.bar-empty { border: 1px dashed var(--axis); border-radius: 4px; flex: 1; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: var(--space-0-5);
+  border: 1px solid var(--ring); border-radius: 999px;
+  padding: 0 var(--space-1); font-size: var(--text-sm); white-space: nowrap;
+}
+.chip .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.chip.zero { color: var(--ink-muted); }
+.badge {
+  display: inline-flex; align-items: center; gap: var(--space-0-5);
+  border-radius: 4px; padding: 0 var(--space-0-5);
+  font-size: var(--text-xs); border: 1px solid currentColor; white-space: nowrap;
+}
+.badge svg { width: 11px; height: 11px; flex: none; }
+.badge.warning { color: var(--status-warning-ink); }
+.badge.critical { color: var(--status-critical); }
+.badge.good { color: var(--status-good-ink); }
+
+/* --- 表 ---------------------------------------------------------------------------- */
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: var(--text-sm); }
+th, td {
+  text-align: left; vertical-align: top;
+  padding: var(--space-1); border-bottom: 1px solid var(--hairline);
+}
+th { color: var(--ink-secondary); font-weight: 600; white-space: nowrap; }
+tr.entry { cursor: pointer; }
+tr.entry:hover > td { background: var(--wash); }
+tr.detail > td { background: var(--wash); }
+pre {
+  margin: 0; padding: var(--space-1); overflow-x: auto;
+  background: var(--plane); border: 1px solid var(--hairline); border-radius: 4px;
+  font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-normal);
+}
+ul.plain { list-style: none; margin: 0; padding: 0; }
+ul.plain > li { padding: var(--space-0-5) 0; border-bottom: 1px solid var(--hairline); }
+ul.plain > li:last-child { border-bottom: none; }
+.note { white-space: pre-wrap; max-width: 46ch; }
+.stack { display: flex; flex-direction: column; gap: var(--space-0-5); }
+</style>
+</head>
+<body>
+<h1>dispatch dashboard</h1>
+<p class="small secondary" id="freshness">読み込み中…</p>
+
+<section id="header-section" class="panel">
+  <div class="spread">
+    <div class="row">
+      <label for="project">project</label>
+      <select id="project"></select>
+      <span class="mono muted" id="ledger-dir"></span>
+    </div>
+    <div class="row" id="header-badges"></div>
+  </div>
+  <div id="observability"></div>
+  <div id="totals"></div>
+</section>
+
+<section>
+  <h2>store の観測状況</h2>
+  <div class="panel" id="stores"></div>
+</section>
+
+<section>
+  <h2>dispatch entry</h2>
+  <div class="panel scroll" id="entries"></div>
+</section>
+
+<section>
+  <h2>drift</h2>
+  <div class="panel" id="drift"></div>
+</section>
+
+<section>
+  <h2>候補プール</h2>
+  <div class="panel" id="candidates"></div>
+</section>
+
+<section>
+  <h2>全体タイムライン</h2>
+  <div class="panel">
+    <div class="row" id="actor-filter"></div>
+    <div id="timeline"></div>
+  </div>
+</section>
+
+<script>
+"use strict";
+
+/* データはすべて JSON から来る (台帳の note は人が書いた自由記述)。DOM は textContent で
+   組み立て、innerHTML はこの file 内で書いた literal (icon の SVG) にだけ使う。 */
+
+const ICONS = {
+  warning: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 6v4M8 11.6v.9" stroke="currentColor" stroke-width="1.6"/></svg>',
+  critical: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="currentColor" stroke-width="1.6"/></svg>',
+  good: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.8 8.3l2.2 2.2 4.2-4.6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>',
+};
+
+const state = { projectKey: null, actor: null, expanded: new Set(), showTerminal: false, timer: null };
+
+function el(tag, options, children) {
+  const node = document.createElement(tag);
+  const opts = options || {};
+  if (opts.text !== undefined && opts.text !== null) node.textContent = String(opts.text);
+  if (opts.cls) node.className = opts.cls;
+  if (opts.title) node.title = String(opts.title);
+  for (const [name, value] of Object.entries(opts.attrs || {})) node.setAttribute(name, value);
+  for (const [name, value] of Object.entries(opts.style || {})) node.style[name] = value;
+  for (const child of children || []) if (child) node.appendChild(child);
+  return node;
+}
+
+function badge(kind, label, title) {
+  const node = el("span", { cls: "badge " + kind, title: title || label });
+  const icon = el("span");
+  icon.innerHTML = ICONS[kind];
+  node.appendChild(icon);
+  node.appendChild(el("span", { text: label }));
+  return node;
+}
+
+function unobserved(reason) {
+  return el("span", { cls: "unobserved", text: "未観測", title: reason || "観測していない" });
+}
+
+function value(text) {
+  return el("span", { text: text === null || text === undefined ? "—" : String(text) });
+}
+
+function elapsed(seconds) {
+  if (seconds === null || seconds === undefined) return null;
+  const abs = Math.abs(seconds);
+  if (abs < 60) return seconds + "秒";
+  if (abs < 3600) return Math.round(seconds / 60) + "分";
+  if (abs < 86400) return (seconds / 3600).toFixed(1) + "時間";
+  return (seconds / 86400).toFixed(1) + "日";
+}
+
+function stamp(iso) {
+  if (!iso) return "—";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return String(iso);
+  return parsed.toLocaleString("ja-JP", { hour12: false });
+}
+
+async function api(path) {
+  const response = await fetch(path, { headers: { Accept: "application/json" } });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || response.statusText);
+  return payload;
+}
+
+function replace(id, node) {
+  const host = document.getElementById(id);
+  host.textContent = "";
+  host.appendChild(node);
+}
+
+/* --- 総計ヘッダ ------------------------------------------------------------------- */
+
+function totalsView(data) {
+  const counts = data.counts || {};
+  const phases = data.vocabulary.phases;
+  const total = data.total;
+  const bar = el("div", { cls: "bar", attrs: { role: "img", "aria-label": phaseLabel(phases, counts, total) } });
+  if (total === 0) {
+    bar.appendChild(el("div", { cls: "bar-empty" }));
+  } else {
+    for (const phase of phases) {
+      const count = counts[phase] || 0;
+      if (!count) continue;
+      bar.appendChild(el("div", {
+        title: phase + ": " + count + " 件 (" + Math.round((count / total) * 100) + "%)",
+        style: { flex: String(count), background: "var(--phase-" + phase + ")" },
+      }));
+    }
+  }
+  const legend = el("div", { cls: "row" }, phases.map((phase) => {
+    const count = counts[phase] || 0;
+    const chip = el("span", { cls: count ? "chip" : "chip zero" });
+    chip.appendChild(el("span", { cls: "swatch", style: { background: "var(--phase-" + phase + ")" } }));
+    chip.appendChild(el("span", { text: phase }));
+    chip.appendChild(el("strong", { cls: "nums", text: String(count) }));
+    return chip;
+  }));
+  return el("div", {}, [
+    el("p", { cls: "small secondary", text: "台帳 entry 合計 " + total + " 件 — 濃いほど先へ進んだ phase" }),
+    bar,
+    legend,
+  ]);
+}
+
+function phaseLabel(phases, counts, total) {
+  const parts = phases.filter((phase) => counts[phase]).map((phase) => phase + " " + counts[phase] + " 件");
+  return "phase 分布 (合計 " + total + " 件): " + (parts.join(", ") || "なし");
+}
+
+/* --- store 観測状況 --------------------------------------------------------------- */
+
+function storesView(data) {
+  const list = el("ul", { cls: "plain" });
+  for (const [name, store] of Object.entries(data.stores)) {
+    const line = el("li", { cls: "row" }, [
+      el("strong", { text: name }),
+      store.observed ? badge("good", "観測済み") : unobserved(store.error),
+      store.error ? el("span", { cls: "small secondary", text: store.error }) : null,
+    ]);
+    const failed = Object.entries(store.errors || {});
+    if (failed.length) {
+      line.appendChild(el("span", { cls: "small secondary", text: failed.length + " entry が個別に未検査" }));
+    }
+    list.appendChild(line);
+  }
+  const source = data.pane_source || {};
+  const paneLine = el("li", { cls: "row" }, [
+    el("strong", { text: "pane の出所" }),
+    source.error
+      ? unobserved(source.error)
+      : el("span", { cls: "small", text: "workspace " + source.workspace + " (" + (source.workspace_label || "-") + ") / 決め方 " + source.source }),
+    source.error ? el("span", { cls: "small secondary", text: source.error }) : null,
+    source.socket_path ? el("span", { cls: "mono muted", text: source.socket_path }) : null,
+  ]);
+  list.appendChild(paneLine);
+  return list;
+}
+
+/* --- entry 表 --------------------------------------------------------------------- */
+
+const COLUMNS = ["issue", "phase", "経過", "worktree", "PR", "pane", "note / outcome", "drift"];
+
+function entriesView(data) {
+  if (!data.entries.length) {
+    return el("p", { cls: "muted", text: "台帳に entry が無い (この project で dispatch を記帳していない)" });
+  }
+  /* 終端 phase は履歴で、放っておくと現況が数十件の cleaned に埋もれる。畳む基準は
+     server が配る terminal_phases (画面側で phase を判定しない)。 */
+  const terminal = new Set(data.vocabulary.terminal_phases);
+  const shown = state.showTerminal
+    ? data.entries
+    : data.entries.filter((entry) => !terminal.has(entry.phase));
+  const hidden = data.entries.length - shown.length;
+
+  const toggle = el("button", {
+    text: state.showTerminal
+      ? "終端 phase を畳む (" + data.vocabulary.terminal_phases.join(" / ") + ")"
+      : "終端 phase の " + hidden + " 件も出す (" + data.vocabulary.terminal_phases.join(" / ") + ")",
+    attrs: { type: "button", "aria-pressed": String(state.showTerminal) },
+  });
+  toggle.addEventListener("click", () => { state.showTerminal = !state.showTerminal; render(data); });
+
+  const table = el("table");
+  table.appendChild(el("thead", {}, [el("tr", {}, COLUMNS.map((name) => el("th", { text: name })))]));
+  const body = el("tbody");
+  const driftByRef = groupDrift(data.drift);
+  for (const entry of shown) {
+    body.appendChild(entryRow(data, entry, driftByRef[entry.issue_ref] || []));
+    if (state.expanded.has(entry.issue_ref)) {
+      body.appendChild(detailRow(data, entry, driftByRef[entry.issue_ref] || []));
+    }
+  }
+  table.appendChild(body);
+  return el("div", {}, [
+    el("p", { cls: "row" }, [
+      el("span", { cls: "small secondary", text: shown.length + " / " + data.entries.length + " 件を表示" }),
+      hidden || state.showTerminal ? toggle : null,
+    ]),
+    shown.length ? table : el("p", { cls: "muted", text: "進行中の entry は無い (すべて終端 phase)" }),
+  ]);
+}
+
+function groupDrift(drift) {
+  const grouped = {};
+  for (const record of drift) {
+    (grouped[record.issue_ref] = grouped[record.issue_ref] || []).push(record);
+  }
+  return grouped;
+}
+
+function storeError(data, slot) {
+  const store = data.vocabulary.entry_stores[slot];
+  return (data.stores[store] || {}).error || data.unobservable_reason;
+}
+
+function cell(data, entry, slot, render) {
+  return entry.checked[slot] ? render() : unobserved(storeError(data, slot));
+}
+
+function entryRow(data, entry, drift) {
+  const ledger = entry.ledger || {};
+  const expandedNow = state.expanded.has(entry.issue_ref);
+  const row = el("tr", {
+    cls: "entry",
+    attrs: { tabindex: "0", role: "button", "aria-expanded": String(expandedNow) },
+  }, [
+    el("td", {}, [
+      el("div", { cls: "mono", text: entry.issue_ref || "(ref 無し)" }),
+      entry.unjoinable_reason ? badge("warning", "join 不可", entry.unjoinable_reason) : null,
+    ]),
+    el("td", {}, [phaseChip(entry.phase)]),
+    el("td", { cls: "nums", text: elapsed(entry.elapsed_sec) || "—", title: "updated_at: " + (ledger.updated_at || "—") }),
+    el("td", {}, [cell(data, entry, "worktree", () => worktreeCell(entry))]),
+    el("td", {}, [cell(data, entry, "prs", () => prCell(entry))]),
+    el("td", {}, [cell(data, entry, "pane", () => paneCell(entry))]),
+    el("td", {}, [noteCell(ledger)]),
+    el("td", {}, [driftCell(drift)]),
+  ]);
+  const toggle = () => {
+    if (state.expanded.has(entry.issue_ref)) state.expanded.delete(entry.issue_ref);
+    else state.expanded.add(entry.issue_ref);
+    render(data);
+  };
+  row.addEventListener("click", toggle);
+  row.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
+  });
+  return row;
+}
+
+function phaseChip(phase) {
+  const chip = el("span", { cls: "chip" });
+  chip.appendChild(el("span", { cls: "swatch", style: { background: "var(--phase-" + phase + ")" } }));
+  chip.appendChild(el("span", { text: phase }));
+  return chip;
+}
+
+function worktreeCell(entry) {
+  const worktree = entry.observed.worktree;
+  if (!worktree) return el("span", { cls: "muted", text: "無し" });
+  const stack = el("div", { cls: "stack" }, [el("span", { cls: "mono", text: worktree.path })]);
+  if (worktree.dirty === null || worktree.dirty === undefined) {
+    stack.appendChild(unobserved(worktree.dirty_error || "dirty を判定できなかった"));
+  } else if (worktree.dirty) {
+    stack.appendChild(badge("warning", "dirty"));
+  } else {
+    stack.appendChild(badge("good", "clean"));
+  }
+  return stack;
+}
+
+function prCell(entry) {
+  const observed = entry.observed.prs || {};
+  const prs = observed.prs || [];
+  const stack = el("div", { cls: "stack" }, [
+    el("span", { text: "status: " + (observed.status === null || observed.status === undefined ? "—" : observed.status) }),
+  ]);
+  for (const pr of prs) {
+    stack.appendChild(el("span", { cls: "mono xs", text: pr.ref + " " + pr.role + " " + pr.status + " @" + pr.repo }));
+  }
+  const threads = entry.derived ? entry.derived.unresolved_review_threads : null;
+  if (threads === null || threads === undefined) {
+    stack.appendChild(unobserved("未解決 review thread を判定できなかった"));
+  } else if (threads.length) {
+    stack.appendChild(badge("warning", "未解決 review thread " + threads.length + " 件"));
+  }
+  return stack;
+}
+
+function paneCell(entry) {
+  const pane = entry.observed.pane;
+  if (!pane) return el("span", { cls: "muted", text: "居ない" });
+  return el("div", { cls: "stack" }, [
+    el("span", { cls: "mono", text: pane.pane_id + " / " + (pane.label || "-") }),
+    el("span", { cls: "small", text: "agent_status: " + pane.agent_status + " (raw: " + pane.agent_status_raw + ")" }),
+  ]);
+}
+
+function noteCell(ledger) {
+  const stack = el("div", { cls: "stack" });
+  if (ledger.outcome) {
+    stack.appendChild(el("div", { cls: "note small" }, [
+      el("strong", { text: "outcome: " }),
+      el("span", { text: ledger.outcome.outcome || "" }),
+    ]));
+  }
+  stack.appendChild(el("div", { cls: "note secondary", text: ledger.note || "—" }));
+  return stack;
+}
+
+function driftCell(drift) {
+  if (!drift.length) return el("span", { cls: "muted", text: "—" });
+  return el("div", { cls: "stack" }, drift.map((record) =>
+    badge("warning", record.kind, record.expected + " → " + record.observed)));
+}
+
+/* --- entry ごとの詳細 (台帳 raw / 派生列 / 履歴 / pane 出力) ---------------------- */
+
+function detailRow(data, entry, drift) {
+  const panel = el("div", { cls: "stack" }, [
+    el("div", { cls: "row" }, [
+      el("strong", { text: "台帳 (raw)" }),
+      entry.phase_attributes
+        ? el("span", { cls: "small secondary", text: attributeSummary(entry.phase_attributes) })
+        : null,
+    ]),
+    el("pre", { text: JSON.stringify(entry.ledger, null, 2) }),
+    el("strong", { text: "派生列 (derived)" }),
+    entry.derived ? el("pre", { text: JSON.stringify(entry.derived, null, 2) }) : unobserved(data.unobservable_reason),
+    driftDetail(drift),
+    paneOutputBlock(data, entry),
+    eventsBlock(entry.issue_ref),
+  ]);
+  const cellNode = el("td", { attrs: { colspan: String(COLUMNS.length) } }, [panel]);
+  return el("tr", { cls: "detail" }, [cellNode]);
+}
+
+function attributeSummary(attributes) {
+  const on = Object.entries(attributes).filter(([, value]) => value).map(([name]) => name);
+  return "phase 属性: " + (on.join(" / ") || "なし");
+}
+
+function driftDetail(drift) {
+  if (!drift.length) return null;
+  return el("div", {}, [
+    el("strong", { text: "drift" }),
+    el("ul", { cls: "plain" }, drift.map((record) => el("li", { cls: "small" }, [
+      el("span", { cls: "mono", text: record.kind }),
+      el("span", { text: " 台帳: " + record.expected + " / 観測: " + record.observed }),
+      el("pre", { text: JSON.stringify(record.evidence, null, 2) }),
+    ]))),
+  ]);
+}
+
+function paneOutputBlock(data, entry) {
+  const pane = entry.observed.pane;
+  if (!pane || !pane.pane_id) return null;
+  const output = el("pre", { text: "(未取得)" });
+  const button = el("button", { text: "pane の直近出力を読む", attrs: { type: "button" } });
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    output.textContent = "読み込み中…";
+    try {
+      const payload = await api("/api/projects/" + encodeURIComponent(data.repo_key)
+        + "/pane-output?pane_id=" + encodeURIComponent(pane.pane_id));
+      output.textContent = payload.error ? payload.error : (payload.text || "(出力なし)");
+    } catch (error) {
+      output.textContent = String(error);
+    }
+  });
+  const block = el("div", { cls: "stack" }, [
+    el("div", { cls: "row" }, [el("strong", { text: "pane の直近出力" }), button]),
+    output,
+  ]);
+  block.addEventListener("click", (event) => event.stopPropagation());
+  return block;
+}
+
+function eventsBlock(issueRef) {
+  const list = el("div", { cls: "small muted", text: "読み込み中…" });
+  const block = el("div", { cls: "stack" }, [el("strong", { text: "この entry の履歴" }), list]);
+  block.addEventListener("click", (event) => event.stopPropagation());
+  loadEntryEvents(issueRef, list);
+  return block;
+}
+
+async function loadEntryEvents(issueRef, host) {
+  try {
+    const payload = await api("/api/projects/" + encodeURIComponent(state.projectKey) + "/events?limit=2000");
+    const mine = payload.events.filter((event) => event.issue === issueRef);
+    host.textContent = "";
+    host.className = "";
+    host.appendChild(mine.length ? eventList(mine) : el("p", { cls: "muted small", text: "履歴が無い" }));
+  } catch (error) {
+    host.textContent = String(error);
+  }
+}
+
+/* --- drift 一覧 -------------------------------------------------------------------- */
+
+function driftView(data) {
+  if (!data.drift.length) {
+    return el("p", { cls: "muted", text: "drift なし (観測できた側面に食い違いは無い)" });
+  }
+  return el("div", {}, [
+    el("p", { cls: "row" }, [badge("warning", data.drift_count + " 件の drift")]),
+    el("ul", { cls: "plain" }, data.drift.map((record) => el("li", { cls: "row" }, [
+      el("span", { cls: "mono", text: record.kind }),
+      el("span", { cls: "mono muted", text: record.issue_ref || "(台帳外)" }),
+      el("span", { cls: "small", text: "台帳: " + record.expected }),
+      el("span", { cls: "small", text: "観測: " + record.observed }),
+    ]))),
+  ]);
+}
+
+/* --- 候補プール -------------------------------------------------------------------- */
+
+function candidatesView(data) {
+  const pool = data.candidates || {};
+  if (!pool.observed) {
+    return el("div", { cls: "row" }, [unobserved(pool.error), el("span", { cls: "small secondary", text: pool.error || "" })]);
+  }
+  const header = el("p", { cls: "small secondary", text:
+    pool.label
+      ? "着手可 label " + pool.label + " で絞った未 claim の open issue " + pool.count + " 件"
+      : "未 claim の open issue " + pool.count + " 件 (着手可 label 未指定 — この project の宣言に ready_label が無い。--candidate-label でも絞れる)" });
+  const list = el("ul", { cls: "plain" }, pool.issues.map((issue) => el("li", { cls: "row" }, [
+    el("span", { cls: "mono", text: issue.ref }),
+    el("span", { text: issue.title }),
+    el("span", { cls: "xs muted", text: (issue.labels || []).join(", ") }),
+  ])));
+  const block = el("div", {}, [header, list]);
+  if (pool.truncated) {
+    block.insertBefore(badge("warning", "取得上限に張り付いた (件数を切っている可能性)"), list);
+  }
+  return block;
+}
+
+/* --- 全体タイムライン --------------------------------------------------------------- */
+
+function actorFilterView(payload) {
+  const buttons = [filterButton(null, "すべて", payload.total)];
+  for (const facet of payload.actors) {
+    buttons.push(filterButton(facet.raw, facetLabel(facet), facet.count, facet.off_contract ? facet.raw : null));
+  }
+  return el("div", { cls: "row" }, buttons);
+}
+
+function facetLabel(facet) {
+  if (facet.raw === null) return "(actor 無し)";
+  if (facet.name !== facet.raw) return facet.name + " ← " + facet.raw;
+  return facet.name;
+}
+
+function filterButton(actor, label, count, offContract) {
+  const button = el("button", {
+    text: label + " (" + count + ")",
+    attrs: { type: "button", "aria-pressed": String(state.actor === actor) },
+  });
+  if (offContract) {
+    button.title = "契約外の actor: " + offContract + " (server は actor 語彙を検証しない)";
+    button.appendChild(badge("warning", "契約外"));
+  }
+  button.addEventListener("click", () => { state.actor = actor; refreshEvents(); });
+  return button;
+}
+
+function eventList(events) {
+  return el("ul", { cls: "plain" }, events.map((event) => {
+    if (event._unparsed !== undefined) {
+      return el("li", { cls: "row" }, [
+        badge("critical", "読めない行", event._error),
+        el("span", { cls: "mono xs", text: event._unparsed }),
+      ]);
+    }
+    const actor = event.actor_display || {};
+    const line = el("li", { cls: "row" }, [
+      el("span", { cls: "mono xs nums", text: stamp(event.ts) }),
+      el("span", { cls: "mono", text: event.issue || "—" }),
+      el("strong", { text: event.event || "—" }),
+      el("span", { cls: "small", text: actor.name || "(actor 無し)" }),
+    ]);
+    if (actor.off_contract) {
+      line.appendChild(badge("warning", "契約外 actor", "生の actor: " + actor.raw + " / 契約: dispatcher / observer / pane"));
+    }
+    if (event.from || event.to) {
+      line.appendChild(el("span", { cls: "small secondary", text: (event.from || "—") + " → " + (event.to || "—") }));
+    }
+    if (event.note) line.appendChild(el("span", { cls: "note small secondary", text: event.note }));
+    return line;
+  }));
+}
+
+/* --- 描画 -------------------------------------------------------------------------- */
+
+function render(data) {
+  document.getElementById("ledger-dir").textContent = data.ledger_dir;
+  document.getElementById("freshness").textContent =
+    "観測 " + stamp(data.observed_at) + " — 台帳 " + Math.round(data.poll_interval_ms / 1000)
+    + " 秒 polling / tracker " + data.tracker_ttl_sec + " 秒 TTL"
+    + (data.tracker ? " / issue 置き場 " + data.tracker : "");
+
+  const badges = el("div", { cls: "row" }, [
+    data.observable ? badge("good", "外部 store 観測可") : badge("warning", "台帳のみ", data.unobservable_reason),
+    data.drift_count ? badge("warning", "drift " + data.drift_count + " 件") : badge("good", "drift なし"),
+  ]);
+  replace("header-badges", badges);
+  replace("observability", data.unobservable_reason
+    ? el("p", { cls: "small secondary", text: data.unobservable_reason })
+    : el("span", {}));
+  replace("totals", totalsView(data));
+  replace("stores", storesView(data));
+  replace("entries", entriesView(data));
+  replace("drift", driftView(data));
+  replace("candidates", candidatesView(data));
+}
+
+function renderError(message) {
+  replace("entries", el("p", { cls: "badge critical", text: message }));
+}
+
+async function refreshEntries() {
+  if (!state.projectKey) return null;
+  try {
+    const payload = await api("/api/projects/" + encodeURIComponent(state.projectKey) + "/entries");
+    render(payload);
+    return payload;
+  } catch (error) {
+    renderError(String(error));
+    return null;
+  }
+}
+
+async function refreshEvents() {
+  if (!state.projectKey) return;
+  const path = "/api/projects/" + encodeURIComponent(state.projectKey) + "/events"
+    + (state.actor === null ? "" : "?actor=" + encodeURIComponent(state.actor));
+  try {
+    const payload = await api(path);
+    replace("actor-filter", actorFilterView(payload));
+    replace("timeline", payload.events.length
+      ? eventList(payload.events)
+      : el("p", { cls: "muted", text: "この条件の履歴が無い" }));
+  } catch (error) {
+    replace("timeline", el("p", { cls: "badge critical", text: String(error) }));
+  }
+}
+
+async function boot() {
+  const payload = await api("/api/projects");
+  const select = document.getElementById("project");
+  select.textContent = "";
+  for (const project of payload.projects) {
+    select.appendChild(el("option", {
+      text: project.repo_key + " (" + project.total + " 件"
+        + (project.observable ? "" : " / 台帳のみ") + ")",
+      attrs: { value: project.repo_key },
+    }));
+  }
+  state.projectKey = payload.default || (payload.projects[0] || {}).repo_key || null;
+  if (state.projectKey) select.value = state.projectKey;
+  select.addEventListener("change", () => {
+    state.projectKey = select.value;
+    state.expanded.clear();
+    state.actor = null;
+    refreshEntries();
+    refreshEvents();
+  });
+  const first = await refreshEntries();
+  await refreshEvents();
+  // polling 周期は server が配る値を使う (画面側に別の数字を持たせない)
+  const interval = (first && first.poll_interval_ms) || 5000;
+  state.timer = setInterval(() => { refreshEntries(); refreshEvents(); }, interval);
+}
+
+boot().catch((error) => renderError(String(error)));
+</script>
+</body>
+</html>

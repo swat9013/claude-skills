@@ -42,6 +42,18 @@ import sys
 DENY_REASON_LABEL = "chmod-x-auto-trigger-path"
 
 
+class _Finished(Exception):
+    """判定が確定したことを main() へ運ぶ。stdout へ書く本文を持つ。
+
+    判定関数が直接 stdout / exit を触らないのは、テストが hook を import して in-process で
+    呼べるようにするため (subprocess 起動を省く)。process 境界に触るのは末尾の wrapper だけ。
+    """
+
+    def __init__(self, stdout_text: str) -> None:
+        super().__init__(stdout_text)
+        self.stdout_text = stdout_text
+
+
 def passthrough() -> None:
     """判断を出さずに終了する (既存 ask フローに委ねる)。
 
@@ -51,10 +63,9 @@ def passthrough() -> None:
     委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard
     の一致を見る)。
     """
-    sys.stdout.write(
+    raise _Finished(
         '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
     )
-    sys.exit(0)
 
 
 def deny_unreadable(failure: str) -> None:
@@ -66,7 +77,7 @@ def deny_unreadable(failure: str) -> None:
     末尾の改行は他の fail-closed 出口 (`_prelude._emit` / sh guard 群の `deny_unreadable`) に
     揃える。本関数は payload が壊れている経路でしか出ないので、行として完結させておく。
     """
-    json.dump(
+    raise _Finished(json.dumps(
         {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
@@ -75,33 +86,29 @@ def deny_unreadable(failure: str) -> None:
                 f"[guard-chmod-x.py]"
             ),
         }},
-        sys.stdout, ensure_ascii=False,
-    )
-    sys.stdout.write("\n")
-    sys.exit(0)
+        ensure_ascii=False,
+    ) + "\n")
 
 
 def emit_deny(reason: str) -> None:
-    json.dump(
+    raise _Finished(json.dumps(
         {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": f"guard: {DENY_REASON_LABEL}: {reason}",
         }},
-        sys.stdout, ensure_ascii=False,
-    )
-    sys.exit(0)
+        ensure_ascii=False,
+    ))
 
 
 def emit_allow() -> None:
-    json.dump(
+    raise _Finished(json.dumps(
         {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
         }},
-        sys.stdout, ensure_ascii=False,
-    )
-    sys.exit(0)
+        ensure_ascii=False,
+    ))
 
 
 # --- chmod command parse ----------------------------------------------------
@@ -258,8 +265,9 @@ def classify(path: str, repo_root: str | None, home: str, plugin: str) -> str:
 # --- main -------------------------------------------------------------------
 
 
-def main() -> None:
-    raw = sys.stdin.read()
+def judge(stdin_text: str) -> None:
+    """payload を判定し、確定したら _Finished を送出する (必ず送出して終わる)。"""
+    raw = stdin_text
     if not raw.strip():
         deny_unreadable("stdin が空")
     try:
@@ -325,5 +333,16 @@ def main() -> None:
     passthrough()
 
 
+def main(stdin_text: str) -> tuple[int, str]:
+    """hook の純粋な入口。(exit code, stdout 本文) を返す。"""
+    try:
+        judge(stdin_text)
+    except _Finished as finished:
+        return 0, finished.stdout_text
+    raise AssertionError("judge() は必ず _Finished で終わる")
+
+
 if __name__ == "__main__":
-    main()
+    exit_code, stdout_text = main(sys.stdin.read())
+    sys.stdout.write(stdout_text)
+    sys.exit(exit_code)

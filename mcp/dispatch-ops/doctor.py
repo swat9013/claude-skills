@@ -29,8 +29,9 @@ entry の照合は完全一致だけで green にする — 広い entry が覆�
 として載せるが、根拠にはしない (subsumption の規則は本 repo でも未検証:
 `docs/research/2026-08-01-permission-rule-wildcard-matching.md`)。
 
-`visibility` は**不成立時の見え方** (README の同名の列)。`silent` の項目 (宣言 config /
-plugin 名) が、この機構で最も高くつく前提 — 誤った置き場を黙って観測し続ける。
+`visibility` は**不成立時の見え方** (README の同名の列)。`silent` の項目 (置き場の宣言 /
+plugin 名) が、この機構で最も高くつく前提 — 誤った置き場を黙って観測し続ける。同じ宣言 config
+でも `ready_label` の不在は `loud` — dispatch が 1 件も起動しないので気づける。
 """
 
 import json
@@ -377,16 +378,58 @@ def check_settings(cwd, root, template_path=None):
 # --- 宣言 config / plugin 名 (README §6 #10-#12) --------------------------------------
 
 
-def check_project_config(root):
-    """宣言 config が在り、置き場の repo 識別子まで宣言しているか (README §6 #10)。
+def _missing_issue_declarations(path, issue):
+    """`[issue]` の欠けた宣言を**全部**集める (不足ごとの `visibility` も持つ)。
 
-    `Ports.get_declaration` の cache を経由せず config を直読みする — `project_setup` で
+    欄は `_check` と同じ語彙 (`loud` / `silent`) — 集約が二値の max なので、真偽値へ符号化して
+    呼び出し側で戻すと同じ概念に 2 つの表現が並ぶ。`ready_label` の不在が `loud` なのは候補を
+    観測する 3 者を止めて dispatch が 1 件も起動しないから、`repo` の不在が `silent` なのは
+    別の置き場を黙って観測し続けるから (どちらが欠けたかで人が次に見る場所が変わる)。
+    """
+    missing = []
+    if not issue.get("repo"):
+        missing.append(
+            {
+                "key": "repo",
+                "visibility": "silent",
+                "detail": f"{path} の [issue] に repo が無い (tracker 種別だけの宣言)",
+                "remedy": "[issue] へ repo 識別子を足す (`project_setup` の overwrite でも"
+                "置き直せる)",
+            }
+        )
+    # jira 置き場は AFK-ready を status で表すので、この宣言を要求しない。置き場の宣言だけを
+    # 持つ既存 config はここへ落ちる (#802 以前に置いた config の移行点)
+    if project_mod.declares_ready_label(issue.get("tracker")) and not issue.get("ready_label"):
+        missing.append(
+            {
+                "key": "ready_label",
+                "visibility": "loud",
+                "detail": f"{path} の [issue] に ready_label が無い "
+                "(候補プールを表す triage label の綴り)",
+                "remedy": "[issue] へ AFK-ready の triage label の綴りを足す "
+                "(`project_setup` の overwrite で置き直すなら `issue_ready_label` を渡す — "
+                "置き直しでは既定を補完しない。綴りは環境の triage 語彙なので "
+                "server は既定を配らない — 無いままだと orchestrator の候補選定と observer の "
+                "候補プール観測が止まり、dashboard の候補列は絞られない)",
+            }
+        )
+    return missing
+
+
+def check_project_config(root):
+    """宣言 config が在り、置き場の repo 識別子と AFK-ready label まで宣言しているか (§6 #10)。
+
+    候補プールの綴り (`ready_label`) をここに含めるのは、**未宣言だと dispatch が 1 件も
+    起動しない**から — orchestrator も observer も綴りを憶測で埋めない規約なので、検査が
+    無いと「候補を全部見送った」に見える形で止まる (原因は pane を見るまで分からない)。
+
+    `Scope.declaration` の cache を経由せず config を直読みする — `project_setup` で
     置いた直後に doctor を走らせるのが自然な流れで、cache 越しでは「まだ無い」と誤報する。
     """
     path = project_mod.config_path(root)
     if path is None:
         return _check(
-            "project_config", "宣言 config (置き場)", "unknown", "silent",
+            "project_config", "宣言 config", "unknown", "silent",
             f"台帳ディレクトリを解決できない ({root} が git repo でない)",
             remedy="git repo の中から実行する",
         )
@@ -394,13 +437,13 @@ def check_project_config(root):
         config = project_mod.load_config(path)
     except project_mod.ProjectError as exc:
         return _check(
-            "project_config", "宣言 config (置き場)", "missing", "loud", str(exc),
-            remedy="config の書式を直す (書ける table は [issue] / [pr]、key は tracker / repo)",
+            "project_config", "宣言 config", "missing", "loud", str(exc),
+            remedy=f"config の書式を直す ({project_mod.config_format_summary()})",
             items=[str(path)],
         )
     if config is None:
         return _check(
-            "project_config", "宣言 config (置き場)", "missing", "silent",
+            "project_config", "宣言 config", "missing", "silent",
             f"{path} が無い。tracker 種別は git remote の host からの**推測**で決まり "
             "(gh / glab のみ)、repo 識別子は CLI の cwd 推論へ倒れる",
             remedy="`project_setup` で置く (置き場がメイン repo 自身なら結果は同じだが、"
@@ -408,18 +451,36 @@ def check_project_config(root):
             "Jira 置き場は config でしか宣言できないので、無いと別 tracker と誤判定する)",
             items=[str(path)],
         )
-    if not config["issue"].get("repo"):
+    missing = _missing_issue_declarations(path, config["issue"])
+    if missing:
+        # 欠けた key を**集めてから** 1 度で返す — 先に見つけたほうで return すると、残りの
+        # 不足が次の doctor まで見えない (この check の成果物は「最初の不足」ではなく一覧)
         return _check(
-            "project_config", "宣言 config (置き場)", "missing", "silent",
-            f"{path} の [issue] に repo が無い (tracker 種別だけの宣言)",
-            remedy="[issue] へ repo 識別子を足す (`project_setup` の overwrite でも置き直せる)",
-            items=[f"{path}: [issue] repo"],
+            "project_config", "宣言 config", "missing",
+            # 1 つでも loud な不足があれば loud に倒す — 見え方の軽いほうへ寄せると、
+            # 「気づけないほうの前提」として報告が読まれてしまう。**軽いほうの不足も
+            # `detail` / `items` / `remedy` には先頭から残る** (落とすのは行のラベルだけ)
+            "loud" if any(entry["visibility"] == "loud" for entry in missing) else "silent",
+            " / ".join(entry["detail"] for entry in missing),
+            remedy=" / ".join(entry["remedy"] for entry in missing),
+            items=[f"{path}: [issue] {entry['key']}" for entry in missing],
         )
     detail = f"{path}: issue = {config['issue']['tracker']} {config['issue']['repo']}"
     if "pr" in config:
         detail += f" / pr = {config['pr']['tracker'] or '(issue を継ぐ)'} {config['pr']['repo']}"
+    # 読めた値をそのまま出す (判定しない) — 閉じるかどうかは orchestrator の判断で、doctor は
+    # 「宣言がこうなっている」までを報告する
+    detail += f" / close_on_merge = {str(config['issue']['close_on_merge']).lower()}"
+    if config["issue"]["done_status"]:
+        detail += f" done_status = {config['issue']['done_status']}"
+    detail += f" / claim_label = {config['issue']['claim_label']}"
+    # jira 置き場では未宣言 (status 側で表す) なのでそのまま `None` と出る — 読み手が
+    # 「宣言されていない」と読めるほうが、行ごと省いて存在しないように見せるより正確
+    detail += f" / ready_label = {config['issue']['ready_label']}"
+    standing = config.get("worker", {}).get("standing") or []
+    detail += f" / worker.standing = {len(standing)} 行"
     return _check(
-        "project_config", "宣言 config (置き場)", "ok", "silent", detail,
+        "project_config", "宣言 config", "ok", "silent", detail,
         remedy="綴りが正しい置き場を指しているかは server では検出できない — "
         "`observe_issues` の `issues[].url` を目視で 1 度確かめる",
     )

@@ -101,4 +101,4 @@ if [ -n "$TRANSCRIPT" ] && [ -r "$TRANSCRIPT" ]; then
   fi
 fi
 
-deny "ドメイン $HOST は WebFetch allowlist に未登録 (ユーザーが指示で渡した URL でもない)。web-research subagent 経由で取得するか、ユーザーがチャットに URL を貼って指示してください。恒久許可は guard-webfetch.sh の allowlist に追加"
+deny "ドメイン $HOST は WebFetch allowlist に未登録 (ユーザーが指示で渡した URL でもない)。subagent 経由でも同じ hook で拒否される。ユーザーがチャットに URL を貼って指示するか、恒久許可なら guard-webfetch.sh の allowlist に追加"

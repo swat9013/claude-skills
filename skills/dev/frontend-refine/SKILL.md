@@ -2,32 +2,14 @@
 name: frontend-refine
 user-invocable: true
 argument-hint: "[stack] [target-path]"
-description: HTML/フロントエンドを作成・改善するとき、デザインシステムの規範 (トークン 3 層 / Refactoring UI tactics / WCAG AA / Rams・Nielsen heuristics) に照らして、Prep (骨格トークン生成) → Build (tactics 参照) → Review (51 項目 self-review + 静的検査) の 3 フェーズで洗練を担保する。Use when「LP を作って」「この画面を洗練させて」「HTML デザインをレビューして」「デザイントークンを引き当てて」「Refactoring UI 準拠で見直して」「デザインシステム的にレビューして」。
+description: HTML/フロントエンドの成果物 1 つを作成・改善するとき、デザインシステムの規範 (トークン 3 層 / Refactoring UI tactics / WCAG AA / Rams・Nielsen heuristics) に照らして Prep (骨格トークン生成) → Build (tactics 参照) → Review (51 項目 self-review + 静的検査) の 3 フェーズで洗練させる。Use when「LP を作って」「この画面を洗練させて」「HTML デザインをレビューして」「デザイントークンを引き当てて」。HTML/CSS の syntax verify や browser 表示検証は対象外 (single-file-html の verify を使う)。
 ---
 
 # frontend-refine
 
-## Overview
+出力先の `${PWD}/.ai/design/` は gitignore 済みである前提で書き出す。
 
-HTML/フロントエンドを作成・改善するとき、デザインシステムの規範を借りて洗練させる skill。
-
-- **Prep** — 骨格の確定 (stack / palette / type scale / spacing / font / icon / semantic tokens)。成果物: `.ai/design/design-tokens.css` + `.ai/design/design-decisions.md`
-- **Build** — 実装は user or 他 skill が担当。frontend-refine は `references/tactics.md` を提供して tactics 適用と Component state 網羅を規範化
-- **Review** — 完成物に 14 rule static check + 37 項目主観 checklist を適用、`.ai/design/design-review.md` 出力 + stdout に Red Flag サマリ
-
-すべての成果物は `${PWD}/.ai/design/` に出力 (gitignore 済み前提)。
-
-## When to use
-
-- User が「LP を作って」「この画面を洗練させて」「HTML デザインをレビューして」等 HTML/フロントエンド作成・改善を依頼
-- User が「デザイントークンを引き当てて」「Refactoring UI 準拠で見直して」「デザインシステム的にレビューして」等 skill 名を直接 or 目的を明示
-- 他 skill (`knowledge/single-file-html` 等) が実装前に Prep tokens 生成 / 実装後に Review 実行のため参照
-
-## When NOT to use
-
-- 組織横断のデザインシステムをゼロから構築するプロセス — 別スコープ (本 skill は「既存の規範を借りて 1 つの成果物を洗練させる」までを扱う)
-- 高レベル architecture 設計
-- HTML/CSS の syntax verify や browser 表示検証 — `knowledge/single-file-html` の verify (Tier 1/2) を使う
+他 skill の SKILL.md が特定 phase (Prep のトークン確定 / Review の検査) を名指しで呼んでいるときは、その phase だけを呼び出し元の workflow に組み込む。
 
 ## Phase 1: Prep
 
@@ -87,9 +69,7 @@ User override があれば該当項目のみ差し替えて再度提示。
 
 ## Phase 2: Build
 
-frontend-refine は **実装を担当しない**。Build は user or 他 skill が担当。frontend-refine は「参照される規範」の立場。
-
-### Build 時の Claude の行動 4 項目
+Build の実装は user or 他 skill が担当し、**本 skill は Build に規範だけを提供する**。実装役が従うのは次の 4 項目:
 
 1. 先に `${PWD}/.ai/design/design-tokens.css` を実装ファイルに import / paste する
 2. 実装中は `references/tactics.md` の [S] tactic のみ能動 self-check (36 tactics 中 25 個)
@@ -134,19 +114,3 @@ Green Light: <M>/51 (<pct>%)
 洗練度判定: <verdict>
 詳細: .ai/design/design-review.md
 ```
-
-## 呼び出し規約
-
-### パターン 1: 明示 flow (user 依頼)
-
-user 依頼 → frontend-refine が Model-invoke → Prep 実行 → 提示 → Claude が実装 (or 他 skill 呼ぶ) → Review 実行
-
-### パターン 2: 他 skill から参照
-
-他 skill (single-file-html 等) の SKILL.md 内で「デザイントークンは frontend-refine の Prep phase を先に走らせて確定」の指示がある場合、他 skill の workflow に frontend-refine の Prep phase を組み込む。
-
-## 参考文書
-
-- references/: `presets.md`, `tactics.md`, `checklist.md`, `scale-templates/`
-
-規範の出典 (Refactoring UI tactics / WCAG AA / Rams・Nielsen heuristics) は `references/tactics.md` と `references/checklist.md` の各項目に併記してある。

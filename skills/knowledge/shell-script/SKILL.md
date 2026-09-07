@@ -22,6 +22,7 @@ description: |-
 | 浮動小数演算・正確な日付計算 | bash の bc / date は罠が多い |
 | 100 行を超える見込み | shell の possibility space が指数的に拡大 |
 | bash 4+ の associative array や mapfile が要る | macOS デフォルト bash 3.2 で動かない |
+| 中間 tempfile での状態管理・複雑な trap が要る | shell は状態を持つと一気に読めなくなる |
 
 ## 構造テンプレート
 
@@ -56,15 +57,6 @@ grep -E '<pattern>' "$INPUT" \
 | `shellcheck <script>.sh` | static lint。`brew install shellcheck` |
 
 bats / shunit2 など test framework を入れたくなったら [python-single-file-script](../python-single-file-script/SKILL.md) へ escalate (本 skill の対象外)。
-
-## Gotchas
-
-| 問題 | 原因 | 対処 |
-|---|---|---|
-| `set -e` が pipe 内で効かない | `set -e` は最後のコマンドの exit のみ判定 | `set -o pipefail` 併用 (テンプレ既に含む) |
-| `$1` 未定義で空文字扱い | `set -u` で error 化 | `"${1:?usage: ...}"` で usage 付き必須化 |
-| macOS bash が 3.2 で古い | Apple が GPLv3 を避けて更新停止 | bash 4+ 機能を使うなら python へ escalate |
-| 中間 tempfile での状態管理 / 複雑な trap を書きたくなる | shell は状態を持つと一気に読めなくなる | 状態管理が要るなら python へ escalate |
 
 ## 関連
 

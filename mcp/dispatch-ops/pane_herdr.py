@@ -11,7 +11,7 @@ CLI に委譲し、本 module は「呼び出しと応答の写像」だけを�
 
 herdr CLI の失敗 (非 0 exit / 非 JSON 応答) は `PaneError` として即座に表面化させる。
 「CLI の実行失敗」を「pane 無し」「agent 終了」と誤読させると、全 pane を誤って回収し
-assignee まで外すことになる。
+claim label まで外すことになる。
 
 server プロセスは harness が起動するので、herdr の環境変数 (`HERDR_ENV` /
 `HERDR_WORKSPACE_ID` / `HERDR_PANE_ID`) は起動元セッションの pane から継承される

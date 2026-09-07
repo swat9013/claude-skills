@@ -2,13 +2,8 @@
 name: worktree-setup
 disable-model-invocation: true
 description: >-
-  対象リポジトリに Claude Code の worktree 並列セッション環境をセットアップする。
-  settings の worktree.sparsePaths / worktree.symlinkDirectories、.worktreeinclude
-  (gitignored ファイルのコピー)、worktree 内で 1 回だけ走る初期化 hook を
-  repo に合わせて選定・整備する。
-  Use when「worktree セットアップ」「worktree 環境構築」「.worktreeinclude」
-  「sparsePaths」「symlinkDirectories」「worktree に .env がコピーされない」
-  「worktree ごとに node_modules を作りたくない」.
+  対象リポジトリに Claude Code の worktree 並列セッション環境
+  (settings の worktree キー / .worktreeinclude / 初期化 hook) をセットアップする。
 ---
 
 # worktree 環境セットアップ
@@ -131,7 +126,7 @@ cp "${CLAUDE_SKILL_DIR}/scripts/worktree-post-setup.template.sh" .claude/scripts
 chmod +x .claude/scripts/worktree-setup.sh
 ```
 
-`:  # SETUP_COMMANDS` 行を手順 1 で決めたコマンドに Edit で置換する。template が実行ブロックごと stderr に閉じ込めるので、個々のコマンドに `>&2` を付ける必要はない。
+`:  # SETUP_COMMANDS` 行を手順 1 で決めたコマンドに Edit で置換する。template が実行ブロックごと stderr に閉じ込めるので、個々のコマンドに `>&2` を付ける必要はない。冪等ガードの marker は template が `.git` 側に置いており、そのまま使う (worktree の working tree に marker を置くと untracked が増え、自動 cleanup / sweep 判定を狂わせる)。
 
 置き場所を `.claude/scripts/` にするのは `sparsePaths` 併用時に script ごと checkout 対象から外れないため (`.claude` は sparse リストに入れる前提)。`sparsePaths` を使わない repo なら `scripts/` でもよいが、揃えておくと後から sparse を入れても壊れない。
 
@@ -191,6 +186,8 @@ ls "$(git -C "$WT" rev-parse --path-format=absolute --git-dir)/worktree-setup-do
 
 確認後は `git worktree remove --force "$WT"` (`-p` 実行の worktree は lock が残ることがある。その場合は `git worktree unlock` を先に実行) で片付ける。
 
+本手順の確認をすべて通すことが完了条件。通してから手順 7 へ進み、完了を報告する。
+
 ### 7. commit
 
 該当する成果物をまとめて commit する。チーム共有資産である旨と、追加型 / 置き換え型のどちらを選んだかを commit message に書く。
@@ -204,23 +201,3 @@ ls "$(git -C "$WT" rev-parse --path-format=absolute --git-dir)/worktree-setup-do
 - `.worktreeinclude` のコピーは template が実装済み (repo root の `.worktreeinclude` をそのまま読む)
 
 登録は `hooks.WorktreeCreate` に 1 本だけ。template は stdin JSON の解析に python3 を使うため、hook が走るホストに python3 が必要。作成される worktree は origin のデフォルトブランチ基点になる (remote 未設定時は HEAD 基点)。
-
-## Common Mistakes
-
-| 間違い | 現実 |
-|---|---|
-| 構文・挙動を記憶からの推定で書く | 根拠は上記の検証済み仕様。それ以外は裏取りしてから書く |
-| 初期化のために既定で `WorktreeCreate` を選ぶ | 置き換え型は native 3 機構を巻き添えで無効化する。既定は worktree 内で走る追加型 |
-| 初期化 script に冪等ガードを入れない | `SessionStart` は resume / clear / compact でも発火する。marker で 1 回に抑える |
-| marker を worktree の working tree に置く | untracked が増え、自動 cleanup / sweep 判定を狂わせる。marker は `.git` 側に置く |
-| hook script を `sparsePaths` 外に置く | `SessionStart` 経路の `$CLAUDE_PROJECT_DIR` は worktree を指すため、worktree 内に無いと `/bin/sh: No such file` で失敗する (`EnterWorktree` 経路だけ成功して見えるのが厄介)。`.claude/scripts/` に置く |
-| `SubagentStart` を既定で登録する | subagent の worktree は毎回新規で marker が効かない。fan-out ごとに初期化が丸ごと走る。まず `symlinkDirectories` で不要にできないか見る |
-| `sparsePaths` に `.claude` を入れ忘れる | root 直下ディレクトリは列挙必須。worktree 内で repo root の settings / rules / skills / hook script が消える |
-| `sparsePaths` に個別ファイルを列挙する | cone モードはディレクトリ単位。root 直下のファイルは列挙不要で常に入る |
-| `symlinkDirectories` の対象を `node_modules/` (末尾 /) で ignore する | symlink にマッチせず untracked 化。remove に `--force` が要り、自動 sweep も止まる |
-| branch ごとに lockfile が変わる依存を symlink する | 実体は 1 つ。別 worktree の install が現 worktree を壊す。コピーか再 install を選ぶ |
-| `.worktreeinclude` が既存 worktree に効くと期待する | 作成時のみ有効。既存分は手動対応 |
-| git 追跡ファイルを `.worktreeinclude` に列挙する | 追跡ファイルは元々 worktree にある。列挙はノイズ |
-| hook の `timeout` を既定のままにする | 既定 60 秒。`npm ci` 等は超えて初期化が途中で切られる |
-| 既存 `.claude/settings.json` を上書きする | 必ず Read してマージ。不正 JSON は中断して報告 |
-| 検証せずに完了報告する | 手順 6 を実施してから報告する |

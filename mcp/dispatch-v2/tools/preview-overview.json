@@ -1,0 +1,70 @@
+{
+  "as_of": "2026-09-07T05:50:00Z",
+  "reason": null,
+  "failed_projects": [
+    {"project_key": "github.com__o__broken", "reason": "投影に失敗: OSError: 台帳を開けない", "failed_at": "2026-09-07T05:44:00Z"}
+  ],
+  "projects": [
+    {
+      "project_key": "github.com__swat9013__swat-skills",
+      "projected_at": "2026-09-07T05:49:58Z",
+      "clone_path": "/example/clone/swat-skills",
+      "anomaly_count": 1,
+      "observations": {
+        "candidates": {"observed": true, "observed_at": "2026-09-07T05:49:40Z", "reason": null},
+        "issues": {"observed": true, "observed_at": "2026-09-07T05:49:41Z", "reason": null},
+        "cls": {"observed": true, "observed_at": "2026-09-07T05:49:42Z", "reason": null}
+      },
+      "candidates": [{"issue_ref": "gh#944"}, {"issue_ref": "gh#945"}],
+      "escalations": [
+        {"escalation_id": "01O", "rule_id": "deploy_degraded", "attempts": 1, "permanent": 1, "delivery_cut_off": true, "raised_at": "2026-09-07T04:00:00Z"}
+      ],
+      "work_orders": [
+        {
+          "wo_id": "01A", "issue_ref": "gh#940", "phase": "assigned",
+          "note": "domain.puml の画像を README へ埋める。PlantUML は syntax error でも exit 0 を返すので、生成物の中身で検証する必要がある — その判定を実装に落とすところまでが範囲。",
+          "worktree_path": "/example/clone/swat-skills/.claude/worktrees/i940",
+          "updated_at": "2026-09-07T05:20:00Z",
+          "session": {"session_id": "01S1", "lifecycle": "alive", "ended_reason": null, "activity": "running", "activity_raw": "compacting", "handle": "w16:pH"},
+          "escalations": [
+            {"escalation_id": "01E0", "rule_id": "park_point", "attempts": 2, "permanent": 0, "delivery_cut_off": false, "raised_at": "2026-09-07T05:15:00Z"}
+          ],
+          "issue": {"issue_ref": "gh#940", "state": "open"}, "issue_reason": null,
+          "cls": [{"cl_ref": "gh!946", "repo": "o/r", "role": "closes", "observed_at": "2026-09-07T05:49:42Z", "status": "open", "mergeable": "MERGEABLE", "unresolved_threads": 0, "head_sha": "abc1234"}],
+          "cls_reason": null
+        },
+        {
+          "wo_id": "01B", "issue_ref": "gh#941", "phase": "assigned",
+          "note": "dashboard のブラウザ自動起動。",
+          "worktree_path": null,
+          "updated_at": "2026-09-07T05:30:00Z",
+          "session": {"session_id": "01S2", "lifecycle": "alive", "ended_reason": null, "activity": null, "activity_raw": null, "handle": "w16:pJ"},
+          "escalations": [
+            {"escalation_id": "01E1", "rule_id": "session_died", "attempts": 3, "permanent": 0, "delivery_cut_off": true, "raised_at": "2026-09-07T05:10:00Z"}
+          ],
+          "issue": {"issue_ref": "gh#941", "state": "open"}, "issue_reason": null,
+          "cls": [{"cl_ref": "gh!939", "repo": "o/r", "role": "closes", "observed_at": "2026-09-07T05:49:42Z", "status": "conflict", "mergeable": "CONFLICTING", "unresolved_threads": 3, "head_sha": "def5678"}],
+          "cls_reason": null
+        },
+        {
+          "wo_id": "01C", "issue_ref": "gh#923", "phase": "parked",
+          "note": "", "worktree_path": null,
+          "updated_at": "2026-09-06T22:00:00Z",
+          "session": {"session_id": "01S3", "lifecycle": "ended", "ended_reason": "exited", "activity": null, "activity_raw": null, "handle": "w15:pB"},
+          "escalations": [],
+          "issue": {"issue_ref": "gh#923", "state": "closed"}, "issue_reason": null,
+          "cls": [{"cl_ref": "gh!938", "repo": "o/r", "role": "closes", "observed_at": "2026-09-07T05:49:42Z", "status": null, "mergeable": null, "unresolved_threads": null, "head_sha": null}],
+          "cls_reason": null
+        },
+        {
+          "wo_id": "01D", "issue_ref": "gh#899", "phase": "assigned",
+          "note": "CL 置き場の宣言が無い project", "worktree_path": null,
+          "updated_at": "2026-09-05T10:00:00Z",
+          "session": null, "escalations": [],
+          "issue": null, "issue_reason": "この WorkOrder はまだ巡回で観測されていない (待てば埋まる)",
+          "cls": null, "cls_reason": "dispatch-project.toml に CL 置き場の宣言が無い"
+        }
+      ]
+    }
+  ]
+}

@@ -52,6 +52,7 @@ import argparse
 import datetime as dt
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -103,7 +104,7 @@ def classify_link_target(target: str) -> str:
     - anchor: 単なる # 以降のアンカー
     - absolute: /path 始まり
     - dynamic: env 展開や template 変数を含むもの (fail-safe で存在検査しない)
-    - relative-path: それ以外 (repo-root から解決)
+    - relative-path: それ以外 (link を書いた file のディレクトリから解決)
     """
     if not target:
         return "empty"
@@ -226,8 +227,8 @@ def extract_link_targets(
 ) -> list[dict[str, Any]]:
     """markdown link `[label](target)` を抜き出し、path 種別を分類する。
 
-    存在検査は呼び出し側 (repo_root 依存)。ここでは source location と
-    check_mode まで確定する。
+    存在検査は呼び出し側 (link を書いた file のディレクトリ依存)。ここでは
+    source location と check_mode まで確定する。
     """
     out: list[dict[str, Any]] = []
     in_code_block = False
@@ -274,11 +275,14 @@ def extract_imports(
 
 
 def check_target_existence(
-    entries: list[dict[str, Any]], repo_root: Path
+    entries: list[dict[str, Any]], repo_root: Path, base_dir: Path
 ) -> list[dict[str, Any]]:
     """link_targets / imports の存在検査を追加する (fail-safe)。
 
-    - relative-path: repo_root からの相対で resolve、anchor 除去後の path を検査
+    - relative-path: `base_dir` (link を書いた file のディレクトリ) からの相対で
+      resolve、anchor 除去後の path を検査。markdown の相対 link は書いた file から
+      の相対で読まれるので、repo root を基準にすると repo 直下以外の file
+      (`.claude/rules/*.md` 等) の `../../` が必ず外れる
     - absolute: そのまま存在検査 (repo 外可)
     - url / anchor / dynamic / empty: 検査しない (exists=None)
     """
@@ -288,9 +292,8 @@ def check_target_existence(
         mode = entry.get("check_mode")
         target = entry.get("target", "")
         if mode == "relative-path":
-            resolved = repo_root / strip_anchor(target)
-            entry["resolved_path"] = str(resolved.relative_to(repo_root)) \
-                if _is_within(resolved, repo_root) else str(resolved)
+            resolved = base_dir / strip_anchor(target)
+            entry["resolved_path"] = _repo_relative(resolved, repo_root)
             entry["exists"] = resolved.exists()
         elif mode == "absolute":
             resolved = Path(strip_anchor(target))
@@ -313,11 +316,24 @@ def check_import_existence(
         entry = dict(e)
         target = entry.get("target", "")
         resolved = repo_root / target
-        entry["resolved_path"] = str(resolved.relative_to(repo_root)) \
-            if _is_within(resolved, repo_root) else str(resolved)
+        entry["resolved_path"] = _repo_relative(resolved, repo_root)
         entry["exists"] = resolved.exists()
         out.append(entry)
     return out
+
+
+def _repo_relative(path: Path, repo_root: Path) -> str:
+    """レポート表示用の path 表記 — repo 内なら repo 相対、外なら絶対。
+
+    `..` を含む path をそのまま出すと解決基準が読み取れないので、表示だけ
+    normpath で畳む (存在検査は畳む前の path で行う — normpath は字面操作なので
+    symlink を挟んだ `..` を実際の解決先とは違う場所に畳んでしまう)。
+    """
+    normalized = Path(os.path.normpath(path))
+    try:
+        return str(normalized.relative_to(repo_root))
+    except ValueError:
+        return str(normalized)
 
 
 def _is_within(target: Path, base: Path) -> bool:
@@ -363,7 +379,7 @@ def observe_markdown_file(
     sections = sections_from_headings(headings, len(lines))
     link_source = str(path.relative_to(repo_root)) if _is_within(path, repo_root) else str(path)
     link_targets = check_target_existence(
-        extract_link_targets(link_source, lines), repo_root
+        extract_link_targets(link_source, lines), repo_root, path.parent
     )
     imports = check_import_existence(
         extract_imports(link_source, lines), repo_root

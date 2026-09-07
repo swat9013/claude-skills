@@ -56,13 +56,24 @@ STATE_DIR_ENV = "WORKTREE_GUARD_STATE_DIR"
 STATE_TTL_SECONDS = 7 * 24 * 3600
 GUARDED_WRITE_TOOLS = ("Edit", "Write")
 
-# 発火した event 名。payload を読めた時点で main() が設定し、passthrough() が観測痕跡を
-# 出すかどうかの判定に使う (本 hook は SessionStart と PreToolUse の両方に登録されている)。
-HOOK_EVENT = ""
+
+class _Finished(Exception):
+    """判定が確定したことを main() へ運ぶ。stdout へ書く本文を持つ。
+
+    判定関数が直接 stdout / exit を触らないのは、テストが hook を import して in-process で
+    呼べるようにするため (subprocess 起動を省く)。process 境界に触るのは末尾の wrapper だけ。
+    """
+
+    def __init__(self, stdout_text: str) -> None:
+        super().__init__(stdout_text)
+        self.stdout_text = stdout_text
 
 
-def passthrough() -> None:
+def passthrough(hook_event: str) -> None:
     """判定しない (通常の permission フローに委ねる)。
+
+    `hook_event` は発火した event 名 (payload を読めるまでは空文字)。本 hook は SessionStart
+    と PreToolUse の両方に登録されており、観測痕跡を出すかどうかをこれで決める。
 
     PreToolUse で発火したときだけ pass の観測痕跡を 1 行出す (#587 / ADR 0043)。無出力の
     exit は transcript に attachment を残さず、棚卸しで「壊れて死んだ guard」と「窓内に
@@ -75,11 +86,11 @@ def passthrough() -> None:
     読めなかった経路も event が不明なので無出力 (痕跡は「hook が起動した」の証拠であって、
     判定まで到達した証拠ではない)。
     """
-    if HOOK_EVENT == "PreToolUse":
-        sys.stdout.write(
+    if hook_event == "PreToolUse":
+        raise _Finished(
             '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
         )
-    sys.exit(0)
+    raise _Finished("")
 
 
 def emit_deny(tool: str, target: str, main_root: str, session_root: str) -> None:
@@ -90,15 +101,14 @@ def emit_deny(tool: str, target: str, main_root: str, session_root: str) -> None
         f" 対象 path を {session_root} 配下の絶対 path に置き換えて再実行してください"
         f" (Bash の場合はコマンド先頭に `cd {session_root} && ` を付ける)。"
     )
-    json.dump(
+    raise _Finished(json.dumps(
         {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }},
-        sys.stdout, ensure_ascii=False,
-    )
-    sys.exit(0)
+        ensure_ascii=False,
+    ))
 
 
 def git_rev_parse(cwd: str, flag: str) -> str | None:
@@ -202,17 +212,18 @@ def prune_stale_states(state_dir: str) -> None:
 # --- main ----------------------------------------------------------------
 
 
-def main() -> None:
-    global HOOK_EVENT
+def judge(stdin_text: str) -> None:
+    """payload を判定し、確定したら _Finished を送出する (必ず送出して終わる)。"""
+    hook_event = ""  # payload を読めるまでは event 不明 (痕跡を出さない)
 
     try:
-        data = json.loads(sys.stdin.read())
+        data = json.loads(stdin_text)
     except (ValueError, TypeError):
-        passthrough()
+        passthrough(hook_event)
     if not isinstance(data, dict):
-        passthrough()
+        passthrough(hook_event)
 
-    HOOK_EVENT = str(data.get("hook_event_name") or "")
+    hook_event = str(data.get("hook_event_name") or "")
     session_id = str(data.get("session_id") or "")
     cwd = str(data.get("cwd") or "")
     is_subagent = bool(data.get("agent_id") or data.get("agent_type"))
@@ -221,7 +232,7 @@ def main() -> None:
     if data.get("hook_event_name") == "SessionStart":
         if session_id and cwd_root:
             write_state(session_id, cwd_root)
-        passthrough()
+        passthrough(hook_event)
 
     # メインセッションの cwd は正 → 状態を追従させる (ExitWorktree 後の自己修復)
     if not is_subagent and session_id and cwd_root:
@@ -234,30 +245,41 @@ def main() -> None:
         {r for r in (session_root, cwd_root) if r and is_linked_worktree(r)}
     )
     if not allowed_roots:
-        passthrough()  # worktree セッションでない → guard 対象外
+        passthrough(hook_event)  # worktree セッションでない → guard 対象外
 
     tool = str(data.get("tool_name") or "")
     tool_input = data.get("tool_input") or {}
     if tool in GUARDED_WRITE_TOOLS:
         raw_target = str(tool_input.get("file_path") or "")
         if not os.path.isabs(raw_target):
-            passthrough()  # 相対 path は解決先の確証なし
+            passthrough(hook_event)  # 相対 path は解決先の確証なし
         target = os.path.realpath(raw_target)
     elif tool == "Bash":
         if not cwd:
-            passthrough()
+            passthrough(hook_event)
         target = os.path.realpath(cwd)
     else:
-        passthrough()  # Read 等は状態更新のみで deny しない
+        passthrough(hook_event)  # Read 等は状態更新のみで deny しない
 
     if any(is_under(target, root) for root in allowed_roots):
-        passthrough()
+        passthrough(hook_event)
     for root in allowed_roots:
         main_root = main_checkout_root(root)
         if main_root and is_under(target, main_root):
             emit_deny(tool, target, main_root, root)
-    passthrough()
+    passthrough(hook_event)
+
+
+def main(stdin_text: str) -> tuple[int, str]:
+    """hook の純粋な入口。(exit code, stdout 本文) を返す。"""
+    try:
+        judge(stdin_text)
+    except _Finished as finished:
+        return 0, finished.stdout_text
+    raise AssertionError("judge() は必ず _Finished で終わる")
 
 
 if __name__ == "__main__":
-    main()
+    exit_code, stdout_text = main(sys.stdin.read())
+    sys.stdout.write(stdout_text)
+    sys.exit(exit_code)

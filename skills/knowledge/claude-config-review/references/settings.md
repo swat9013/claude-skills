@@ -9,7 +9,7 @@
 `~/.claude/settings.json` は Claude Code の設定ファイル。permission / hook 登録 / 環境変数 / permissions.defaultMode などを定義する。
 
 - **目的**: ハーネス全体の構成を宣言的に管理する。
-- **対象外**: per-machine な秘匿設定 (それは `~/.claude/settings.local.json` の責務)、コードのプロンプト規範 (それは CLAUDE.md の責務 → [claude-md](./claude-md.md))、hook スクリプト本体のレビュー (それは [hook](./hook.md) の責務 — settings 側は event/matcher の登録までを担当)。
+- **対象外**: per-machine な秘匿設定 (それは `~/.claude/settings.local.json` の責務)、コードのプロンプト規範 (それは CLAUDE.md の責務 → [claude-md](../../../steering/write-for-harness/references/components/claude-md.md))、hook スクリプト本体のレビュー (それは [hook](./hook.md) の責務 — settings 側は event/matcher の登録までを担当)。
 
 ## 仕様
 
@@ -63,6 +63,6 @@ settings.json を編集する前に確認する。
 
 ## 参照
 
-- 共通: [architecture](./architecture.md) (`permissions.allow` = C/Guide / `permissions.deny` = C/Sensor / `hooks` = hook 機構の発火点宣言 の slot 配置根拠) / [models](./models.md) (env で指定するモデル ID の管理) / [sources](./sources.md) (公式仕様の引き方)
+- 共通: [architecture](../../../steering/write-for-harness/references/architecture.md) (`permissions.allow` = C/Guide / `permissions.deny` = C/Sensor / `hooks` = hook 機構の発火点宣言 の slot 配置根拠) / [models](../../../steering/write-for-harness/references/models.md) (env で指定するモデル ID の管理) / [sources](./sources.md) (公式仕様の引き方)
 - 関連: [hook](./hook.md) (hook 実装本体のレビュー観点)
 - 公式: Claude Code settings ドキュメント (URL は [sources](./sources.md) 経由で確認)

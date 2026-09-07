@@ -13,9 +13,9 @@ import string
 # --- phase (spec §3.3) -------------------------------------------------------
 
 PHASES = (
-    "claimed",  # assignee 設定済み、pane 未起動
+    "claimed",  # claim label 設定済み、pane 未起動
     "active",  # pane 稼働中 (worktree あり)
-    "parked",  # pane を降ろし worktree と claim を保持 (駐機)
+    "parked",  # pane を降ろし worktree と claim label を保持 (駐機)
     "done",  # issue closed / PR merged を観測
     "cleaned",  # worktree / branch 回収済み (終端)
     "released",  # unclaim して候補プールへ返却 (終端)

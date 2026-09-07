@@ -7,9 +7,6 @@ GitHub との差を吸収する箇所が 3 つある:
 - blocker は link 型 `is_blocked_by`。リンク型を運用していない instance では
   block 系 label を fallback にする (この経路は blocker の個別列挙ができない)
 
-assignee 操作で username でなく user id を PUT するのは、username が instance 間で
-衝突しうるのと CLI flag が version 依存なため。
-
 明示 repo scope (ADR 0036) は 2 経路に分かれる: `glab issue` 系は `--repo` を足すだけだが、
 **`glab api` は `--repo` を持たない**ので path の project 位置を差し替える。GitLab の project は
 **数値 id か URL-encode した full path** でしか指せず、`group/project` を生のまま埋めると path の
@@ -18,6 +15,8 @@ assignee 操作で username でなく user id を PUT するのは、username �
 
 endpoint の綴りは大半が実機照合できない (手元に運用中の instance が無い) ため、テスト側の
 argv pin だけが記録になる。既存 `dispatch_tracker.py` から移植した綴りは一字も変えていない。
+例外は明示 repo scope の project 指定 (`projects/<URL-encode した full path>`) と review thread の
+読み取り (`GET .../discussions`) で、こちらは実 instance へ投げて応答の形まで確かめてある。
 """
 
 import urllib.parse
@@ -33,8 +32,13 @@ BLOCK_FALLBACK_LABELS = frozenset({"wayfinder:blocked"})
 # GitLab が mergeability を計算し終えていない間の detailed_merge_status
 UNSETTLED_MERGE_STATUS = frozenset({"checking", "unchecked"})
 
-# glab の per-page 上限。これ超えの issue 運用は page ループ化が要る (未対応)
+# glab の per-page 上限。これ超えの issue / review thread 運用は page ループ化が要る (未対応)
 MAX_PER_PAGE = 100
+
+# 複合 thread id (`<project>!<iid>:<discussion id>`) の区切り。綴りは中立 ref に揃える —
+# `!` は PR ref (`glab!12`)、`:` は Jira ref (`jira:PROJ-9`) の継ぎ方
+THREAD_ID_PROJECT_SEP = "!"
+THREAD_ID_DISCUSSION_SEP = ":"
 
 # 中立 state → glab issue list の追加 flag。既定 (flag なし) が opened
 _LIST_STATE_FLAG = {"open": [], "closed": ["--closed"], "all": ["--all"]}
@@ -50,11 +54,11 @@ class GlabAdapter(tracker.TrackerPort):
     supports_repo_scope = True
     # `pr_detail` は project id を path に埋めるので cwd 推論へ倒れられない (`projects/None/...`)
     pr_detail_requires_repo = True
-    # review thread は未実装 (ADR 0039 の実測が gh のみ)。**空配列で表さず名指しで落とす** —
-    # GitLab の discussion notes も `resolvable` / `resolved` を持つので実装自体は可能だが、
-    # 未検証の写像を「未解決 0 件」として返すと駐機した MR が滞留したまま気付けない。
-    # 継ぎ目 (`fetch_review_threads` / `resolve_review_thread`) は port の既定のまま残す
-    supports_review_threads = False
+    # review thread は discussion へ写す (`notes[0].resolvable` が thread か否か、
+    # `notes[0].resolved` が未解決か否かを持つ)。resolve と返信が MR 番号と discussion id の
+    # 両方を path に要る非対称は、**複合 thread id を adapter 内で組んで**吸収する —
+    # port の署名 (`resolve_review_thread` / `reply_review_thread`) は gh と同じまま
+    supports_review_threads = True
 
     # --- issue 観測 ------------------------------------------------------------
 
@@ -170,17 +174,71 @@ class GlabAdapter(tracker.TrackerPort):
             )
         return entries
 
-    # --- 操作 -------------------------------------------------------------------
+    # --- review thread 観測 / resolve (ADR 0039) ---------------------------------
 
-    def set_assignee(self, number, action, repo):
-        """assignee を PUT する。**user 照会だけは project scope を持たない** (instance 全体)。"""
-        uid = tracker.run_json(["glab", "api", "user"])["id"] if action == "claim" else 0
-        tracker.run_json(
+    def fetch_review_threads(self, number, repo):
+        """MR 1 件の review thread。`repo` は **その MR が居る project** で cwd 推論へ倒れない。
+
+        返す `id` は複合 thread id — resolve が MR 番号を path に要るので、discussion id
+        だけでは `resolve_review_thread(thread_id)` から MR へ戻れない。
+
+        `truncated` は **1 ページ目が満杯かどうかの heuristic**。gh は graphql の
+        `hasNextPage` という確定的な判定を持つが、`tracker.run_json` は stdout の JSON を
+        パースするだけで header を見ないので、`X-Next-Page` を根拠にできない。偽陽性は
+        `resolve` の `unresolved_review_threads` を null (未判定) へ倒すだけで、
+        「観測して 0 件」を騙るより安い方向に外れる。
+        """
+        discussions = tracker.run_json(
             [
-                "glab", "api", f"projects/{api_scope(repo)}/issues/{number}",
-                "-X", "PUT", "-F", f"assignee_ids={uid}",
+                "glab", "api",
+                f"projects/{encode_project(repo)}/merge_requests/{number}"
+                f"/discussions?per_page={MAX_PER_PAGE}",
             ]
         )
+        return normalize_review_threads(discussions, number, repo)
+
+    def resolve_review_thread(self, thread_id):
+        project, number, discussion_id = parse_thread_id(thread_id)
+        raw = tracker.run_json(
+            [
+                "glab", "api", "--method", "PUT",
+                f"projects/{encode_project(project)}/merge_requests/{number}"
+                f"/discussions/{discussion_id}?resolved=true",
+            ]
+        )
+        notes = (raw or {}).get("notes") or []
+        if not (raw or {}).get("id") or not notes:
+            raise tracker.TrackerError(
+                f"review thread {thread_id} の resolve 応答を読めない: {raw!r}"
+            )
+        return {
+            "id": compose_thread_id(project, number, raw["id"]),
+            "resolved": bool(notes[0].get("resolved")),
+        }
+
+    def reply_review_thread(self, thread_id, body):
+        """discussion へ note を 1 つ積む。複合 thread id は resolve と同じ `parse_thread_id`
+        で割る (返信の path も MR 番号と discussion id の両方を要る)。
+
+        応答は **note 1 件**で、resolve が受け取る discussion (`notes` を持つ) とは別の形。
+        本文は `-f` (生文字列) — `-F` は型付きなので数字だけの本文が数値へ化ける。
+        """
+        project, number, discussion_id = parse_thread_id(thread_id)
+        raw = tracker.run_json(
+            [
+                "glab", "api", "--method", "POST",
+                f"projects/{encode_project(project)}/merge_requests/{number}"
+                f"/discussions/{discussion_id}/notes",
+                "-f", f"body={body}",
+            ]
+        )
+        if not (raw or {}).get("id"):
+            raise tracker.TrackerError(
+                f"review thread {thread_id} の返信応答を読めない: {raw!r}"
+            )
+        return {"comment_id": str(raw["id"])}
+
+    # --- 操作 -------------------------------------------------------------------
 
     def post_comment(self, number, body, repo):
         tracker.run_checked(
@@ -276,3 +334,68 @@ def normalize_mr(raw):
         "title": raw.get("title", ""),
         "url": raw.get("web_url", ""),
     }
+
+
+# --- review thread -------------------------------------------------------------------
+
+
+def normalize_review_threads(discussions, number, repo):
+    """discussion の列 → {"threads", "truncated"}。読めなければ TrackerError。
+
+    discussion は review thread とは限らない (MR 全体への通常コメント、bot の自動コメント、
+    GitLab が積む system note も同じ列に並ぶ)。**thread か否かは先頭 note の `resolvable`**
+    が持ち、未解決か否かは同じ note の `resolved` が持つ。
+    """
+    if not isinstance(discussions, list):
+        raise tracker.TrackerError(
+            f"{repo}!{number} の review thread を読めない (応答が discussion の列でない): "
+            f"{discussions!r}"
+        )
+    threads = []
+    for discussion in discussions:
+        notes = discussion.get("notes") or []
+        head = notes[0] if notes else {}
+        # system note は `resolvable` が false で来る instance しか観測できていないので、
+        # 判定は resolvable 側に持たせたまま system を保険として重ねる
+        if not head.get("resolvable") or head.get("system"):
+            continue
+        threads.append(
+            {
+                "id": compose_thread_id(repo, number, discussion["id"]),
+                "resolved": bool(head.get("resolved")),
+            }
+        )
+    return {"threads": threads, "truncated": len(discussions) == MAX_PER_PAGE}
+
+
+def compose_thread_id(project, number, discussion_id):
+    """thread 識別子 → `<project>!<MR iid>:<discussion id>`。
+
+    resolve の path が MR 番号を要るのに port は thread id しか渡さないので、**adapter が
+    自分で組んで自分で割る**。両端が adapter 内なので port の署名は gh と同じまま済む。
+    """
+    return (
+        f"{project}{THREAD_ID_PROJECT_SEP}{number}"
+        f"{THREAD_ID_DISCUSSION_SEP}{discussion_id}"
+    )
+
+
+def parse_thread_id(thread_id):
+    """複合 thread id → (project, MR iid, discussion id)。割れない綴りは TrackerError。
+
+    **右端から割る** — project は数値 id とは限らず、宣言 (`[pr] repo`) 由来の full path
+    (`group/sub/project`) で来ると区切りより左に階層が混じる。
+
+    生の discussion id を「project 未指定」として cwd 推論へ倒す fallback は**置かない**。
+    どの MR の thread か判らないまま撃つと別 MR の指摘を閉じるので、名指しで落とす。
+    """
+    head, _, discussion_id = thread_id.rpartition(THREAD_ID_DISCUSSION_SEP)
+    project, _, number = head.rpartition(THREAD_ID_PROJECT_SEP)
+    if not (project and number and discussion_id):
+        raise tracker.TrackerError(
+            f"review thread {thread_id!r} は glab の複合 thread id "
+            f"(`<project>{THREAD_ID_PROJECT_SEP}<MR iid>{THREAD_ID_DISCUSSION_SEP}"
+            "<discussion id>`) に割れない — resolve は MR 番号を要るので "
+            "discussion id 単体では撃てない"
+        )
+    return project, number, discussion_id

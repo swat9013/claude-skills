@@ -18,7 +18,7 @@ description: |-
 | PyPI パッケージが要る (requests, pyyaml, etc.) | 標準コマンド (grep/awk/jq) で完結 |
 | 100 行超 / 浮動小数演算 / 正確な日付計算 | 数行の grep+pipe 変換 |
 
-詳細な escalate 条件 (全 8 兆候) は [shell-script 側の起動判定表](../shell-script/SKILL.md) が source of truth。
+詳細な escalate 条件 (兆候の全量) は [shell-script 側の起動判定表](../shell-script/SKILL.md) が source of truth。
 
 単一ファイルに収まらない (パッケージ構造・複数モジュール) ならこの skill の対象外。独立 `pyproject.toml` project を立てる。
 
@@ -81,23 +81,16 @@ uv run script.py [args]
 chmod +x script.py && ./script.py [args]
 
 # テスト: pytest は PEP 723 を自動読み込みしないので --with 必須
+# test 依存は --with で都度注入し、dependencies は本番依存だけに保つ
 uv run --with pytest pytest script.py
 
 # 再現性が要るなら lock ファイル生成 (.lock を script と一緒に commit すること)
 uv lock --script script.py    # → script.py.lock
 ```
 
+IDE 補完が要るなら pyproject.toml + venv を別途用意する (Pylance は PEP 723 未対応 — 2026-05 時点)。
+
 niche option (`exclude-newer` 等) や uv add コマンド詳細は [references/pep723-and-uv.md](references/pep723-and-uv.md)。
-
-## Gotchas
-
-| 問題 | 原因 | 対処 |
-|---|---|---|
-| pytest がスクリプト内依存を認識しない | pytest が PEP 723 を自動読み込みしない | `uv run --with pytest pytest script.py` |
-| shebang が Linux で失敗 | Linux execve が複数引数を 1 つにまとめる | `-S` フラグを必ず付ける |
-| 再実行で依存解決が変わる | バージョン制約なし | `dependencies` に制約 or `exclude-newer` 設定 |
-| IDE 補完が効かない | Pylance が PEP 723 未対応 (2026-05 時点) | pyproject.toml + venv を別途用意 |
-| pytest を `dependencies` に常駐させる誘惑 | `--with` を書く手間を惜しむ | 本番依存に test 依存が混入する。`--with pytest` で都度注入 |
 
 ## 関連
 

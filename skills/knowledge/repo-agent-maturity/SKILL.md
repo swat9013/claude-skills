@@ -1,21 +1,21 @@
 ---
 name: repo-agent-maturity
 user-invocable: true
-description: repo (省略時は cwd) をコーディングエージェント (Claude Code / Cursor / Windsurf) 受け入れ準備度で Lv.1〜5 に採点する。Use when「agent 活用度を採点」「agent maturity」「repo が agent-ready か」.
+description: コーディングエージェント (Claude Code / Cursor / Windsurf) の受け入れ準備度で repo を Lv.1〜5 に採点する。Use when「agent 活用度を採点」「agent maturity」「repo が agent-ready か」.
 ---
 
 # repo-agent-maturity
 
-汎用 repo を **level** (Lv.1〜5) に振り分ける 20 **checkpoint** の reference。判定は repo 内のファイル存在・内容 pattern・行数のみで完結し、SKILL.md 単独で配布・実行できる (依存 script なし)。
+汎用 repo を **level** (Lv.1〜5) に振り分ける 20 **checkpoint** の reference。判定は repo 内のファイル存在・内容 pattern・ファイル数のみで完結し、依存 script なしで実行できる。
 
-runtime 挙動 (hook 発火・rule 遵守・MCP コスト) は判定不能なので、下記 checkpoint には含めない。参考観点は「範囲外」節に列挙する。
+runtime 挙動 (hook 発火・rule 遵守・MCP コスト) は判定不能なので、20 checkpoint には含めない。
 
 ## 入力
 
 - 引数なし → cwd を対象
 - `<path>` → 指定 path (相対 / 絶対 / `~/` 可) を対象
 
-対象 repo の絶対 path を `$ROOT` として以降のコマンドに埋める。判定は Read only で完結し、対象 repo に書き込まない。
+判定は Read only で完結し、対象 repo に書き込まない。
 
 ## 手順
 
@@ -42,7 +42,7 @@ Lv.1 から順に、その level の全 checkpoint が pass なら次 level に�
 - レポートは template の節のみで構成する (前置き・独自の節を足さない)
 - 到達 level は Step 2 の reached_level をそのまま書く (「実質 Lv.X 相当」のような再解釈を加えない)
 - hint は hint 表の文言を使う。repo 固有の補足は各 hint 末尾に 1 文まで。補足に書けるのは機械判定の既知の検出限界の注記のみで、「実質達成している」等の判定を覆す断定は書かない
-- 「範囲外」節の手動レビュー観点は、ユーザーが明示的に求めた場合のみ末尾に追加する
+- 手動レビュー観点は、ユーザーが明示的に求めた場合のみ末尾に追加する。求められたときだけ [references/manual-review-points.md](references/manual-review-points.md) を Read し、その観点を文で列挙する
 
 ```markdown
 ## Repo Agent Maturity: Lv.<N> 到達
@@ -136,18 +136,4 @@ if grep -qEr '(pytest|npm test|yarn test|pnpm test|cargo test|go test|jest|vites
 | L5.CONTRIBUTING | CONTRIBUTING.md 相当が存在 | ブランチ運用・PR テンプレ・review 手順を書く |
 | L5.CI_HAS_TEST | CI 内で test コマンド実行 | CI yml に `pytest` `npm test` `rails test` 等の実行行を入れる |
 
-## 範囲外 (機械判定不能な参考観点)
-
-以下は repo 内のファイルだけでは判定できない。出力条件は Step 4 の規則に従う (ユーザーが明示的に求めた場合のみ「手動レビュー観点」として文で列挙する):
-
-- CLAUDE.md が索引 → リンク → 詳細に分離されているか (30-60 行目安)
-- rule が肯定形かつ検証可能な述語で書かれているか
-- hook が同期 100ms 制約を守っているか / matcher が広すぎないか
-- Skill description が trigger として機能しているか (呼ばれない / 呼ばれすぎがないか)
-- MCP tool の context コストが 10 以下の目安に収まっているか
-- OWASP Agentic Top 10 各項 (認証情報継承・supply chain 検証・memory poisoning 等)
-- CI が test コマンドを独自 shell script に包んでいる場合の実行有無 (L5.CI_HAS_TEST の keyword 判定は script 名や CI yml に test 系語彙が現れる場合のみ検出できる)
-
-## 参照
-
-- 原典スライド: nwiizo「新年度からコーディングエージェントを使いこなす — 構造と規約で引き出す Claude Code の実践知」
+既知の検出限界: L5.CI_HAS_TEST の keyword 判定は、CI が test コマンドを独自 shell script に包んでいる場合、script 名か CI yml に test 系語彙が現れるときだけ検出できる。

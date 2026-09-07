@@ -9,18 +9,20 @@ spec (`docs/superpowers/specs/2026-08-01-issue-dispatch-redesign-design.md`) §4
 **server はポリシーを一切持たない** — 記帳・遷移の合法性検証・観測の正規化だけを行い、
 「何をすべきか」(候補選定・駐機・回収・drift 解消) は常に LLM が決める。
 
-本 entry が提供するのは台帳 (ledger) 系・tracker 系 (observe_project / observe_issues /
+本 entry が提供するのは台帳 (ledger) 系・signal 系 (signal_log / signal_read)・2 本の stream を
+またぐ射影 (changes_since)・tracker 系 (observe_project / observe_issues /
 observe_prs / issue_claim / issue_unclaim / issue_comment / issue_label)・pane 系 (observe_panes /
 pane_spawn / pane_close / pane_send / pane_watch)・worktree 系 (observe_worktrees /
 worktree_tidy / worktree_sweep)・初期設定系 (project_doctor / project_setup) と、台帳と外部
 store を join する resolve の tool。
 
-**本 module が持つのは配線だけ** — port / 台帳の生成を束ねた `Ports` container (継ぎ目は
-`get_ports` 1 つ) と、tool 関数から domain module への 1 式の委譲。観測束の組み立ても phase 遷移も
-domain 側 (resolve / worktree / pane / ledger) にあり、tool 関数は port の返り値 dict を展開しない。
-ここに手続きが増えると、LLM 向け interface (docstring) の module に振る舞いが溜まり、domain 単体では
-検証できない合成が生まれる。唯一の例外は `pane_watch` の progress adapter (MCP の Context に依存する
-ので下ろせない)。
+**本 module が持つのは配線だけ** — tool の登録 (decorator) と LLM 向け interface (docstring)、
+domain error → `ToolError` の翻訳、そして tool 関数から domain module への 1 式の委譲。
+root / 台帳 / 置き場 adapter の解決 (CONTEXT.md の **scope**) は `scope` module にあり、継ぎ目は
+`scope.get_scope` 1 つ。観測束の組み立ても phase 遷移も domain 側 (resolve / worktree / pane /
+ledger) にあり、tool 関数は port の返り値 dict を展開しない。ここに手続きが増えると、
+LLM 向け interface (docstring) の module に振る舞いが溜まり、domain 単体では検証できない合成が
+生まれる。唯一の例外は `pane_watch` の progress adapter (MCP の Context に依存するので下ろせない)。
 
 配布・登録は plugin root の `.mcp.json` (spec §4.1)。server 名 `dispatch-ops`、
 tool 完全名は `mcp__plugin_swat-skills_dispatch-ops__<tool>`。
@@ -29,8 +31,9 @@ tool 完全名は `mcp__plugin_swat-skills_dispatch-ops__<tool>`。
 `repo_key` / `ledger_dir` を載せてあるので、想定と違う台帳を書いていないかは応答で確認する。
 """
 
+import functools
+import inspect
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -40,22 +43,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mcp.server import MCPServer  # noqa: E402
 from mcp.server.mcpserver import Context  # noqa: E402
+from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
 
+import dashboard_autostart as dashboard_autostart_mod  # noqa: E402
 import doctor as doctor_mod  # noqa: E402
 import ledger as ledger_mod  # noqa: E402
 import pane as pane_mod  # noqa: E402
 import project as project_mod  # noqa: E402
+import refs as refs_mod  # noqa: E402
 import repo_key as repo_key_mod  # noqa: E402
 import resolve as resolve_mod  # noqa: E402
+import scope as scope_mod  # noqa: E402
 import tracker as tracker_mod  # noqa: E402
+import user_config as user_config_mod  # noqa: E402
 import vocabulary  # noqa: E402
 import worktree as worktree_mod  # noqa: E402
 
 SERVER_NAME = "dispatch-ops"
 SERVER_VERSION = "0.1.0"
-
-# 本 server が使う pane backend。tmux は port 境界だけを設計して実装しない (spec §8)
-PANE_BACKEND = "herdr"
 
 INSTRUCTIONS = """\
 dispatch-ops の台帳 (durable ledger) を読み書きする policy-free な server。
@@ -70,7 +75,11 @@ dispatch-ops の台帳 (durable ledger) を読み書きする policy-free な se
 - note は次セッションの自分へ判断の文脈を引き継ぐ自由記述欄。機械はパースしない。
   phase が動かないまま状況だけが動いたときは `ledger_annotate` で更新する (遷移を伴う
   更新は `ledger_transition` の note)
-- 記帳の帰属は `actor` で決まる (events.jsonl の欄)。既定の `dispatcher` は orchestrator の
+- **台帳 entry に紐づかない記録は signal stream (`signals.jsonl`) へ書く** (`signal_log` /
+  `signal_read`)。主語は `subject` が持ち、issue ref とは限らない (候補プール / deploy)。
+  observer が tick を跨いで運ぶ状態 (何をもう送ったか / 前に観測した集合) の置き場で、
+  読み手は読み直して再計算する。server は絞り込みまでで、どう畳むかは持たない
+- 記帳の帰属は `actor` で決まる (events.jsonl / signals.jsonl の欄)。既定の `dispatcher` は orchestrator の
   記帳、observer は `observer`、worker の自己申告は `pane`。**server は語彙を検証しない**ので、
   名乗らない書き手の記帳は orchestrator のものと区別が付かないまま残る
 - observe_issues の filter / ordering は任意。未指定なら絞らず並べ替えず全量を返す —
@@ -144,257 +153,60 @@ server = MCPServer(
 )
 
 
-@dataclass
-class Ports:
-    """server が使う port 群の container (プロセス内で 1 つ、生成は lazy)。
+# domain module が「予期した失敗」として投げる例外。列挙にない例外は crash として
+# SDK の仕分けに残す (traceback 付き ERROR ログ + LLM には tool 名だけ)。
+# 新しい domain error class を足したらここにも足す — 漏れると message が黙って消える
+ANTICIPATED_ERRORS = (
+    doctor_mod.DoctorError,
+    ledger_mod.LedgerError,
+    pane_mod.PaneError,
+    project_mod.ProjectError,
+    refs_mod.RefError,
+    repo_key_mod.RepoKeyError,
+    resolve_mod.ResolveError,
+    scope_mod.CloneRootError,
+    tracker_mod.TrackerError,
+    vocabulary.TransitionError,
+    vocabulary.VocabularyError,
+    worktree_mod.WorktreeError,
+)
 
-    field は解決済み port の置き場で、`get_*` は未解決のときだけ 1 回組み立てる。**生成を
-    ここへ集約する** — port を module 変数で持つと注入経路が module への `setattr` しか
-    無くなり、キャッシュの無効化 (None 代入) までテスト側の手続きに漏れる。テストは fake を
-    詰めた container を `get_ports` へ差し込む。
+
+def tool():
+    """`server.tool()` に domain error → `ToolError` の翻訳を噛ませた登録 decorator。
+
+    SDK が message ごと LLM に返すのは `ToolError` だけで、他の例外は
+    `Error executing tool <name>` に潰す (mcp 2.1)。domain module は SDK 非依存に保つ
+    (SDK 抜きでもテストが走る) ため `ToolError` を投げられず、翻訳はこの配線層に置く。
+    潰されると LLM は失敗の理由を読めず、policy 判断の材料を失う。
     """
+    register = server.tool()
 
-    ledger: ledger_mod.Ledger | None = None
-    pane: pane_mod.PanePort | None = None
-    adapter: tracker_mod.TrackerPort | None = None
-    pr_adapter: tracker_mod.TrackerPort | None = None
-    declaration: dict[str, Any] | None = None
-    # clone root → WorktreePort。key は**呼び出し側が渡した値そのもの** (未指定は None) で、
-    # 既定 root の解決を 1 回に保つ。project の実装 repo は複数ありうる (ADR 0036) ので port も
-    # 1 つに固定できないが、**server は clone の集合を持たない** — 作るのは渡された root の分だけ
-    worktrees: dict[str | None, worktree_mod.WorktreePort] = field(default_factory=dict)
+    def decorate(fn):
+        if inspect.iscoroutinefunction(fn):
 
-    def get_declaration(self) -> dict[str, Any]:
-        """project の宣言 (issue 置き場 / PR 置き場) を解決する (プロセス内で 1 回だけ)。
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await fn(*args, **kwargs)
+                except ANTICIPATED_ERRORS as exc:
+                    raise ToolError(str(exc)) from exc
 
-        解決の実装は `project` module 1 箇所。**config は台帳ディレクトリ側**
-        (`<台帳>/dispatch-project.toml`) にあり、台帳と同じ解決順 (`ledger.resolve_ledger_dir`) で
-        解くので、別 clone で走る worker も dispatcher と同じ宣言に収束する (ADR 0036 の追補)。
+        else:
 
-        **プロセス内で cache する。** config を編集したら server を再起動しないと反映されない —
-        反映されていないように見えたら、まず再起動を疑う。
-        """
-        if self.declaration is None:
-            self.declaration = project_mod.resolve_declaration(
-                repo_key_mod.main_worktree_root(Path.cwd())
-            )
-        return self.declaration
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except ANTICIPATED_ERRORS as exc:
+                    raise ToolError(str(exc)) from exc
 
-    def issue_tracker_name(self) -> str:
-        """issue 置き場の tracker 名 (adapter を作れなくても判る)。
+        return register(wrapper)
 
-        adapter を組み立て済みならその tracker を採る — 名前と adapter が別々に判定されて
-        食い違う経路を作らないため。
-        """
-        if self.adapter is not None:
-            return self.adapter.tracker
-        name = self.get_declaration()["issue"]["tracker"]
-        if name is None:
-            root = repo_key_mod.main_worktree_root(Path.cwd())
-            raise tracker_mod.TrackerError(
-                f"tracker を判定できない ({root}: 宣言 (config / 散文 doc) 無し + remote host 不明)"
-            )
-        return name
-
-    def get_adapter(self) -> tracker_mod.TrackerPort:
-        """issue 置き場の adapter を返す (プロセス内で 1 回だけ組み立てる)。"""
-        if self.adapter is None:
-            self.adapter = tracker_mod.get_adapter(self.issue_tracker_name())
-        return self.adapter
-
-    def get_adapter_optional(self) -> tracker_mod.TrackerPort | None:
-        """issue 置き場の adapter。**未実装 tracker (Jira) では None** を返す (#576)。
-
-        `resolve` だけがこちらを使う。issue の現況を引けないことと、pane / worktree / PR を
-        突き合わせられないことは別の問い — adapter が無いだけで join ごと落とすと、Jira project の
-        dispatch は台帳と現実の食い違いを 1 件も見られなくなる。
-        """
-        try:
-            return self.get_adapter()
-        except tracker_mod.TrackerError:
-            return None
-
-    def get_pr_adapter(self) -> tracker_mod.TrackerPort:
-        """**PR 置き場**の adapter を返す (プロセス内で 1 回だけ組み立てる)。
-
-        宣言の `[pr]` が第一正。無ければ issue 置き場が gh / glab のときはそれと同じ adapter
-        (挙動は変わらない)、issue 置き場が PR を持たない tracker (Jira) のときだけ git remote の
-        host から解く — 解決は `project.resolve_declaration` 1 箇所。
-        """
-        if self.pr_adapter is None:
-            name = self.get_declaration()["pr"]["tracker"]
-            if name is None:
-                root = repo_key_mod.main_worktree_root(Path.cwd())
-                raise tracker_mod.TrackerError(
-                    f"PR 置き場の tracker を判定できない ({root}: 宣言の [pr] 無し + remote host 不明)"
-                )
-            self.pr_adapter = tracker_mod.get_adapter(name)
-        return self.pr_adapter
-
-    def get_pr_adapter_optional(self) -> tracker_mod.TrackerPort | None:
-        """PR 置き場の adapter。判定できない / 未実装なら None (`resolve` 用)。"""
-        try:
-            return self.get_pr_adapter()
-        except tracker_mod.TrackerError:
-            return None
-
-    def get_ledger(self) -> ledger_mod.Ledger:
-        """台帳を開く (プロセス内で 1 回だけ repo-key を導出する)。
-
-        server プロセスの cwd は起動後に変わらない前提。導出に失敗したら握り潰さず
-        例外を上げる — 別 repo の台帳へ書くより、tool 呼び出しが失敗するほうが安い。
-        """
-        if self.ledger is None:
-            self.ledger = ledger_mod.open_ledger()
-        return self.ledger
-
-    def get_pane(self) -> pane_mod.PanePort:
-        """pane adapter を返す (プロセス内で 1 回だけ組み立てる)。
-
-        backend の前提検査 (herdr session 内か / hook が現行か / socket に届くか) は
-        adapter 側が最初の pane 操作で行う — 検査に落ちた状態を覚え込ませないため。
-        """
-        if self.pane is None:
-            self.pane = pane_mod.get_adapter(PANE_BACKEND)
-        return self.pane
-
-    def get_worktrees(self, repo_root: str | None = None) -> worktree_mod.WorktreePort:
-        """clone root ごとの WorktreePort を返す (root あたり 1 回だけ解決する)。
-
-        未指定なら server プロセスの clone。台帳と同じ root を基準にするので、pane (linked
-        worktree の中) と dispatcher (repo root) が同じ worktree 集合を見る。
-
-        渡された root の正規化 (main worktree root への解決) は `require_clone_root` が行う。
-        """
-        if repo_root not in self.worktrees:
-            root = (
-                require_clone_root(repo_root)
-                if repo_root
-                else repo_key_mod.main_worktree_root(Path.cwd())
-            )
-            self.worktrees[repo_root] = worktree_mod.GitWorktrees(root)
-        return self.worktrees[repo_root]
+    return decorate
 
 
-_ports = None
-
-
-def get_ports() -> Ports:
-    """port 群の container を返す (プロセス内で 1 つ)。
-
-    **tool 層から port へ届く唯一の継ぎ目**。tool 関数は SDK が tool 引数だけで呼ぶので port を
-    引数で受け取れず、差し替えはここに寄る。テストは fake を詰めた `Ports` を差し込む
-    (port を 1 つずつ module 変数として突き回さない)。
-    """
-    global _ports
-    if _ports is None:
-        _ports = Ports()
-    return _ports
-
-
-def issue_repo(repo):
-    """issue 系 tool の `repo` の実効値。**明示引数 > 宣言 > 未指定 (CLI の cwd 推論)**。
-
-    宣言を既定値に使うのは「渡し忘れると観測・claim・label が全部よその repo へ向く」経路を
-    機械的に塞ぐため (ADR 0036 の追補)。明示引数を残すのは、宣言と違う repo を 1 回だけ見る
-    判断 (関連 repo の確認等) を呼び出し側から奪わないため。
-    """
-    if repo is not None:
-        return repo
-    ports = get_ports()
-    return injectable_repo(
-        ports.get_declaration()["issue"]["repo"], ports.get_adapter_optional()
-    )
-
-
-def pr_repo_default(repo):
-    """PR 系 tool の `repo` の実効値。issue 置き場とは別軸で解く (#576)。"""
-    if repo is not None:
-        return repo
-    ports = get_ports()
-    return injectable_repo(
-        ports.get_declaration()["pr"]["repo"], ports.get_pr_adapter_optional()
-    )
-
-
-def injectable_repo(declared, adapter):
-    """宣言の repo 識別子を既定注入してよいか確かめてから返す。
-
-    明示 repo scope 未対応の adapter へ宣言値を注入すると、tracker 系 tool が CLI を起動する
-    前に全滅する (#620 = glab で起きた退行)。**注入をやめて CLI の cwd 推論へ倒すことはしない**
-    — それは宣言が効いていない状態であり、#589 が塞いだ穴 (関連 repo で走る worker が別の
-    置き場を黙って観測する) がそのまま開く。
-
-    代わりに、識別子の出所が宣言であることを名指しして落とす。既定注入か明示引数かを知って
-    いるのはこの層だけで、port 側の `require_repo_scope` は両者を区別できない — 区別が無いと
-    読み手が原因を宣言 config 側に求め、宣言を消すという**穴を開ける方向の修正**へ向かう。
-    """
-    if declared is not None and adapter is not None and not adapter.supports_repo_scope:
-        raise tracker_mod.TrackerError(
-            f"宣言 (dispatch-project.toml) の repo {declared!r} を既定注入できない — "
-            f"{adapter.tracker} adapter が明示 repo scope 未実装。**宣言から repo を消して"
-            "回避しない** (消すと CLI の cwd 推論へ倒れ、置き場の宣言が効かないまま観測・"
-            "claim・label することになる)。adapter 側に repo scope を実装する"
-        )
-    return declared
-
-
-def default_repo_root():
-    """pane を起動する既定の cwd (server プロセスの clone の main worktree root)。
-
-    server プロセスの cwd が linked worktree の中でも main worktree へ解決する — 台帳の
-    repo-key と同じ基準にすることで、dispatcher がどこから起動されても同じツリーを指す。
-
-    呼び出し側が `pane_spawn` に `repo_root` を渡したときは、そちらが基準になる
-    (project の実装 repo は cwd の clone とは限らない — ADR 0036)。
-    """
-    return str(repo_key_mod.main_worktree_root(Path.cwd()))
-
-
-class CloneRootError(ValueError):
-    """渡された clone root が実在しない (pane 起動と worktree 掃除で共通)。"""
-
-
-def require_clone_root(path):
-    """渡された clone root を **main worktree root の絶対パス**へ正規化して返す。
-
-    実在しないときは失敗させる — server は clone しない (policy-free。どの clone を使うか・
-    無いときにどうするかは呼び出し側の判断で、ここで `git clone` を走らせると
-    「見つからないから作った」が観測不能な副作用になる)。
-
-    正規化を pane 起動と worktree 掃除で共通にするのは、**同じ clone を指す 2 表記が別々の
-    基準になるのを防ぐ**ため。linked worktree のパスを起動側だけ生で使うと、そこに切られた
-    作業ツリーは掃除側の観測窓 (main worktree root 配下) から外れて回収されない。
-    """
-    root = Path(path).expanduser()
-    if not root.is_dir():
-        raise CloneRootError(
-            f"clone root が無い: {root} (server は clone しない。既存 clone のパスを渡すか、"
-            "先に clone してから dispatch する)"
-        )
-    try:
-        return str(repo_key_mod.main_worktree_root(root))
-    except repo_key_mod.RepoKeyError as exc:
-        raise CloneRootError(f"clone root が git repo でない: {root} ({exc})") from exc
-
-
-def ledger_anchor_env():
-    """起動プロセスへ渡す台帳 anchor (`{DIR 環境変数: project の台帳ディレクトリ}`)。
-
-    worker は関連 repo の clone で走ることがあり、そこで cwd から repo-key を導出させると
-    project の台帳ではなく関連 repo の台帳を新設して書く (ADR 0036 の壊れ点 1)。tool 引数や
-    prompt 契約ではなく env で渡すのは、**worker の LLM が忘れても壊れない機械経路**に
-    するため。
-
-    渡す前にディレクトリを実体化する — 受け取る側は実在しない DIR を fail-closed で撥ねるので、
-    まだ 1 件も記帳していない台帳を配ると worker が起動直後に失敗する。
-
-    label 起動 (observer 等) にも同じく渡す — observer も台帳を読み書きする。
-    """
-    return {ledger_mod.LEDGER_DIR_ENV: get_ports().get_ledger().ensure_directory()}
-
-
-@server.tool()
+@tool()
 @vocabulary.with_rendered_doc
 def ledger_record(
     issue_ref: str,
@@ -425,12 +237,12 @@ def ledger_record(
     同じ issue_ref が既に非終端 phase で記帳済みなら失敗する。再 dispatch は先に
     終端 phase (${terminal_phases}) へ遷移させてから記帳する。
     """
-    return get_ports().get_ledger().record(
+    return scope_mod.get_scope().ledger.record(
         issue_ref, title=title, repo=repo, agent=agent, prs=prs, note=note, actor=actor
     )
 
 
-@server.tool()
+@tool()
 @vocabulary.with_rendered_doc
 def ledger_transition(
     issue_ref: str,
@@ -454,12 +266,12 @@ def ledger_transition(
     合法な遷移は ${transitions}。終端 phase からは遷移しない。**phase が動かないまま
     note だけ更新したいなら `ledger_annotate`** (同一 phase への遷移は非合法のまま)。
     """
-    return get_ports().get_ledger().transition(
+    return scope_mod.get_scope().ledger.transition(
         issue_ref, phase, note=note, agent=agent, prs=prs, actor=actor
     )
 
 
-@server.tool()
+@tool()
 def ledger_annotate(
     issue_ref: str,
     note: str,
@@ -478,10 +290,10 @@ def ledger_annotate(
 
     note が空文字なら失敗する。台帳に entry が無いときも失敗する (先に `ledger_record`)。
     """
-    return get_ports().get_ledger().annotate(issue_ref, note, actor=actor)
+    return scope_mod.get_scope().ledger.annotate(issue_ref, note, actor=actor)
 
 
-@server.tool()
+@tool()
 def ledger_report_outcome(
     issue_ref: str,
     outcome: str,
@@ -499,32 +311,125 @@ def ledger_report_outcome(
     outcome の語彙を server は検証しない。dispatcher 側が読んで判断する材料であって、
     機械的な分岐には使わない。
     """
-    return get_ports().get_ledger().report_outcome(
+    return scope_mod.get_scope().ledger.report_outcome(
         issue_ref, outcome, summary=summary, actor=actor
     )
 
 
-@server.tool()
-def ledger_list(phases: list[str] | None = None) -> dict[str, Any]:
+@tool()
+def ledger_list(
+    phases: list[str] | None = None, compact: bool = False
+) -> dict[str, Any]:
     """記帳済み dispatch の一覧 (再入時の状態復元に使う)。
 
     Args:
         phases: 絞り込む phase の配列。未指定なら全件を返す
+        compact: entry 全体ではなく 1 entry = 1 行の射影
+            (issue_ref / phase / repo / worktree / pr_count / updated_at) を返す。
+            **全体を見渡すときは compact を使う** — 数十件の台帳で entry 全体を返すと
+            数万トークンを食う。1 件の詳細が要るなら `ledger_get` を呼ぶ
+
+    台帳の所在 (repo_key / ledger_dir) と phase 語彙・件数は compact でも据え置く。
     """
-    return get_ports().get_ledger().list_view(phases)
+    return scope_mod.get_scope().ledger.list_view(phases, compact=compact)
 
 
-@server.tool()
+@tool()
 def ledger_get(issue_ref: str) -> dict[str, Any]:
     """1 件の dispatch entry を取り出す。
 
     Args:
         issue_ref: 中立 issue ref
     """
-    return get_ports().get_ledger().get(issue_ref)
+    return scope_mod.get_scope().ledger.get(issue_ref)
 
 
-@server.tool()
+@tool()
+def signal_log(
+    subject: str,
+    kind: str,
+    fields: dict[str, Any] | None = None,
+    refs: list[str] | None = None,
+    actor: str = ledger_mod.DEFAULT_ACTOR,
+) -> dict[str, Any]:
+    """project 単位の signal stream へ 1 行足す (台帳の現況は動かない)。
+
+    Args:
+        subject: この signal の主語。**issue ref とは限らない** — issue に紐づく事象は
+            `gh#386`、紐づかない事象は呼び出し側が決めた語 (候補プール / deploy 等)。
+            server は書式を検証しない
+        kind: 何が起きたかの種別 (呼び出し側の語彙。server は検証しない)
+        fields: 種別ごとの付随値 (自由記述の object)
+        refs: この signal が指す ref 集合。渡すと **server が重複除去 + ソートして書き、
+            同じ集合なら同じ `key` を返す** — 読み手は集合を持ち回らずに同一性を判定できる。
+            渡さなければ `refs` / `key` とも null
+        actor: 書き手 (既定 dispatcher = orchestrator)。observer は `observer` を渡す
+
+    **tick を跨いで運ぶ状態の durable な置き場**。観測から作り直せない状態 (何をもう
+    送ったか / 前に観測した集合) をここへ書き、読み手は `signal_read` で読み直して
+    再計算する。書いた行は `signals.jsonl` に append-only で残り、消えない。
+    """
+    return scope_mod.get_scope().ledger.log_signal(
+        subject, kind, fields=fields, refs=refs, actor=actor
+    )
+
+
+@tool()
+def signal_read(
+    since: str | None = None,
+    subject: str | None = None,
+    kind: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """project 単位の signal stream を読む (状態の再計算に使う)。
+
+    Args:
+        since: この ts 以降だけを返す (ISO8601。timezone 必須)。**その ts の行は含む** — ts は
+            秒精度なので排他にすると同じ秒の兄弟行が落ちる。境界の重複は読み手が潰す。
+            時刻として読めない値は撥ねる (生の文字列比較のままだと窓が黙ってずれる)
+        subject: 主語で絞る (完全一致)
+        kind: 種別で絞る (完全一致)
+        limit: **新しい側から N 行**。最新の 1 行だけが要るなら `limit: 1` を渡す
+            (stream は消えないので、渡さないと周期読みのたびに全履歴を受け取る)
+
+    古い行も消えないので、**「今どうなっているか」は読み手が射影して決める** (最後の
+    reset 以降を数える / 最後の 1 行を採る)。server は絞り込みまでで、どう畳むかは持たない。
+    """
+    return scope_mod.get_scope().ledger.signals_view(
+        since=since, subject=subject, kind=kind, limit=limit
+    )
+
+
+@tool()
+def changes_since(since_ts: str) -> dict[str, Any]:
+    """前回報告時刻からの差分 (events.jsonl + signals.jsonl の射影) を返す。
+
+    Args:
+        since_ts: 前回報告時刻 (ISO8601。例 `2026-09-02T04:00:00Z`)。**その ts の行は含む** —
+            ts は秒精度なので、排他にすると報告した瞬間と同じ秒の事象が次の差分から
+            永久に落ちる。境界そのものを signal で刻んでいれば、その 1 行も差分に載る
+            (境界の目印であって変化ではない)。offset 付き (`+09:00`) でもよいが、
+            timezone の無い値は撥ねる
+
+    返すのは 3 つの群 — `transitions` (phase 遷移 `from` → `to`)、`events` (それ以外の
+    events.jsonl の行)、`signals` (signals.jsonl の行を `kind` + `fields.topic` の対ごと)。
+    どの群も **件数と対象 ref だけ**で、`note` / `summary` / `pane_send` の `text` といった
+    自由記述は 1 つも載らない。中身が要るなら ref を名指しして `ledger_get` / `signal_read`
+    で取りに行く。
+
+    **`since_ts` の出所は呼び出し側が durable に持つ** — context に覚えさせると compaction で
+    「前回」が消え、本 tool を呼んでも差分が作れない。既定の置き場は signal stream で、
+    `signal_log` で自分の marker を刻み `signal_read` で読み直す (どの `subject` / `kind` を
+    marker にするかは呼び出し側のポリシー)。
+
+    **drift の種別そのものは差分にならない** — drift は `resolve` が台帳と外部 store を
+    毎回突き合わせて算出する live な値で ts を持たない。ここに載るのは observer が
+    escalation として stream へ書き残した範囲 (`kind` + `topic`) までになる。
+    """
+    return scope_mod.get_scope().ledger.changes_since(since_ts)
+
+
+@tool()
 def resolve(
     issue_ref: str | None = None,
     include_prs: bool = True,
@@ -563,7 +468,7 @@ def resolve(
       効いているが自分の成果ではない — **番号と repo を添えて人の判断へ残す側**
     - `unresolved_review_threads`: **駐機中 (`parked`) の entry の closes PR に付いた未解決の
       review thread** (`ref` / `repo` / `thread_id`)。対応するのは駐機ツリーへ再入した worker で、
-      返信して PR を直したうえで `review_thread_resolve` で閉じる (ADR 0039)。
+      `review_thread_reply` で返信し PR を直したうえで `review_thread_resolve` で閉じる (ADR 0039)。
       **`[]` と null を潰さない** — `[]` は「観測して未解決 0 件」、null は判定していない
       (`parked` 以外 / PR 置き場の adapter が review thread 未対応 / 1 回で取り切れなかった)。
       集約 `status` の梯子には段を足していない (1 語へ潰す設計なので、足すと conflict /
@@ -625,22 +530,18 @@ def resolve(
     追跡数が増えた状態の引数なし呼び出しは 2 分を超えて自動 background 化されうる (spec §4.5)
     ので、終端 entry を溜めない (`worktree_tidy` で `cleaned` まで送る) か `issue_ref` で絞る。
     """
-    ports = get_ports()
+    scope = scope_mod.get_scope()
     return resolve_mod.resolve(
-        ports.get_ledger().list_entries(),
-        issue_tracker=ports.issue_tracker_name(),
-        tracker_port=ports.get_adapter_optional(),
-        pr_port=ports.get_pr_adapter_optional(),
-        pane_port=ports.get_pane(),
-        worktree_port=ports.get_worktrees(),
+        scope.ledger.list_entries(),
+        scope,
         scope_ref=issue_ref,
         include_prs=include_prs,
-        repo=issue_repo(repo),
-        pr_repo=pr_repo_default(pr_repo),
+        repo=repo,
+        pr_repo=pr_repo,
     )
 
 
-@server.tool()
+@tool()
 def observe_worktrees(repo_root: str | None = None) -> dict[str, Any]:
     """`i<N>` 規約の dispatch worktree 一覧と dirty 状態を返す。
 
@@ -653,11 +554,16 @@ def observe_worktrees(repo_root: str | None = None) -> dict[str, Any]:
     規約外の worktree (main / 手動作成のツリー) は含まない。`dirty: null` は「検査できなかった」
     であって「clean」ではない — `dirty_error` に理由が入る。返り値の `root` で、意図した clone
     を見たかを確かめる。
+
+    `last_session_at` は、そのツリーを cwd にした最後の Claude Code セッションの時刻
+    (ISO8601 UTC)。台帳 phase と独立の生存シグナルで、**`null` は「判らなかった」** (transcript
+    の置き場が無い / 読めない) であって「使われていない」ではない。回収してよいかの判断は
+    この値を読む側が持つ (server は観測値を出すだけで、保護規則には入れない)。
     """
-    return get_ports().get_worktrees(repo_root).observe()
+    return scope_mod.get_scope().get_worktrees(repo_root).observe()
 
 
-@server.tool()
+@tool()
 @vocabulary.with_rendered_doc
 def worktree_tidy(repo_root: str | None = None) -> dict[str, Any]:
     """merged branch と回収対象 worktree を安全規則に従って掃除する。
@@ -707,12 +613,17 @@ def worktree_tidy(repo_root: str | None = None) -> dict[str, Any]:
     ツリーはその clone の掃除対象であって、台帳の記録とは独立した hygiene だから (保護 phase
     の slug はこの経路でも避ける)。台帳 entry の slug と一致しても、記録パスが違えば遷移はせず
     `ledger.unattributed` に載る。
+
+    `orphans` は登録を失った残骸ディレクトリの**報告**で、掃除の結果ではない (`worktree_sweep`
+    も同じものを返す。読み方はそちらの docstring)。掃除の対象は `git worktree list` に載る木
+    だけなので、そこから外れたディレクトリは何度呼んでも減らない — 回収は repo 側の手順に渡す
+    (web-application なら `./scripts/docker-worktree.sh reclaim` → 内容を確認して `--apply`)。
     """
-    ports = get_ports()
-    return worktree_mod.tidy_dispatches(ports.get_worktrees(repo_root), ports.get_ledger())
+    scope = scope_mod.get_scope()
+    return worktree_mod.tidy_dispatches(scope.get_worktrees(repo_root), scope.ledger)
 
 
-@server.tool()
+@tool()
 @vocabulary.with_rendered_doc
 def worktree_sweep(
     grace_hours: float = worktree_mod.SWEEP_DEFAULT_GRACE_HOURS,
@@ -744,21 +655,38 @@ def worktree_sweep(
     引数は判断ではなく dial。`dry_run=True` は判定だけを返し git の破壊操作を撃たない —
     force 回収が出る状況では先に dry run で `planned` を読むとよい。
 
+    木 1 本を指す行 (`removed_worktrees` / `planned` / `kept` / `excluded` / `failed`) は、
+    上の規則と独立に `last_session_at` (そのツリーを cwd にした最後の Claude Code セッションの
+    時刻。ISO8601 UTC) を持つ。**台帳に載らない木が今使われているかは、規則 1-7 のどれにも
+    現れない** — 人が手で作った木も別セッションが使っている木も、台帳 phase では守れず、
+    git を触らない編集では規則 4 の最終活動も動かないため。**`null` は「判らなかった」**
+    (transcript の置き場が無い / 読めない) であって「使われていない」ではない。この値を根拠に
+    見送るかどうかは呼び出し側の判断で、server は保護規則に入れない。
+
     `repo_root` は掃除する clone の root で、**未指定なら server プロセスの clone**。E2BIG の
     予防は clone ごとに要るので、実装 repo が複数ある project では root ごとに呼ぶ (どの clone
     を回るかは呼び出し側の判断。実在しないパスは error)。
+
+    `orphans` は**回収の対象外**として報告する残骸ディレクトリ (`worktree_tidy` も同じものを
+    返す)。`git worktree remove` は admin dir を先に消してからツリーを削除するため、削除が
+    権限で失敗すると登録だけ消えて中身が残る。**この server は消さない** — `.git` を失った
+    ディレクトリでは dirty 検査も lock 検査も撃てず、回収の破壊権限が拠って立つ 2 規則が
+    成立しないため。`dirs[].reason` は `no-git` (`.git` が無い) / `stale-gitdir` (`.git` の
+    指す admin dir が消えている)。`unverified` は `.git` を読めず判定できなかったもので、
+    残骸とは読まない。**回収は repo 側の手順に渡す** (web-application なら
+    `./scripts/docker-worktree.sh reclaim` → 内容を確認して `--apply`)。
     """
-    ports = get_ports()
+    scope = scope_mod.get_scope()
     return worktree_mod.sweep_dispatches(
-        ports.get_worktrees(repo_root),
-        ports.get_ledger(),
+        scope.get_worktrees(repo_root),
+        scope.ledger,
         grace_hours=grace_hours,
         max_age_hours=max_age_hours,
         dry_run=dry_run,
     )
 
 
-@server.tool()
+@tool()
 def observe_panes() -> dict[str, Any]:
     """pane 一覧と agent の状態を返す。
 
@@ -776,10 +704,10 @@ def observe_panes() -> dict[str, Any]:
     `blocked` (permission 待ち・質問待ち) は中立語彙では running に潰れるので、
     「今このセッションへ送っていいか」は raw を見て判断する。
     """
-    return get_ports().get_pane().observe_panes()
+    return scope_mod.get_scope().get_pane().observe_panes()
 
 
-@server.tool()
+@tool()
 async def pane_watch(
     context: Context,
     timeout_sec: int = pane_mod.WATCH_DEFAULT_TIMEOUT_SEC,
@@ -817,20 +745,24 @@ async def pane_watch(
         except Exception:  # noqa: BLE001
             pass
 
-    return await get_ports().get_pane().pane_watch(
+    return await scope_mod.get_scope().get_pane().pane_watch(
         timeout_sec=timeout_sec, interval_sec=interval_sec, progress=report
     )
 
 
-@server.tool()
+@tool()
 def observe_project() -> dict[str, Any]:
-    """project の宣言 (issue 置き場 / PR 置き場) を解決して返す。
+    """project の宣言 (issue 置き場 / PR 置き場 / worker 契約) を解決して返す。
 
     返り値::
 
         {"config_path": "<台帳ディレクトリ>/dispatch-project.toml" | null,
-         "issue": {"tracker": "gh", "repo": "owner/name" | null, "source": "config"|"remote"},
-         "pr":    {"tracker": "gh", "repo": "owner/name" | null, "source": "config"|"issue"|"remote"}}
+         "issue": {"tracker": "gh", "repo": "owner/name" | null,
+                   "close_on_merge": false, "done_status": "Done" | null,
+                   "claim_label": "dispatch:claimed", "ready_label": "ready-for-agent" | null,
+                   "source": "config"|"remote"},
+         "pr":    {"tracker": "gh", "repo": "owner/name" | null, "source": "config"|"issue"|"remote"},
+         "worker": {"standing": ["...", ...]}}
 
     **この値は tracker 系 tool の `repo` / `pr_repo` の既定値として server が自動で使う。**
     宣言どおりに観測するために毎回渡す必要は無い (渡すのは宣言と違う repo を 1 回だけ見るとき)。
@@ -842,6 +774,33 @@ def observe_project() -> dict[str, Any]:
     継いだ。**`repo` が埋まるのは config 経由のときだけ**で、それ以外は null (= CLI の cwd 推論)。
     `remote` が返せるのは gh / glab だけなので、**Jira 置き場は config を置かない限り成立しない**。
 
+    `issue.close_on_merge` は「closes PR が merged になったとき issue を閉じてよいか」の宣言
+    (既定 false)。**closing reference が届かない構成** — cross-tracker (issue = Jira / PR = GitLab) と、
+    単一 tracker で PR と issue が別 repo の構成 — で issue が open のまま残るのを、宣言のもとで
+    閉じるための入口。`issue.done_status` は Jira の遷移先 status 名で、`tracker` が `jira` の
+    ときだけ宣言できる (gh / glab の close は遷移先を取らない)。
+
+    **server はこの 2 値で何もしない。** 閉じるのは orchestrator で、server が持つのは書式の検証と
+    ここでの公開まで (ADR 0040 — 遷移そのものは LLM の領分)。
+
+    `issue.claim_label` は **AI が claim 中の印として issue へ付ける label** の綴り
+    ([ADR 0053](../../docs/adr/0053-claim-signal-in-tracker-label.md))。`issue_claim` /
+    `issue_unclaim` が付け外しする綴りそのもので、**候補除外の `labels_none` にも同じ値を渡す**。
+    宣言が無い環境でも tracker 既定 (gh / jira は `dispatch:claimed`、glab は scoped label の
+    `dispatch::claimed`) が入るので、**null になることはない**。
+
+    `issue.ready_label` は **候補プール (AFK-ready) を表す triage label** の綴りで、候補を観測する
+    3 者 (orchestrator の候補選定 / observer の候補プール観測 / dashboard の候補列) が同じ 1 つの
+    値を `labels_any` に渡す。**未宣言を既定へ倒さない唯一の宣言** — 綴りは機構の外の triage
+    語彙なので、埋められる既定が無い。**null を憶測で埋めない**: 外した綴りは error にならず `count: 0` が返り、
+    「候補が空」と読まれて候補出現の検知が静かに死ぬ。null なら候補観測を行わず、宣言を置く
+    (`project_setup`) ところまで人へ返す。
+
+    `worker.standing` は **worker へ毎 spawn 逐語で貼る project 固有の制約**の列 (触ってよい
+    path・禁止コマンド・検証の下限など)。宣言が無ければ空配列。**貼るのは orchestrator で、
+    server は書式 (空でない文字列の配列) しか知らない** — 意味を server が解釈すると、制約を
+    1 行足すたびに server の改修が要る形に戻る (ADR 0012)。
+
     `config_path` は**効いた config の絶対パス**。config は台帳と同じディレクトリに置く
     (version 管理の外なので、環境ごとに置く / doctor が生成する)。`repo` が null で宣言した
     つもりなら、まず config がその path に在るかを見る。
@@ -849,10 +808,10 @@ def observe_project() -> dict[str, Any]:
     宣言が正しい repo を指しているかは server では検証できない (綴りの誤りは observe_issues の
     `issues[].url` に現れる)。config を編集したら **server の再起動**が要る (プロセス内 cache)。
     """
-    return get_ports().get_declaration()
+    return scope_mod.get_scope().declaration
 
 
-@server.tool()
+@tool()
 def project_doctor() -> dict[str, Any]:
     """dispatch の前提を機械検査して**不足項目を逐語で**返す (導入時 / 挙動が怪しいとき)。
 
@@ -869,8 +828,9 @@ def project_doctor() -> dict[str, Any]:
     不成立とは別 (materials が読めない層がある)。`items` は不足の逐語 — settings なら
     そのまま `.claude/settings.local.json` へ写せる entry 文字列が入る。
 
-    `visibility` は**不成立時の見え方**。`silent` の 2 件 (宣言 config / plugin 名) が最も
-    高くつく前提で、誤った置き場を黙って観測し続ける経路になる。
+    `visibility` は**不成立時の見え方**。`silent` の 2 件 (置き場の宣言 / plugin 名) が最も
+    高くつく前提で、誤った置き場を黙って観測し続ける経路になる。同じ宣言 config でも
+    `ready_label` の不在は `loud` (dispatch が 1 件も起動しないので気づける)。
 
     検査するのは前提の充足だけで、**直しはしない**: settings の書き込みは
     `/apply-swat-settings` の責務、宣言 config の生成は `project_setup`、herdr / uv / CLI の
@@ -883,12 +843,17 @@ def project_doctor() -> dict[str, Any]:
     return doctor_mod.run_checks()
 
 
-@server.tool()
+@tool()
 def project_setup(
     issue_tracker: str,
     issue_repo: str,
     pr_tracker: str | None = None,
     pr_repo: str | None = None,
+    issue_close_on_merge: bool = False,
+    issue_done_status: str | None = None,
+    issue_claim_label: str | None = None,
+    issue_ready_label: str | None = None,
+    worker_standing: list[str] | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """置き場の宣言 config を台帳ディレクトリ直下へ生成する (未設定 project の初期設定)。
@@ -900,6 +865,26 @@ def project_setup(
         pr_tracker: PR 置き場の tracker。**PR 置き場が issue 置き場と違うときだけ**渡す
             (省略すると issue 側を継ぐ)
         pr_repo: PR 置き場の識別子。`pr_tracker` を渡すなら必須
+        issue_close_on_merge: closes PR が merged になったとき orchestrator が issue を
+            閉じてよいか (既定 false)。**closing reference が届かない構成** (cross-tracker /
+            PR と issue が別 repo) で立てる
+        issue_done_status: Jira の遷移先 status 名。`issue_tracker` が `jira` のときだけ
+            渡せる (jira かつ `issue_close_on_merge` なら必須)
+        issue_claim_label: AI が claim 中の印として付ける label の綴り。**既定から変える
+            ときだけ**渡す (省略すると gh / jira は `dispatch:claimed`、glab は scoped label の
+            `dispatch::claimed`)。その tracker で既に使われている label 語彙と衝突するとき、
+            または triage label の prefix 規約へ寄せるときに宣言する
+        issue_ready_label: 候補プール (AFK-ready) を表す triage label の綴り。gh / glab 置き場の
+            **新規生成では省略すると `ready-for-agent` を書き込む** — 解決側に既定が無いので、
+            書かないと候補を観測する 3 者が全員止まる。その環境の triage 語彙が違う綴りなら、
+            その綴りを渡す。**jira 置き場では省略すると書かない** (Jira の AFK-ready は status で
+            表すため)。**`overwrite` では補完しない** — 置き直しで補完すると、独自の綴りを宣言して
+            いた project が渡し忘れ 1 回で既定へ黙って化ける。置き直すなら綴りごと渡す
+        worker_standing: worker へ毎 spawn 逐語で貼る project 固有の制約 (触ってよい path・
+            禁止コマンド・検証の下限など)。**issue 固有の指示は入れない** — それは spawn prompt
+            が直接持つ。server は書式 (空でない文字列の配列) しか見ず、意味は解釈しない。
+            **`overwrite` で省略すると既存の宣言を継ぐ** (落ちたことを検知する術が無い唯一の
+            宣言なので、置き直しで黙って消さない)。消すなら空配列を渡す
         overwrite: 既存 config を置き直す。既定では既存があれば失敗する
 
     **何を宣言するかは決めない** — tracker と識別子は呼び出し側 (人間の承認を得た LLM) が
@@ -913,17 +898,39 @@ def project_setup(
     **tracker 系 tool の既定値へ反映するには server の再起動 (`/mcp` の reconnect) が要る**。
     `project_doctor` は config を直読みするので、確認だけなら再起動前でもできる。
     """
-    ports = get_ports()
+    scope = scope_mod.get_scope()
     pr = None
     if pr_tracker is not None or pr_repo is not None:
         pr = {"tracker": pr_tracker, "repo": pr_repo}
     written = project_mod.write_config(
         # 宣言は台帳と同じディレクトリに置く (ADR 0036 の追補)。置き先を独立に解決せず台帳から
         # 受け取るので、「台帳を作った場所」と「宣言を置いた場所」がずれる経路が構造的に無い
-        ports.get_ledger().ensure_directory(),
-        {"tracker": issue_tracker, "repo": issue_repo},
+        scope.ledger.ensure_directory(),
+        {
+            "tracker": issue_tracker,
+            "repo": issue_repo,
+            "close_on_merge": issue_close_on_merge,
+            "done_status": issue_done_status,
+            "claim_label": issue_claim_label,
+            # 既定を**書き込む**のは `claim_label` と逆の規則 — 解決側に既定が無いぶん、
+            # 綴りが file の上に見える形で残らないと候補観測が成立しない。渡されたら tracker に
+            # 関係なく書く (jira でも label 運用の環境はありうる)。
+            # **既定の補完は新規生成のときだけ** — 置き直しで補完すると、独自の綴りを宣言して
+            # いた project が渡し忘れ 1 回で `ready-for-agent` へ黙って化け、#802 が消した
+            # 「外した綴りが `count: 0` を返して候補が空に見える」沈黙の失敗が復活する。
+            # 補完しなければ宣言ごと落ちて `project_doctor` が loud に名指しする
+            "ready_label": issue_ready_label
+            or (
+                project_mod.DEFAULT_READY_LABEL
+                if not overwrite and project_mod.declares_ready_label(issue_tracker)
+                else None
+            ),
+        },
         pr=pr,
         overwrite=overwrite,
+        # `None` (未指定) と `[]` (空を明示) を潰さない — 潰すと空配列が「継ぐ」に化け、
+        # 置き直しで standing を消す手段が無くなる
+        worker={"standing": worker_standing} if worker_standing is not None else None,
     )
     return {
         **written,
@@ -934,7 +941,7 @@ def project_setup(
     }
 
 
-@server.tool()
+@tool()
 def observe_issues(
     state: str = "open",
     limit: int = tracker_mod.DEFAULT_ISSUE_LIMIT,
@@ -953,8 +960,10 @@ def observe_issues(
         state: open / closed / all (既定 open)
         limit: tracker から取る件数の上限。応答の `truncated` が true なら取り残しがある
         labels_any: いずれかを持つ issue に絞る
-        labels_none: いずれかを持つ issue を落とす
-        assignee: login で絞る。`none` = 未 assign / `any` = assign 済み
+        labels_none: いずれかを持つ issue を落とす。**AI が着手済みの issue を候補から
+            外すのはここ** — 宣言の `issue.claim_label` を渡す (`observe_project`)
+        assignee: **人の担当**で絞る (login。`none` = 未 assign / `any` = assign 済み)。
+            AI の claim 信号ではないので、着手済みの除外には使わない
         updated_since: この ISO8601 時刻以降に更新された issue に絞る
         ordering: updated / created / number。未指定なら tracker の順序のまま
         descending: ordering を降順にする (既定は昇順)
@@ -971,7 +980,8 @@ def observe_issues(
     宣言が正しい repo を指しているかは `issues[].url` で確かめる — 綴りの誤りは server では
     検出できない。
     """
-    return get_ports().get_adapter().observe_issues(
+    scope = scope_mod.get_scope()
+    return scope.get_adapter().observe_issues(
         state=state,
         limit=limit,
         labels_any=labels_any,
@@ -981,11 +991,11 @@ def observe_issues(
         ordering=ordering,
         descending=descending,
         include_blocked=include_blocked,
-        repo=issue_repo(repo),
+        repo=scope.issue_repo(repo),
     )
 
 
-@server.tool()
+@tool()
 def pane_spawn(
     prompt: str,
     issue_ref: str | None = None,
@@ -1052,21 +1062,22 @@ def pane_spawn(
     側に台帳が新設されない。どの clone・どの mode で起動したかは返り値の `repo_root` /
     `cwd` / `mode` で確認する。
     """
-    return get_ports().get_pane().pane_spawn(
+    scope = scope_mod.get_scope()
+    return scope.get_pane().pane_spawn(
         prompt,
-        require_clone_root(repo_root) if repo_root else default_repo_root(),
+        scope_mod.require_clone_root(repo_root) if repo_root else scope.root,
         issue_ref=issue_ref,
         label=label,
         worktree=worktree,
         cwd=cwd,
         model=model,
         effort=effort,
-        env=ledger_anchor_env(),
+        env=scope.ledger_anchor_env(),
         remote_control=remote_control,
     )
 
 
-@server.tool()
+@tool()
 def pane_close(pane_id: str) -> dict[str, Any]:
     """pane を閉じる。
 
@@ -1074,13 +1085,13 @@ def pane_close(pane_id: str) -> dict[str, Any]:
         pane_id: 閉じる pane の id
 
     既に消えているのは失敗ではない (`closed: false` + `reason: not_found`)。閉じても
-    worktree と assignee は残るので、駐機 (pane だけ降ろして作業ツリーを温存する) は
+    worktree と claim label は残るので、駐機 (pane だけ降ろして作業ツリーを温存する) は
     本 tool の呼び出しと台帳の遷移で表す。
     """
-    return get_ports().get_pane().pane_close(pane_id)
+    return scope_mod.get_scope().get_pane().pane_close(pane_id)
 
 
-@server.tool()
+@tool()
 def pane_send(pane_id: str, text: str, issue_ref: str | None = None) -> dict[str, Any]:
     """稼働中の pane へ自由テキストを送る (送出 + submit)。
 
@@ -1094,13 +1105,13 @@ def pane_send(pane_id: str, text: str, issue_ref: str | None = None) -> dict[str
     observe_panes で raw status を見る。pane 不在 / 自 pane / agent 終了は失敗として
     返す (受け手が居ない、または自分自身への送信)。
     """
-    ports = get_ports()
+    scope = scope_mod.get_scope()
     return pane_mod.send_and_log(
-        ports.get_pane(), ports.get_ledger(), pane_id, text, issue_ref=issue_ref
+        scope.get_pane(), scope.ledger, pane_id, text, issue_ref=issue_ref
     )
 
 
-@server.tool()
+@tool()
 def observe_prs(
     issue_ref: str | None = None,
     limit: int = tracker_mod.DEFAULT_PR_LIMIT,
@@ -1139,38 +1150,55 @@ def observe_prs(
     `repo` (問い合わせ先の echo) とは別物。fork から張られた `Closes` も closes として
     集約 `status` に効くので、**根拠に採る前に `prs[].repo` を確かめる**。
     """
-    ports = get_ports()
-    return ports.get_pr_adapter().observe_prs(
+    scope = scope_mod.get_scope()
+    return scope.get_pr_adapter().observe_prs(
         issue_ref,
         limit=limit,
-        repo=pr_repo_default(repo),
-        issue_tracker=ports.issue_tracker_name(),
+        repo=scope.pr_repo(repo),
+        issue_tracker=scope.issue_tracker_name(),
     )
 
 
-@server.tool()
+@tool()
 def issue_claim(issue_ref: str, repo: str | None = None) -> dict[str, Any]:
-    """issue の assignee を自分に設定する。
+    """issue に claim label を付けて「AI が着手中」を tracker 上に立てる。
 
     Args:
         issue_ref: 中立 issue ref (gh#386 / glab#12)
         repo: 対象 repo の識別子。**未指定なら宣言の `issue.repo`** (`observe_project`)
+
+    label の綴りは**宣言の `issue.claim_label`** (`observe_project` で読める。未宣言なら
+    tracker 既定)。この tool は綴りを引数で取らない — claim の意味を持つ label は project に
+    1 つで、呼び出しごとに変えられると候補除外の `labels_none` と食い違う。
+
+    **assignee は動かさない。** assignee は人の担当を表す欄として残っており、AI が付け外し
+    するのは claim label だけ ([ADR 0053](../../docs/adr/0053-claim-signal-in-tracker-label.md))。
+    付けた綴りは返り値の `claim_label` に載る。
     """
-    return get_ports().get_adapter().issue_claim(issue_ref, repo=issue_repo(repo))
+    scope = scope_mod.get_scope()
+    return scope.get_adapter().issue_claim(
+        issue_ref, scope.claim_label(), repo=scope.issue_repo(repo)
+    )
 
 
-@server.tool()
+@tool()
 def issue_unclaim(issue_ref: str, repo: str | None = None) -> dict[str, Any]:
-    """issue の assignee を解除して候補プールへ返す。
+    """issue の claim label を外して候補プールへ返す。
 
     Args:
         issue_ref: 中立 issue ref
         repo: 対象 repo の識別子。**未指定なら宣言の `issue.repo`** (`observe_project`)
+
+    外す綴りは `issue_claim` と同じく宣言の `issue.claim_label`。**assignee は動かさない**
+    ので、人が担当に付いている issue から担当を剥がすことはない。
     """
-    return get_ports().get_adapter().issue_unclaim(issue_ref, repo=issue_repo(repo))
+    scope = scope_mod.get_scope()
+    return scope.get_adapter().issue_unclaim(
+        issue_ref, scope.claim_label(), repo=scope.issue_repo(repo)
+    )
 
 
-@server.tool()
+@tool()
 def issue_comment(issue_ref: str, body: str, repo: str | None = None) -> dict[str, Any]:
     """issue にコメントを投稿する。
 
@@ -1179,10 +1207,11 @@ def issue_comment(issue_ref: str, body: str, repo: str | None = None) -> dict[st
         body: 投稿する本文
         repo: 対象 repo の識別子。**未指定なら宣言の `issue.repo`** (`observe_project`)
     """
-    return get_ports().get_adapter().issue_comment(issue_ref, body, repo=issue_repo(repo))
+    scope = scope_mod.get_scope()
+    return scope.get_adapter().issue_comment(issue_ref, body, repo=scope.issue_repo(repo))
 
 
-@server.tool()
+@tool()
 def review_thread_resolve(thread_id: str) -> dict[str, Any]:
     """PR の review thread を resolve する (指摘へ対応した worker 自身が閉じる)。
 
@@ -1199,10 +1228,31 @@ def review_thread_resolve(thread_id: str) -> dict[str, Any]:
 
     返る `resolved` は操作後に tracker が返した状態で、「呼び出しが成功した」とは別物。
     """
-    return get_ports().get_pr_adapter().review_thread_resolve(thread_id)
+    return scope_mod.get_scope().get_pr_adapter().review_thread_resolve(thread_id)
 
 
-@server.tool()
+@tool()
+def review_thread_reply(thread_id: str, body: str) -> dict[str, Any]:
+    """PR の review thread へ返信する (指摘へ対応した worker 自身が返信する)。
+
+    Args:
+        thread_id: `resolve` の `current[].derived.unresolved_review_threads[].thread_id`
+            (PR 置き場の tracker が発行する thread の識別子)
+        body: 返信する本文
+
+    投稿先は **PR 置き場**の tracker。review thread を実装していない adapter は名指しで
+    失敗する — 未対応を「返信した」で覆わない。
+
+    **返信 → 対応を PR へ反映 → `review_thread_resolve` で閉じる、の順で撃つ** (ADR 0039)。
+    返信のない resolve は閉じた根拠を履歴に残さない。同意できない指摘は **PR 上で反論せず**
+    orchestrator 経由で user へ上げる。
+
+    返る `comment_id` は tracker が発行した返信の識別子で、「呼び出しが成功した」とは別物。
+    """
+    return scope_mod.get_scope().get_pr_adapter().review_thread_reply(thread_id, body)
+
+
+@tool()
 def issue_label(
     issue_ref: str,
     add: list[str] | None = None,
@@ -1220,12 +1270,33 @@ def issue_label(
     どの label が何を意味するかは環境ごとの運用で、server は解釈しない。stage 遷移や
     除外の表現は呼び出し側がこの tool で組み立てる。
     """
-    return get_ports().get_adapter().issue_label(
-        issue_ref, add=add, remove=remove, repo=issue_repo(repo)
+    scope = scope_mod.get_scope()
+    return scope.get_adapter().issue_label(
+        issue_ref, add=add, remove=remove, repo=scope.issue_repo(repo)
     )
 
 
 def main():
+    """dashboard を上げてから stdio transport で待ち受ける。
+
+    dashboard の自動起動を**ここ**に置くのは、scope (root / 台帳 / 宣言) の解決より前だから。
+    利用者設定は project に依らないので、git repo でない cwd で起動した session でも同じに
+    効く — 逆に scope を経由させると、そういう session が**起動時点で**落ちるようになる
+    (現状は tool を呼んだときにだけ失敗する)。
+
+    **読めた設定の書式違反だけがここで落ちて server を起動させない。** 既定値へ黙って倒すと、
+    綴りを間違えた宣言が「宣言していない」と同じ挙動になる (`user_config` の規則)。代償として、
+    壊れた `~/.config/swat-skills/config.json` は dashboard だけでなく dispatch-ops の全 tool を
+    止める。設定を読めない / 置けない環境は既定値で続行する (同 module の失敗の割り方)。
+
+    決定を stderr へ 1 行出すのは、autostart log を開かなくても server の起動 log で追える
+    ようにするため。
+    """
+    decision = dashboard_autostart_mod.ensure_dashboard(user_config_mod.load_or_create())
+    print(
+        f"dispatch-ops: dashboard autostart {dashboard_autostart_mod.format_decision(decision)}",
+        file=sys.stderr,
+    )
     server.run("stdio")
 
 

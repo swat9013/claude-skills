@@ -42,6 +42,8 @@ mart の `contract.notes`) にする (ADR 0031: context 常駐コストの削減
 別 project を観測したいときは引数で明示する。
 """
 
+import functools
+import inspect
 import sys
 from pathlib import Path
 from typing import Any
@@ -51,9 +53,11 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mcp.server import MCPServer  # noqa: E402
+from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
 
 from commands import find_invocations as find_invocations_mod  # noqa: E402
 from commands import query as query_mod  # noqa: E402
+from store.lock import SyncLockTimeout  # noqa: E402
 from marts.invocations import present as invocations_mart  # noqa: E402
 from marts.overhead import present as overhead_mart  # noqa: E402
 from marts.permissions import present as permissions_mart  # noqa: E402
@@ -76,8 +80,52 @@ INSTRUCTIONS = """\
 
 server = MCPServer(name=SERVER_NAME, version=SERVER_VERSION, instructions=INSTRUCTIONS)
 
+# commands / marts が「予期した失敗」として投げる例外。列挙にない例外は crash として
+# SDK の仕分けに残す (traceback 付き ERROR ログ + LLM には tool 名だけ)。
+# 新しい domain error class を足したらここにも足す — 漏れると message が黙って消える
+ANTICIPATED_ERRORS = (
+    prompts_mart.RepoScopeUnresolved,
+    query_mod.QueryRejected,
+    SyncLockTimeout,
+)
 
-@server.tool()
+
+def tool():
+    """`server.tool()` に domain error → `ToolError` の翻訳を噛ませた登録 decorator。
+
+    SDK が message ごと LLM に返すのは `ToolError` だけで、他の例外は
+    `Error executing tool <name>` に潰す (mcp 2.1)。commands / marts は SDK 非依存に保つ
+    (SDK 抜きでもテストが走る) ため `ToolError` を投げられず、翻訳はこの配線層に置く。
+    潰されると「repo か all_repos を明示せよ」のような**次の一手を含む文言**が LLM に
+    届かなくなる。
+    """
+    register = server.tool()
+
+    def decorate(fn):
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await fn(*args, **kwargs)
+                except ANTICIPATED_ERRORS as exc:
+                    raise ToolError(str(exc)) from exc
+
+        else:
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except ANTICIPATED_ERRORS as exc:
+                    raise ToolError(str(exc)) from exc
+
+        return register(wrapper)
+
+    return decorate
+
+
+@tool()
 def scan_permissions(
     section: str = "project",
     days: int = permissions_mart.DEFAULT_DAYS,
@@ -118,7 +166,7 @@ def scan_permissions(
     )
 
 
-@server.tool()
+@tool()
 def scan_invocations(
     days: int = invocations_mart.DEFAULT_DAYS,
     repo_root: str | None = None,
@@ -153,7 +201,7 @@ def scan_invocations(
     )
 
 
-@server.tool()
+@tool()
 def scan_prompts(
     days: int = prompts_mart.DEFAULT_DAYS,
     output_dir: str = str(prompts_mart.DEFAULT_OUTPUT_DIR),
@@ -183,7 +231,7 @@ def scan_prompts(
     )
 
 
-@server.tool()
+@tool()
 def select_candidates(
     mart: str | None = None,
     min_chars: int = prompts_mart.DEFAULT_MIN_CHARS,
@@ -229,7 +277,7 @@ def select_candidates(
     )
 
 
-@server.tool()
+@tool()
 def scan_overhead(
     days: int = overhead_mart.DEFAULT_DAYS,
     repo_root: str | None = None,
@@ -260,7 +308,7 @@ def scan_overhead(
     )
 
 
-@server.tool()
+@tool()
 def find_invocations(
     skill: str,
     limit: int = find_invocations_mod.DEFAULT_LIMIT,
@@ -288,7 +336,7 @@ def find_invocations(
     )
 
 
-@server.tool()
+@tool()
 def query(
     sql: str,
     limit: int = query_mod.DEFAULT_ROW_LIMIT,

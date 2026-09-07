@@ -1,7 +1,7 @@
 ---
 name: inventory-permissions
 disable-model-invocation: true
-description: Claude Code の permission (allow/deny/ask) / sandbox / guard hook を transcript の tool_use 実績と突合し、両軸集計 (設定 pattern × 実績) と bypass 系列を単位別に 5 bucket (revoke / promote / refine / sandbox / keep) の候補提示まで LLM に運ばせる棚卸し。決定的ルールは tool が評価し (bucket_candidate / rule_fired / open_predicates)、LLM は open_predicates だけを判断する。高確度候補 (revoke 限定) はセッション内で AskUserQuestion 提案し承認後そのまま適用、低確度候補はレポート提示。判定は人間。汎用スキル制約 (Claude Code 標準ファイルのみ参照) で動く。Use when「permission 棚卸し」「settings.json の allow を見直したい」「未使用 allow を削りたい」「hook / sandbox の切り分け」「bypass 系列を確認」「棚卸し」「inventory-permissions」.
+description: Claude Code の permission (allow/deny/ask) / sandbox / guard hook を transcript の tool_use 実績と突合し、5 bucket (revoke / promote / refine / sandbox / keep) の候補を人間の判定へ差し出す棚卸し。
 ---
 
 # inventory-permissions
@@ -12,7 +12,7 @@ Claude Code の permission 3 層 — **permission** (正規表現ベースの一
 
 1. **決定的観測 + 決定的ルール**: `scan_permissions` tool が両軸集計 + bypass 系列 + guard 逆引きを出し、機械判定可能な条件を評価して `rule_candidates` (`bucket_candidate` / `rule_fired` / `rule_inputs` / `open_predicates` / `near_misses`) を書く。**tool は bucket を確定しない**
 2. **LLM 具体化 (このメインコンテキスト)**: `open_predicates` に挙がった条件だけを判断し、bucket を確定して具体 entry 案 (hook は要件文まで) を組み立てる。**採否は決めない**
-3. **人間判定**: 削除/昇格/絞り込み/保持を選ぶのは常に人間。提示は確度で 2 層に分ける — **高確度候補** (手順 3) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む (project scope は worktree + PR、global scope は人間側操作)。**低確度候補**はレポート提示で止まる
+3. **人間判定**: 削除/昇格/絞り込み/保持を選ぶのは常に人間。提示は確度で 2 層に分ける — **高確度候補** (手順 3) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む (project scope は skill が編集、global scope は人間側操作)。**低確度候補**はレポート提示で止まる
 
 無人 commit は行わない (適用は必ず AskUserQuestion での人間承認を経る)。
 
@@ -28,13 +28,15 @@ Claude Code の permission 3 層 — **permission** (正規表現ベースの一
 
 ### 0. 前提: matcher 実装の確認 (best-effort)
 
-Claude Code 本体の permission matcher 実装を確認できれば `sample_matched` を厳密化できるが、確認できなくても本 skill は動く。実装冒頭で以下を試み、確認できたら「matcher_confidence を `exact` に昇格して報告」を宣言する。確認できなくても続行 — ブロッカーにしない。
+Claude Code 本体の permission matcher 実装を確認できれば `sample_matched` を厳密化できるが、確認できなくても本 skill は動く。実装冒頭で以下を試み、`approx` (glob 近似) の解釈揺れが無いと確認できたら「該当 entry を `exact` 相当として扱って報告」を宣言する。確認できなくても続行 — ブロッカーにしない。
 
 - 手元の Claude Code パッケージ内 permission 判定コードの探索 (grep)
 - 公式 docs (`https://code.claude.com/docs/ja/`) の permission matcher 記述
 - 実測 (deny 済み entry で似た pattern を作って発火試験)
 
-いずれも空振りしたら本 skill は保守的近似のまま進む (`exact_tool` / `exact_command` / `prefix` を `exact`、`glob` を `approx` として提示)。
+**昇格できるのは `approx` だけで、`unmatchable` は対象外。** `approx` は照合対象を持ったうえで pattern の解釈が揺れる状態なので、本体仕様が判明すれば解消する。`unmatchable` は照合対象そのものが観測に無い状態で、本体仕様が判明しても照合対象は生えない (#873)。両者を混ぜて昇格させると、照合できていない entry を「使われていない」として revoke 候補へ戻すことになる。
+
+いずれも空振りしたら本 skill は保守的近似のまま進む (`exact_tool` / `exact_command` / `prefix` / wildcard 無しの `domain` を `exact`、`glob` と wildcard 入りの `domain` を `approx` として提示)。
 
 ### 1. 観測 tool 起動 (決定的)
 
@@ -46,7 +48,7 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 - **mart 本体は返らない**。返るのは path と件数 meta だけなので、中身は `paths` を Read する
 - 想定所要時間: 初回のみ transcript の取り込みに十数秒かかる。2 回目以降は差分だけを取り込むので 1 秒未満 + 集計時間
 
-`meta.total_events` が 0 なら (transcript lake が無い / settings が壊れている等) 「観測不能」を報告して終了。
+`meta.total_events` が 0 なら、まず現 cwd と event の cwd の乖離を疑う (worktree 内で実行し transcript は親 repo path で保存されている等) — `repo_root` に親を渡すか `section: "all"` で対象範囲を広げて再実行する。それでも 0 なら (transcript lake が無い / settings が壊れている等) 「観測不能」を報告して終了。
 
 ### 2. 分割ファイルを読んで bucket を確定する (LLM)
 
@@ -56,13 +58,15 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 
 - `15-rule-candidates.json` が機械判定済みの候補。**`open_predicates` に挙がった条件だけを判断し**、満たすと判断したものだけ `bucket_candidate` を bucket として確定する。満たさないなら informational へ落とし、判断の根拠を書く
 - `near_misses` は「あと 1 条件」で外れた entry と落選理由。**閾値・近似・連動の当否を疑う証拠はここにしか出ない** — レポートの informational に転記する
-- `20-axis-a.json` が keep を含む全 entry の母集団。rule に載らなかった entry (promote / refine / sandbox / keep) はここを起点に割り当てる
-- `30-bypass-samples.json` の代表系列は `refine` の証拠としてレポートに転記する
+- `20-axis-a.json` が keep を含む全 entry の母集団。rule に載らなかった entry (promote / refine / sandbox / keep) はここを起点に割り当てる。entry の `scope` でどの層 (`project` / `project_local` / `project_local_main_clone`) 由来かを確かめる — worktree では親 clone の `settings.local.json` も分母に入るので、`settings_sources` の `project_local_main_clone` 行を見てから「未収載」を判断する
+- `30-bypass-samples.json` の代表系列は `refine` の証拠としてレポートに転記する。follow_up は同 tool の後続 call を全て拾うので、**first follow_up が success かつ input が似ている**系列だけを候補にし、低 gap の系列を優先する
 - `40-hooks.json` は **hook 軸** (下記「hook 観測の読み方」)。permission entry の bucket とは別枠で扱う
 
 標準フロー外の追加検査が要るときは `mcp__plugin_swat-skills_transcript-ops__query` に read-only SQL を投げる (単発に留める。恒常的に必要になった集計は tool の分割出力拡張として提案する)。
 
 **判定可能性の分岐**: `meta.sufficient_for_relative_judgment == false` なら**全単位を `insufficient-data`** としてレポートヘッダで宣言し、以下は informational として並べる (rule も同条件で発火しない)。
+
+**分母の確認**: 突合結果 (`config_matches` / `global_config_matches`) より先に `meta.settings_denominator` を見て、`read: false` の行を reason ごとに把握する。`unparsed` がある間は promote / revoke を確定しない (層が抜けたまま「未収載」と読むことになる)。global 側に既に allow があるかは `~/.claude/settings.json` の match で確かめる — `~/.claude/settings.local.json` は Claude Code の settings 層ではなく `not_a_settings_layer` として列挙されるだけで効いていないので、反証根拠にはせず必要なら `~/.claude/settings.json` への移動を提案する (例外: cwd が `$HOME` のセッションでは同 path が local scope の解決先になって効き、`project_local` として分母に入る)。
 
 **bucket vocabulary** (tool は候補ラベル `*-pending` までしか出さない。確定はここ):
 
@@ -78,6 +82,10 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 - 上表の**証拠源**に沿って割り当てる。証拠に紐づかない bucket 割当てはしない
 - bypass 系列は独立 bucket にしない — `refine` の証拠として扱う
 - guard 逆引き (`guard_reverse_lookup`) は refine / sandbox の証拠として使う
+- promote は `global_config_matches` まで見てから割り当てる。`category: allow` の match があれば promote 不要、`deny` だけの match は refine の証拠として扱う (複合行由来の deny を疑う)
+- **この view の unit は定義上すべて未被覆 >= 収載床なので、`config_matches` に match がある unit は例外なく部分被覆** (既存 entry が unit の一部しか覆っていない)。`uncovered_event_count` の非 0 は判別条件にならない。global 側で覆われているかを `global_uncovered_event_count == 0` で見られるのは **section project のときだけ** — section global では両者が同値なので判別材料が無く、`query` tool で B 軸を直接引く。部分被覆に当たったら promote (entry の追加) ではなく **pattern を広げる refine** を検討し、未被覆の実行が何かを `query` tool で当該 tool の実行から確かめる (B 軸の unit key は引数を持たず、A 軸の `sample_matched` も match した実行しか持たないので、どちらも未被覆側の実体には答えない)
+- **未被覆には照合不能な実行が混ざる**。matcher が読む列を持たない実行は必ず未被覆に落ちる (引数が任意の tool では正当な省略もこの数に入る)。**A 軸の `unobserved_input_count` では差し引けない** — A 軸の行は config entry を列挙して作るので、その tool の entry が section の config に 1 件も無ければ数が出力に現れず、`config_matches: []` の unit (= promote 候補そのもの) では引けない。純粋な未収載件数が要るなら `query` tool で当該 tool の実行を直接見る
+- promote 候補の対象が script path を含むなら、その path の実在を確認してから提示する (窓内に使われていた script が窓の後半で削除されていることがある)
 - hook の実装案は**要件文まで** (実装はしない)
 - deny / allow / sandbox は**コピペ可能な具体 entry 案**まで書く
 
@@ -85,13 +93,19 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 
 - `exposure_opportunity`: settings が git 管理下なら `git log -S '<entry>'` で追加時期を確認する。**追加時期が窓外でも露出不足はありうる** — 窓の作業内容が偏っていれば capability を使う機会自体が発生していない。窓内の cwd 分布 (`~/.claude/projects/` の project ディレクトリ、bypass sample の `cwd`) を見て機会の実在を判定する
     - settings が git 管理外 (`git ls-files --error-unmatch <path>` が非 0) なら**追加時期は履歴から詰められない**。根拠を窓内の cwd 分布だけに置き、entry 表示に「追加時期不明 (git 管理外)」と書く。cwd 分布から機会が読めるなら `推測:` prefix つきで満たすと判断し (手順 3 の条件 2 は満たさない)、読めないなら未充足として informational へ落とす
+    - `project_local` の entry は `settings_denominator` の `resolved_path` を見る。repo 内の**配布用ディレクトリ** (他 project へ配る原本) への symlink を指しているなら、その entry の本来の利用者は**観測範囲外の他 repo**で、当該 repo の `match_count 0` は不使用の証拠にならない — `exposure_opportunity` は当該 repo の実績だけでは判定できず、**revoke ではなく keep** とする (原本の剪定基準は repo 側の規約が正本)
 - `alias_still_in_use`: `axis_b_actual_usage` を当該 tool 名・`mcp__` で引いて別名の実績を確かめる。あれば revoke ではなく refine (pattern の書き換え)
 - `invocation_form_pair`: repo 側 README / commit 履歴に pair 規約の意図が残っていないか確認する
 - `deny_attributable_to_entry`: `sample_matched` と `bypass_sequences` の入力コマンドを読む。実因が複合行の混在なら refine の対象は entry ではなく「複合行の組み立て方」で、entry 変更は不要
 
 **確度注記の義務**:
+- `hard_deny_share` を bucket 判定の根拠にする前に、その deny が **permission entry 由来か**を確かめる。guard hook 由来の deny も `deny_permission-rule` にラベルされ (`denial_kind` 空 + `outcome_base: error` に落ちる経路もある)、guard の deny メッセージは安定文字列なので `result_text` の署名で帰属が引ける。入力が汚染されているときは `axis_a_high_deny_share` / `compound_line_deny_miscount` の 0 件を「候補が無い」ではなく「入力が汚れている」と読む
+- outcome の `unknown` は**参考値**として扱い、bucket 判定は明示 outcome を主根拠にする (tool_result が transcript 末尾で truncate された / 別セッションに分割された / 未完了、のいずれでも unknown に落ちる)
+- `meta.store` の**事故由来**の劣化 (`broken_lines` / `unreadable_files`) が 0 でないうちは、revoke ではなく hold にする — observation が欠けており、未使用に見える entry が実際には使われていることがある。`skipped_nested_files` は subagent transcript を ingest しない設計由来で恒久的に非 0 なので hold の条件にせず、件数をレポートヘッダで宣言する (subagent 内だけで使われた entry が `match_count 0` に見えるリスクは受容済み)
 - `axis_a_high_deny_share` の `window_split.shifted: true` の entry は、**窓全体の `hard_deny_share` を bucket 判定の根拠にしない** (変更前後を混ぜた平均で、どちらの期間も表していない)。前半 / 後半の `hard_deny_share` を entry 表示に併記し、判定は変化後 (後半) の値で行う。`shifted: null` は判定不能 (どちらかの半分が薄い) で「窓内で一様」の証拠ではない — 前後半の件数を注記して informational へ落とす
-- `matcher_confidence: approx` の entry は「近似マッチ (glob) — 実 matcher と揺れる可能性」を **entry 表示に注記**し、revoke / keep の判定対象から外して informational へ置く (rule 側でも除外され `near_misses` に出る)
+- `matcher_confidence: approx` の entry は「近似マッチ (glob / domain の wildcard) — 実 matcher と揺れる可能性」を **entry 表示に注記**し、revoke / keep の判定対象から外して informational へ置く (rule 側でも除外され `near_misses` に出る)
+- `matcher_confidence: unmatchable` の entry は **`match_count 0` を「未使用」と読まない** (読み方は mart の `contract.notes` が正本)。approx と同じく revoke / keep の判定対象から外し、**`unmatchable_reason` をそのまま**理由に添えて informational へ置く。所見には「どうすれば判定できるようになるか」を併記する — `input_column_empty` なら store に照合対象の列を足す、`param_rule` (`Tool(param:value)` 形で server が param の値を持たない) なら transcript を直接読む。**`param_rule` に `query` tool を使わない** — 値を持つ列が無く、`input_excerpt` は 200 字上限で Bash は `command` が先に入るため、長い command の呼び出しでは param が切り落とされて実在する呼び出しを 0 件と読む (この 0 を未使用と読むと #888 の偽陽性が戻る)
+- `unobserved_input_count` が 0 でない entry を revoke 候補として採る前に、その数を所見に出す。**`match_count` は確認できた範囲の下限**なので、0 件でも「その pattern を使っていない」とは言い切れない。差の実体が `__unparsedToolInput` (実行されていない呼び出し) なら 0 を実績として読んでよく、引数が任意の tool (`Grep` の `path` 等) の正当な省略なら読めない — どちらかは `query` tool で当該 tool の入力を見て確かめる
 - outcome の `deny_user-rejected` は Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive バグ影響下 — bucket 判定の**主根拠にしない** (count が主根拠)
 - `guard_reverse_lookup` に hook-deny (Claude Code の PreToolUse permissionDecision: deny) は原則含まれない (現状 `toolDenialKind` に emit されない)。automode-blocked / automode-unavailable のみを対象とし、「hook 由来の deny は本 skill の観測範囲外」と明記する
 
@@ -100,6 +114,7 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 統治対象の 3 本目 (permission / sandbox / **guard hook**) に対する観測。観測限界は同ファイルの `observability` が正本で、本書は再記述しない。読むときの判断:
 
 - `fire_count` が `null` (未観測) の hook は **informational**。permission entry の revoke と違い、hook は「発火条件を満たす操作が窓内に無かっただけ」が常にありうる (null は「発火なし」と「発火したが観測に残らなかった」を区別しない) — 窓内の作業内容 (cwd 分布・tool 実績) と突き合わせて**機会が実在したか**を確かめてから所見を書く
+- `key_collision: true` の unit は fire 回数を**共有値**として扱い、所見にその旨を明記する。単独実績として断定できるのは「fire していない」ことだけ
 - 遅い hook は `duration_ms` の `p95` / `max` / `total` で見る。全 hook の `total` は 1 セッションあたりの待ち時間そのものなので、体感の遅さを裏づける証拠として使える
 - **hook の反映先は本 skill の write 対象外**。settings の `hooks` 登録も plugin の `hooks.json` も entry 案までで、実装・配線は別作業として要件文で渡す
 
@@ -117,7 +132,7 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 
 | 確認 | 実行 | 編集不能と読む結果 |
 |---|---|---|
-| PR 経路の有無 | `git ls-files --error-unmatch <path>` | exit != 0 — untracked。worktree を切っても差分が出ず、PR に載せられない |
+| version control 追跡の有無 | `git ls-files --error-unmatch <path>` | exit != 0 — untracked。version control が追跡しないので、編集しても差分が残らず取り消せない |
 | 編集が当該 repo に着地するか | `realpath <path>` が `git rev-parse --show-toplevel` の配下か | 配下でない — 別 repo / repo 外への symlink。書き込みは実体側の repo にしか差分を出さない (tracked な symlink は前行を通過するので、この行を独立に見る) |
 | 自己編集の deny | `20-axis-a.json` と `~/.claude/settings.json` の `permissions.deny` から `Edit` / `Write` の entry を引き、対象 file と照合する | 一致する entry がある |
 
@@ -125,7 +140,7 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
 
 高確度候補は候補ごとに証拠 1-2 行 (`rule_inputs` の match_count / 観測窓 / scope) + 適用手順 (手順 4 の単位別分岐表) を添えて **AskUserQuestion で選択肢を提示する** (選択肢は「適用する / 見送る (レポート記載のみ) / 保留」相当)。
 
-- **承認されたら scope で分岐する**: project scope entry は同セッション内で worktree + PR (通常フロー)。global scope (`~/.claude/settings.json`) は従来どおり人間側操作 — 削除対象 entry をコピペ可能形で示した具体的手順を提示して受け渡す
+- **承認されたら scope で分岐する**: project scope entry は同セッション内で編集し、変更の届け方は実行 project の運用に従う。global scope (`~/.claude/settings.json`) は従来どおり人間側操作 — 削除対象 entry をコピペ可能形で示した具体的手順を提示して受け渡す
 - 却下・保留された候補、および 3 条件を満たさない候補はすべて手順 4 のレポートへ回す
 
 ### 4. Markdown レポート組み立て
@@ -148,15 +163,15 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
 | 対象 | 適用手順 |
 |---|---|
 | **編集不能な settings** — 対象 file が untracked / worktree 外への symlink / `Edit()`・`Write()` deny のいずれかに該当 (**scope 別の行より優先する**) | 本 skill は書き込まない。対象 file の**実パス**と削除対象 entry をコピペ可能形で提示して止め、人間が直接編集する |
-| project scope の allow / deny / ask entry | worktree + PR で `.claude/settings.json(.local)` を編集 |
+| project scope の allow / deny / ask entry | `.claude/settings.json(.local)` を編集 |
 | global scope の allow / deny / ask entry | 人間が `~/.claude/settings.json` (or dotfiles 側) を直接編集 — 本 skill は書き込まない |
 | sandbox 追加 | 該当 section の `permissions.sandbox.excludedCommands` に追加 (project or global) |
 | hook 新設 / 改修 | 要件文まで書き、実装は別セッションで別途 (skill から実装せず) |
 
 ### 5. 人間判定 (確度で扱いが分かれる)
 
-- **高確度候補** (revoke 限定): 手順 3 で AskUserQuestion 承認済みのものは同セッション内で適用まで進んでよい (project scope は worktree + PR、global scope は人間側操作の手順提示)。承認なしの適用・無人 commit は行わない
-- **低確度候補**: レポートを提示するところで skill の責務は終わる。承認 → 適用は次のセッション (or 別の worktree) で人間が実施する
+- **高確度候補** (revoke 限定): 手順 3 で AskUserQuestion 承認済みのものは同セッション内で適用まで進んでよい (project scope は skill が編集、global scope は人間側操作の手順提示)。承認なしの適用・無人 commit は行わない
+- **低確度候補**: レポートを提示するところで skill の責務は終わる。承認 → 適用は次のセッションで人間が実施する
 
 ## 出力例 (概略)
 
@@ -175,7 +190,7 @@ matcher confidence: exact 105 / approx 14
 - open_predicates: side_effect_capability ○ (remote 書き込み) / exposure_opportunity △
   (推測: 窓内に同 repo での作業 42 session — 機会の実在は反実仮想) / alias_still_in_use ✗ / invocation_form_pair ✗
 - bucket: revoke (低確度 — レポート提示まで)
-- 編集可能性: `.claude/settings.local.json` は untracked (`git ls-files --error-unmatch` exit 1) — PR 経路なし
+- 編集可能性: `.claude/settings.local.json` は untracked (`git ls-files --error-unmatch` exit 1) — version control 追跡なし
 - 適用手順: 本 skill は書き込まない。`<repo 実パス>/.claude/settings.local.json` の `permissions.allow` から
   `"Bash(some-unused-remote-write-cmd:*)"` の行を人間が直接削除する
 
@@ -206,40 +221,6 @@ matcher confidence: exact 105 / approx 14
 | 2 | refine | Bash(grep:*) | project_local | - (低確度) |
 | 3 | keep | Bash(some-readonly-cmd:*) | project_local | - (低確度) |
 ```
-
-## 責務
-
-- revoke / promote / refine / sandbox / keep の**判定は常に人間** (3 段階モデル不変)
-- **決定的ルールは tool 側**。LLM が判断するのは `open_predicates` に挙がった条件だけで、機械判定可能な条件を再導出しない
-- **高確度候補** (手順 3、revoke 限定): セッション内 AskUserQuestion 提案 → 人間承認 → 同セッション内で適用まで進んでよい (project scope は worktree + PR、global scope は人間側操作の手順提示)。無人 commit は行わない
-- **低確度候補**: 観測 → 候補提示 → 適用手順の明示までで止まる
-
-## 罠
-
-| 症状 | 原因 | 対応 |
-|---|---|---|
-| unknown が多い | tool_result が transcript 末尾で truncate / 別セッションに分割された、または未完了 | mart の `outcome_totals.unknown` を「参考値」として扱い、bucket 判定は明示 outcome を主にする |
-| deny_user-rejected が過大 | Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive バグ | user-reject の count は bucket 判定の主根拠にしない (permission-rule / automode / success が主) |
-| deny_hook が 0 | Claude Code が PreToolUse hook deny に `toolDenialKind: hook` を emit しないため、本 skill は明示 kind のみ信頼する保守設計 | hook 由来の deny は `denial_kind` からは引けない。hook 追加要件は refine / sandbox の bucket に記述する |
-| `deny_permission-rule` を permission 層の実績として読む | hook 由来の deny が `permission-rule` にラベルされる (さらに `denial_kind` 空 + `outcome_base: error` に落ちる経路もある) | **`hard_deny_share` を根拠にする前に、その deny が permission entry 由来か確かめる**。guard の deny メッセージは安定文字列なので `result_text` の署名で帰属が引ける。`axis_a_high_deny_share` / `compound_line_deny_miscount` が 0 件でも「候補が無い」ではなく「入力が汚染されている」ことがある |
-| `project_local` の未使用 entry を revoke に出したが、その file が**配布 template** だった | `<repo>/.claude/settings.local.json` が他 project へ配る原本を指す symlink のとき、その entry の本来の利用者は**観測範囲外の他 repo**。当該 repo での match_count 0 は不使用の証拠にならない | `settings_denominator` の `resolved_path` が repo 内の配布用ディレクトリを指していないか見る。指していれば `exposure_opportunity` は当該 repo の実績だけでは判定できず、**revoke ではなく keep**。棚卸しの revoke 候補は**配布先**の settings に当てるもので、原本の剪定基準 (上流 skill が削除されたか等) は repo 側の規約が正本 |
-| fire_count null の hook を「死んでいる」と断じる | 発火条件を満たす操作が窓内に無かっただけ (または発火が観測に残らなかっただけ) の可能性を潰していない | 窓内の作業内容と突き合わせて機会の実在を確かめる。fire_count null は informational 止まり |
-| hook の fire 回数を unit ごとに断定する | `key_collision: true` の共有値を単独実績と読んだ | 共有 key の unit は「fire していない」だけを主張する。回数は共有値である旨を明記する |
-| bypass 系列が過大 | 同 tool の後続 call を全て follow_up にするため、無関係な reuse も混入する | 「first follow_up が success かつ input が似ている」ものだけ refine 候補にする。低 gap の系列を優先 |
-| project section で event_count が 0 | 現 cwd と event.cwd が別 (worktree 内で実行、transcript は親 repo path で保存等) | `repo_root` に親を渡すか、`section: "all"` で対象範囲を広げる |
-| 未使用に見える entry が実は使われている | `meta.store` の劣化シグナルを読まずに `rule_fired` を鵜呑みにした | 事故由来の `broken_lines` / `unreadable_files` が 0 でなければ observation が欠けている — 0 でない項目があるうちは revoke ではなく hold。`skipped_nested_files` は subagent transcript を ingest しない設計由来で恒久的に非 0 — hold の条件にせず、件数をレポートヘッダで宣言する (subagent 内だけで使われた entry が match_count 0 に見えるリスクは受容済み) |
-| 現役の capability を revoke に出す | tool / MCP server の改名で pattern だけが古くなり「未使用」に見える | `alias_still_in_use` を判断する (手順 2)。別名の実績があれば revoke ではなく refine |
-| global で既に許可されている entry を promote 候補に出す | `config_matches: []` を「どこにも収載されていない」と読んだ (section `project` の config は project + project_local だけ) | `global_config_matches` を見る。`category: allow` の match があれば promote 不要。`deny` だけの match は refine の証拠 (複合行由来の deny を疑う) |
-| worktree で作業中の repo の allow を「未収載」と判定する | worktree 側の `.claude/` だけを分母と思い込んだ (親 clone の `settings.local.json` も読まれる) | `settings_sources` の `project_local_main_clone` 行を見る。entry の `scope` でどちらの層から来たかが分かる |
-| 分母から層が抜けたまま「未収載」と判定する | 突合結果 (`config_matches` / `global_config_matches`) だけを見て、その層を実際に読めたかを確かめなかった | `meta.settings_denominator` を先に見る。`read: false` の行があれば理由 (`absent` / `unparsed` / `out_of_section`) を宣言し、`unparsed` があるうちは promote / revoke を確定しない |
-| `~/.claude/settings.local.json` の allow を「global に既に在る」の根拠にする | Claude Code の settings 層だと思い込んだ (project の `.claude/settings.local.json` と同名なので紛れる) | その path は読まれないので entry は効いていない。`settings_denominator` に `not_a_settings_layer` として出る — 反証根拠にはせず、必要なら `~/.claude/settings.json` への移動を提案する。ただし cwd が `$HOME` のセッションでは同 path が local scope の解決先になり効く (その環境では `project_local` として分母に入り、この行は出ない) |
-| promote 候補の対象が既に存在しない | 頻出実績だけを見て promote した | script path を含む unit は対象の実在を確認する。窓内に使われていた script が窓の後半で削除されている場合がある |
-| bucket 判定を tool に確定させたくなる | 「候補まで出せるなら bucket も出せる」と感じる | 意味判断 (副作用能力 / rare-by-design) の機械化には allowlist が要り、陳腐化リスクが恒常化する。人間が候補を覆す余地も壊れる ([ADR 0032](https://github.com/swat9013/swat-skills/blob/main/docs/adr/0032-policy-free-refinement-deterministic-rules.md) が却下した形) |
-| revoke 候補が過大になる | `rule_fired` を bucket の確定と読み、`open_predicates` を判断しなかった | `bucket_candidate` は候補であって確定ではない。open_predicates を 1 つずつ判断してから bucket に落とす |
-| 分割ファイル以外の集計が欲しくなる | 標準フロー外の検査 | `query` tool への read-only SQL を単発で使う。恒常的に必要なら tool の分割出力拡張 (split_outputs / derived_views) を提案 — LLM 段階の手集計を既定にしない |
-| 承認を取った後に適用が block される | 編集可能性を確かめずに AskUserQuestion を出した (untracked / 別 repo への symlink / 自己編集 deny) | 手順 3 の編集可能性確認を AskUserQuestion より前に実行する。該当したら高確度から外し、分岐表の最優先行 (書き込まず差分提示) で扱う |
-| deny された path 表記を別表記に書き換えて適用する | matcher が realpath 解決しないため、実パス表記なら deny を素通りする | 表記を替えて通さない。対象 file を指す表記が 1 つでも deny に一致したら編集不能として扱う |
-| 高確度基準を満たさない候補をセッション内提案したくなる | 「approx でもほぼ確実」「count 1 だし」等の緩和誘惑 | 手順 3 の 3 条件を満たさないものは必ずレポート側に落とす (基準の緩和は rule 実装か本 SKILL.md の改訂として行う) |
 
 ## 参照
 
