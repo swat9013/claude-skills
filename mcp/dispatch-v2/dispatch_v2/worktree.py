@@ -19,13 +19,20 @@ from dispatch_v2.fold_core import EventRule, FoldError, require_field, require_w
 TreeSighting = namedtuple("TreeSighting", "path present registered dirty locked")
 
 # 回収を阻む事由。**判定結果は真偽値ではなく事由の列**で返す — 「なぜ回収できないか」を
-# orchestrator が読んで次の手 (worker へ commit を促す / Session を閉じる) を選ぶため
+# orchestrator が読んで次の手 (worker へ commit を促す / Session を閉じる) を選ぶため。
+# 綴りは MCP 応答 (`worktree_sweep` の `candidates[].blockers`) に出るので、読み直す側は
+# この定数を参照する (直書きすると改名で黙って条件が偽へ倒れる)
+BLOCKER_WORKORDER_OPEN = "workorder_open"
+BLOCKER_SESSION_LIVE = "session_live"
+BLOCKER_TREE_DIRTY = "tree_dirty"
+BLOCKER_TREE_LOCKED = "tree_locked"
+BLOCKER_TREE_UNREGISTERED = "tree_unregistered"
 BLOCKER_MEANINGS = {
-    "workorder_open": "WorkOrder がまだ非終端 (terminal を見てから回収する)",
-    "session_live": "非終端の Session が居る (先に session_close する)",
-    "tree_dirty": "未コミットの変更がある (worker に commit / push させる)",
-    "tree_locked": "git が worktree を lock している",
-    "tree_unregistered": (
+    BLOCKER_WORKORDER_OPEN: "WorkOrder がまだ非終端 (terminal を見てから回収する)",
+    BLOCKER_SESSION_LIVE: "非終端の Session が居る (先に session_close する)",
+    BLOCKER_TREE_DIRTY: "未コミットの変更がある (worker に commit / push させる)",
+    BLOCKER_TREE_LOCKED: "git が worktree を lock している",
+    BLOCKER_TREE_UNREGISTERED: (
         "ディレクトリは在るが git の登録に無い (未コミットの変更が入っているか判定できない — "
         "ADR 0048 の残骸として報告するだけにし、回収は repo 側の手順で行う)"
     ),
@@ -92,17 +99,17 @@ def reclaim_verdict(state, wo_id, sighting):
     recorded = require_owned_worktree(state, wo_id)
     blockers = []
     if work_order["phase"] not in vocabulary.TERMINAL_PHASES:
-        blockers.append("workorder_open")
+        blockers.append(BLOCKER_WORKORDER_OPEN)
     if session.live_session_for(state, wo_id) is not None:
-        blockers.append("session_live")
+        blockers.append(BLOCKER_SESSION_LIVE)
     if sighting.present and not sighting.registered:
         # **dirty を判定できないので回収しない**。git が知らないディレクトリで status を
         # 撃つと親 clone の答えを借りてしまい、未コミットの成果ごと台帳から手放しうる
-        blockers.append("tree_unregistered")
+        blockers.append(BLOCKER_TREE_UNREGISTERED)
     if sighting.present and sighting.dirty:
-        blockers.append("tree_dirty")
+        blockers.append(BLOCKER_TREE_DIRTY)
     if sighting.present and sighting.locked:
-        blockers.append("tree_locked")
+        blockers.append(BLOCKER_TREE_LOCKED)
     return {
         "wo_id": wo_id,
         "path": recorded["path"],

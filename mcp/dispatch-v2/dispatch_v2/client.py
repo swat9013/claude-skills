@@ -118,8 +118,46 @@ def ensure_daemon(root, *, spawn=None, sleep=time.sleep, monotonic=time.monotoni
             last_failure = exc
             sleep(STARTUP_POLL_SEC)
     raise DaemonUnavailable(
-        f"daemon を起動したが {STARTUP_TIMEOUT_SEC} 秒で health が立たない "
-        f"(直近: {last_failure}。log: {project.daemon_log_path(root)})"
+        f"{_absence_or_silence(root)} ({STARTUP_TIMEOUT_SEC} 秒で health が立たない。"
+        f"直近: {last_failure}。log: {project.daemon_log_path(root)})"
+    )
+
+
+def _process_exists(pid):
+    """その pid のプロセスが居るか (signal 0 は届くだけで何もしない)。"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # 権限が無い = 別の所有者のプロセスが居る。**「居ない」とは読まない**
+        return True
+    return True
+
+
+def _absence_or_silence(root, *, process_exists=_process_exists):
+    """health が立たない理由を「居ない」と「居るのに黙っている」に言い分ける。
+
+    **復旧手段が別物だから 1 行を分ける** (gh#956) — 居ないなら起動を待つ / log を読むが、
+    居るのに黙っているなら降ろす (`daemon_restart`) しかない。issue の報告者が `kill` しか
+    思い付かなかったのは、両方が「daemon を起動したが health が立たない」の 1 文で出ていた
+    ため。`/health` は台帳の門を通らないので (`http_app.LedgerGate`)、**掴まれていることは
+    黙る理由にならない** — ここまで来た黙りは socket の残骸や起動途中での死にしぼられる。
+
+    **見る前に子を回収する**。ここへ来る典型は「起こした daemon が bind / import で即死した」で、
+    その死体は親 (MCP server) が回収するまで zombie として残り、`os.kill(pid, 0)` に生きている
+    ものとして映る。回収しないと **一番多い失敗で逆の診断を出す** — 読むべき daemon.log では
+    なく `daemon_restart` へ案内してしまう。
+    """
+    _reap_finished()
+    pid = _recorded_pid(root)
+    if pid is None:
+        return "daemon を起動したが health が立たない"
+    if not process_exists(pid):
+        return f"daemon を起動したが health が立たない (占有印の pid {pid} は既に居ない)"
+    return (
+        f"daemon (pid {pid}) は生きているのに health を返さない。"
+        "降ろして起こし直す (daemon_restart)"
     )
 
 
@@ -174,8 +212,16 @@ def _stop_daemon(root, *, signal_process, sleep, monotonic):
         if not _is_serving(root, pid):
             return pid
         sleep(STOP_POLL_SEC)
+    # **合図が届いたのか、届いても降りられないのかを分けて言う** — 前者なら後片付けが
+    # 終わらない側 (何を掴んでいるかは health の `busy` に出る)、後者なら合図そのものが
+    # 主スレッドへ届いていない。次に見る場所が違う (gh#956)
+    acknowledged = (
+        "停止の合図は受け取っている (後片付けが終わらない。health の busy を見る)"
+        if _took_the_stop_signal(root, pid)
+        else "停止の合図を受け取った様子が無い"
+    )
     raise DaemonStopFailed(
-        f"daemon (pid {pid}) が {STOP_TIMEOUT_SEC} 秒で降りない "
+        f"daemon (pid {pid}) が {STOP_TIMEOUT_SEC} 秒で降りない — {acknowledged} "
         f"(log: {project.daemon_log_path(root)})"
     )
 
@@ -201,11 +247,26 @@ def _serving_pid(root):
 
 
 def _is_serving(root, pid):
-    """その pid の daemon がまだ応答しているか。別 pid が答えたら「降りた」と読む。"""
+    """その pid の daemon がまだ応答しているか。別 pid が答えたら「降りた」と読む。
+
+    **`shutting_down` を「降りた」と読まない** — 占有印 (flock) を手放すのは後片付けの最後
+    なので、合図を受けた時点で降りたことにすると、次に起こす daemon が生きている flock に
+    当たって即死し、誰も serve していない状態で `ensure_daemon` が空振りする。合図を受けた
+    かどうかは**待ち切れたときの説明**にだけ使う (`_stop_daemon`)。
+    """
     try:
         return _health(project.socket_path(root)).get("pid") == pid
     except DaemonUnavailable:
         return False
+
+
+def _took_the_stop_signal(root, pid):
+    """その pid の daemon が停止の合図を受け取ったと名乗っているか (診断用)。"""
+    try:
+        health = _health(project.socket_path(root))
+    except DaemonUnavailable:
+        return False
+    return health.get("pid") == pid and bool(health.get("shutting_down"))
 
 
 def call(root, method, path, body=None):

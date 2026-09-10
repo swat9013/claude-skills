@@ -3,7 +3,7 @@
 **機械が自律で行ってよいのは記帳と escalation の発行だけ** (設計 §7)。tracker への label 付与も
 pane の close も worktree の削除もここからは起こさない。
 
-**rule の条件は本 module に無い** — 11 本すべてが `escalation_rules` の宣言的な catalog にあり、
+**rule の条件は本 module に無い** — 12 本すべてが `escalation_rules` の宣言的な catalog にあり、
 本 module がするのは「観測して subject を組み、catalog を当て、返ってきた Finding を配送する」
 だけ。観測の置き場と rule の scope が 1 対 1 に対応する:
 
@@ -38,26 +38,37 @@ resources 300 秒 … worktree の台帳外検出
 台帳だけで回る job (sessions / effects / resources) は動く — 宣言の欠落で機械作用まで止めると、
 「置き場をまだ宣言していない project では deploy も走らない」という無関係な巻き添えが出る。
 
-## 単一スレッドを保つ
+## tick は台帳の門を掴んで走る
 
-tick は `service_actions()` (serve_forever が同一スレッドで毎ループ呼ぶ) から駆動する。別
-スレッドで回すと event log の書き手が 2 つになり、`http_app` が「単一スレッドなので追記の
-直列性が構造で真になる」と置いている不変条件が崩れる (`principle-isolate-shared-writes`)。
+tick は周期処理スレッドから駆動し、その間 `http_app.LedgerGate` を掴む。**代償は tick の間
+他の呼び出しが門へ入れないこと** — 入れなかった呼び出しは 503 で「tick が掴んでいる」と
+名乗って戻る (`/health` だけは門を通らない)。スレッドの分け方は `http_app.UnixHttpServer` の
+docstring が正本。
 
-**代償は tick の間 HTTP が止まること**。各 adapter の `SUBPROCESS_TIMEOUT_SEC` が抑えるのは
-CLI 1 回ぶんで、rule #1〜#7 は非終端 WorkOrder ごとに issue + 紐づき + closes CL 1 件ごとの
-観測を要求するので、**WorkOrder が増えるほど tick が伸びる**。
+各 adapter の `SUBPROCESS_TIMEOUT_SEC` が抑えるのは CLI 1 回ぶんで、rule #1〜#7 は非終端
+WorkOrder ごとに issue + 紐づき + closes CL 1 件ごとの観測を要求するので、**WorkOrder が
+増えるほど tick が伸びる**。塞がるのは **escalation を pull する経路そのもの**なので、伸びを
+放置すると「nudge が届かなくても inbox pull で読める」という配送の前提を、こちらの追加で
+壊すことになる。
 
-止まるのは HTTP = **escalation を pull する経路そのもの**なので、伸びを放置すると「nudge が
-届かなくても inbox pull で読める」という配送の前提を、こちらの追加で壊すことになる。そこで
-`WORK_ORDER_BUDGET_SEC` で 1 tick に使う観測時間を区切り、**続きは次の tick へ持ち越す**
-(`_settle_cursors` が最後に観測した WorkOrder を覚え、次の tick はその次から回る)。予算を
-使い切っても取りこぼしが恒久化しないのはこの巡回のため。
+そこで **3 段の締切**を置く (gh#956)。どの段も「続きは次の tick へ持ち越す」形で、巡回の
+起点を覚えるので取りこぼしは恒久化しない。
 
-**予算が抑えるのは WorkOrder 数に比例する増分だけで、tick 全体への締切は依然として無い** —
-候補観測も `run_jobs` (sessions / effects / resources) も予算の外を走り、CLI 1 回ぶんを抑える
-のは各 subprocess の timeout だけ。**台帳が育った後に tick が client の応答待ちを超えて伸びる
-可能性は残る** (未着手)。
+```
+TICK_BUDGET_SEC       tick 全体 … 超えたら残りの project を次の tick へ (_project_cursor)
+ ├ run_jobs           job の切れ目で見る … sessions / resources / effects
+ └ WORK_ORDER_BUDGET_SEC
+                      WorkOrder 1 件ごとに見る … 続きは次の tick へ (_settle_cursors)
+```
+
+**締切は「次の単位へ進むか」の判定にだけ使う**ので、走り出した単位は最後まで走る。締切の外を
+走るのは、候補観測 1 巡と、巡回を止めないための各段の 1 件目 — したがって締切は門を掴む時間の
+上限ではなく、**伸びの打ち切り点**。
+
+上限そのものを詰めるのは**外部コマンド 1 回ぶんの枠**の担当で、tick が撃つ git は tick 全体の
+締切に収まる枠しか借りない (`project.GIT_REMOTE_TIMEOUT_SEC`)。remote 到達不能な project が
+tick を無期限に掴むのを止めるのがこの枠で、掴まれている間も答えられるようにするのが
+周期処理スレッドの分離 (gh#967)。
 """
 
 import sys
@@ -92,17 +103,29 @@ RESOURCE_INTERVAL_SEC = 300  # 台帳外資源の巡回
 # より遅くしか回らない (job の周期は `Schedule` が持つので、ここは pacing だけを決める)
 PACE_INTERVAL_SEC = SESSION_INTERVAL_SEC
 
-# 1 tick で **WorkOrder の観測に**使ってよい時間。超えたら残りは次の tick へ回す (rule 評価に
-# 必要な観測が WorkOrder 数に比例して増えるため)。tracker の観測周期 (60 秒) の 1/3。
+# 1 tick 全体に許す時間 (gh#956)。超えた時点で **project の巡回も job も WorkOrder の観測も
+# 打ち切り、続きは次の tick へ回す**。tick は台帳の門を掴んで走るので、ここが伸びるとその間
+# 他の呼び出しが 503 になる (`http_app.LedgerGate`)。client の応答待ち (20 秒) より短く取る。
 #
-# **tick 全体の締切ではない** — 候補観測も `run_jobs` (sessions / effects / resources) もこの
-# 外側で走り、1 件目の WorkOrder 観測は予算に関わらず最後まで走る (巡回を止めないため)。
-# 抑えられるのは「WorkOrder が増えたぶんだけ tick が伸びる」という本 issue が足した増分だけ
-WORK_ORDER_BUDGET_SEC = 20
+# **締切は「次の単位へ進むか」の判定にだけ使う**ので、走り出した単位は最後まで走る。したがって
+# これは門を掴む時間の上限ではない — 締切の外を走るのは、候補観測 1 巡 (glab は
+# `CANDIDATE_PAGING_BUDGET_SEC` + CLI 1 回) と、巡回を止めないための各段の 1 件目。最悪は
+# 締切 + それらの合計で、実測の想定は数秒。**上限そのものを詰めるには外部コマンドの中断が
+# 要る**ので、ここでは受けて `/health` を門の外へ出す側で観測性を確保している
+TICK_BUDGET_SEC = 15
 
-# bind から最初の tick までの猶予。**lazy 起動した client の health 1 往復を通すため**の間で、
-# 観測の周期とは別物 (詳細は `PacedTick`)。tick は serve と同じスレッドなので、この猶予が無いと
-# 起動直後の観測が accept を塞ぎ、client が「daemon が居ない」と読んで二重起動する
+# 1 tick で **WorkOrder の観測に**使ってよい時間。超えたら残りは次の tick へ回す (rule 評価に
+# 必要な観測が WorkOrder 数に比例して増えるため)。
+#
+# **tick 全体の締切とは別**: 起点はこのループに入った時刻で、`TICK_BUDGET_SEC` を頭打ちにする。
+# 候補観測に時間を食っても WorkOrder が毎 tick 1 件しか進まない状態を作らないための起点分離
+# (詳細は `_settle_work_orders`) を保ったまま、tick 全体が締切を超えないようにする。
+# 1 件目の観測は予算に関わらず最後まで走る (巡回を止めないため)
+WORK_ORDER_BUDGET_SEC = 10
+
+# bind から最初の tick までの猶予。**lazy 起動した client の最初の呼び出しを通すため**の間で、
+# 観測の周期とは別物 (詳細は `PacedTick`)。tick は起動直後から台帳の門を掴めるので、この猶予が
+# 無いと `client.ensure_daemon` が起こしてすぐ叩いた 1 回目が 503 で戻る
 FIRST_TICK_DELAY_SEC = 2
 
 # 観測 store の名前 (連続失敗を数える単位)。issue 置き場と CL 置き場は別 tracker でよいので
@@ -140,7 +163,12 @@ class TickContext:
     付く**ことが構造で決まる (連続失敗の同一 tick 判定がこれに依存している)。
     """
 
-    def __init__(self, *, project_key, book, cache, tracker, change_host, declared, now):
+    def __init__(
+        self, *, project_key, book, cache, tracker, change_host, declared, now, deadline=None
+    ):
+        # tick 全体の締切 (単調時刻)。**context が運ぶ**のは、観測の各段が「まだ時間があるか」を
+        # 同じ基準で見るため — 段ごとに測り直すと、段を足すたびに締切の外側が増える
+        self.deadline = deadline
         self.project_key = project_key
         self.book = book
         self.cache = cache
@@ -205,8 +233,12 @@ class Reconciler:
         self._declaration_complaints = set()
         # 届かなかった空 nudge の宛先 (成功したら忘れる。`_note_nudge_failure`)
         self._failed_nudges = set()
+        # 観測できなかった Session の handle を project ごとに覚える器 (`UnsightableSessions`)
+        self._unsightable = {}
         # 1 tick の予算を使い切った位置。次の tick はその次の WorkOrder から回る
         self._settle_cursors = {}
+        # 締切で打ち切った位置 (project)。次の tick はその次の project から回る
+        self._project_cursor = None
         # 空 nudge の宛先 (project ごと)。**台帳へは書かない** — runtime handle は
         # orchestrator が起動し直すたび変わる揮発値で、append-only の正本 (人が grep で
         # 診断する — ADR 0057) に心拍として積む種類の事実ではない。daemon が落ちれば宛先も
@@ -253,14 +285,39 @@ class Reconciler:
 
         巡る前に root を走査し直す (`LedgerRegistry.adopt_existing_projects`) — 起動後に
         置かれた台帳 / 宣言を次の tick から観測するため。走査自体の失敗で tick を止めない。
+
+        **締切を超えたら残りの project は次の tick へ回す** (gh#956)。巡回の起点を覚えるので、
+        毎回先頭から回して後ろの project が一度も観測されない状態にはならない
+        (`_settle_work_orders` と同じ形)。
         """
         try:
             self.registry.adopt_existing_projects()
         except Exception:  # noqa: BLE001 — 走査の失敗で全 project の tick を止めない
             self._report_unexpected("project の走査")
-        return [self._tick_one(key, now, monotonic) for key in self.registry.known_projects()]
+        known = self.registry.known_projects()
+        if not known:
+            return []
+        start = self._resume_project_index(known)
+        deadline = (self._monotonic() if monotonic is None else monotonic) + TICK_BUDGET_SEC
+        reports = []
+        for visited, project_key in enumerate(known[start:] + known[:start]):
+            if visited and self._monotonic() >= deadline:
+                # 1 つ目は締切に関わらず回す。**締切を切らした状態で入っても巡回が止まらない**
+                # ようにするため (1 project ずつでも順に進む)
+                break
+            # **観測する前に位置を進める**。落ちた project に張り付いて先へ進まないようにする
+            self._project_cursor = project_key
+            reports.append(self._tick_one(project_key, now, monotonic, deadline=deadline))
+        return reports
 
-    def _tick_one(self, project_key, now, monotonic=None):
+    def _resume_project_index(self, known):
+        """前回最後に巡った project の**次**の位置 (見つからなければ先頭)。"""
+        try:
+            return (known.index(self._project_cursor) + 1) % len(known)
+        except ValueError:
+            return 0
+
+    def _tick_one(self, project_key, now, monotonic=None, *, deadline=None):
         """1 project を巡り、**その project の失敗を他へ波及させない**。
 
         `tick_project` が想定する失敗 (観測失敗・宣言の不備) は中で畳まれるが、台帳側の失敗
@@ -269,7 +326,7 @@ class Reconciler:
         1 件の破損がマシン上の全 project を止めることになる。
         """
         try:
-            return self.tick_project(project_key, now, monotonic)
+            return self.tick_project(project_key, now, monotonic, deadline=deadline)
         except Exception as exc:  # noqa: BLE001 — project 境界での隔離がこの 1 箇所
             reason = f"tick が失敗: {type(exc).__name__}: {exc}"
             # **cache にも残す**。log の重複抑止は同じ文面を 2 度出さないので、決定的に落ち
@@ -279,13 +336,18 @@ class Reconciler:
             self._complain_once(project_key, reason)
             return {"project_key": project_key, "observed": False, "reason": reason}
 
-    def tick_project(self, project_key, now, monotonic=None):
+    def tick_project(self, project_key, now, monotonic=None, *, deadline=None):
         """project 1 つを観測して記帳する。**due な job だけ**を回す。
 
         `monotonic` は job の周期を測る単調時刻 (未指定なら組み立て時に受けた時計)。`now` の
         ISO 時刻とは別物 — 前者は間隔の計測、後者は記帳に載る観測時刻。
+
+        `deadline` は tick 全体の締切 (単調時刻)。**単独で呼ばれたときも締切を持つ** — 既定を
+        「無制限」にすると、`run_tick` を経由しない呼び出しだけが青天井で走る経路になる。
         """
         elapsed = self._monotonic() if monotonic is None else monotonic
+        if deadline is None:
+            deadline = elapsed + TICK_BUDGET_SEC
         schedule = self._schedules.setdefault(project_key, Schedule())
         book = self.registry.ledger_for(project_key)
         # **配送された escalation の数を tick の前後で比べる**。配送は複数の job に散っている
@@ -298,10 +360,15 @@ class Reconciler:
                 run_git=self._run_git,
                 schedule=schedule,
                 now=elapsed,
+                deadline=deadline,
+                monotonic=self._monotonic,
                 log=self._log,
+                unsightable=self._unsightable.setdefault(
+                    project_key, worker_sessions.UnsightableSessions(log=self._log)
+                ),
             )
         report = (
-            self._observe_stores(project_key, now, book)
+            self._observe_stores(project_key, now, book, deadline=deadline)
             if schedule.due("stores", TICK_INTERVAL_SEC, elapsed)
             else {"project_key": project_key, "observed": False, "reason": None}
         )
@@ -362,7 +429,7 @@ class Reconciler:
             file=self._log,
         )
 
-    def _observe_stores(self, project_key, now, book):
+    def _observe_stores(self, project_key, now, book, *, deadline=None):
         """tracker / ChangeHost を観測する job (**置き場の宣言が要る唯一の job**)。"""
         cache = self.cache_for(project_key)
         # **tick の境界をここで刻む**。連続失敗を「1 tick でも失敗したか」で数えるので、
@@ -400,6 +467,7 @@ class Reconciler:
             change_host=change_host,
             declared=declared,
             now=now,
+            deadline=deadline,
         )
         self._observe_candidates(context)
         self._settle_work_orders(context)
@@ -483,6 +551,10 @@ class Reconciler:
         start = self._resume_index(context.project_key, pending)
         rotated = pending[start:] + pending[:start]
         deadline = self._monotonic() + WORK_ORDER_BUDGET_SEC
+        if context.deadline is not None:
+            # **tick 全体の締切が頭打ちになる** — 起点を分けたぶんだけ tick が伸びてよい
+            # わけではない。門を掴む時間の上限は tick 側が決める (gh#956)
+            deadline = min(deadline, context.deadline)
         for observed, work_order in enumerate(rotated):
             if observed and self._monotonic() >= deadline:
                 # 1 件目は予算に関わらず観測する。**予算が尽きた状態でループに入っても巡回が
@@ -711,23 +783,59 @@ def adapters_for(declared):
 # --- 台帳だけで回る job (置き場の宣言に依らない) --------------------------------
 
 
-def run_jobs(book, *, runtime, run_git, schedule, now, log=sys.stderr):
+def run_jobs(
+    book,
+    *,
+    runtime,
+    run_git,
+    schedule,
+    now,
+    deadline,
+    monotonic=time.monotonic,
+    log=sys.stderr,
+    unsightable=None,
+):
     """1 project 分の台帳側 job を、due なものだけ走らせる。走らせた job と結果を返す。
 
     観測の失敗で tick を止めない。**止めると 1 つの store の不調が全 project の記帳を止める**
     ので、失敗は結果に載せて次の job へ進む。
+
+    **締切を超えたら残りの job は次の tick へ回す** (gh#956)。job は runtime / git を 1 対象
+    ごとに叩くので、Session や worktree が増えるほど伸びる — 締切が無いと、ここが tick 全体の
+    青天井の口として残る。**締切の判定は `schedule.due` より前**に置く: 先に due を消費して
+    から諦めると、その job は次の周期まで丸ごと飛ぶ。
+
+    `deadline` は**必須**。任意にすると「締切無し」で走る経路が残り、それが本番から到達しない
+    のにテストだけを通る形になる (青天井の口を塞いだつもりで開いたままになる)。締切を持たせたく
+    ない呼び出しは `float("inf")` を明示する。
+
+    `unsightable` は観測できなかった Session を tick 跨ぎで覚える器 (`UnsightableSessions`)。
+    渡さなければ観測は同じに走り、log の抑止だけがその回に閉じる。
     """
     result = {}
-    if schedule.due("sessions", SESSION_INTERVAL_SEC, now):
-        result["sessions"] = _guard(lambda: worker_sessions.observe(book, runtime=runtime), log)
-    if schedule.due("resources", RESOURCE_INTERVAL_SEC, now):
-        result["resources"] = _guard(
-            lambda: _report_orphans(book, runtime=runtime, run_git=run_git), log
-        )
-    if schedule.due("effects", EFFECT_INTERVAL_SEC, now):
-        result["effects"] = _guard(
-            lambda: _apply_effects(book, runtime=runtime, run_git=run_git), log
-        )
+    jobs = (
+        (
+            "sessions",
+            SESSION_INTERVAL_SEC,
+            lambda: worker_sessions.observe(book, runtime=runtime, unsightable=unsightable),
+        ),
+        (
+            "resources",
+            RESOURCE_INTERVAL_SEC,
+            lambda: _report_worktrees(book, runtime=runtime, run_git=run_git),
+        ),
+        (
+            "effects",
+            EFFECT_INTERVAL_SEC,
+            lambda: _apply_effects(book, runtime=runtime, run_git=run_git),
+        ),
+    )
+    for job, interval, call in jobs:
+        # 1 つ目は締切に関わらず走らせる (締切を切らした状態で入っても 1 つずつ順に進む)
+        if result and monotonic() >= deadline:
+            break
+        if schedule.due(job, interval, now):
+            result[job] = _guard(call, log)
     return result
 
 
@@ -754,8 +862,11 @@ def _apply_effects(book, *, runtime, run_git):
     return outcomes
 
 
-def _report_orphans(book, *, runtime, run_git):
-    """台帳外の資源を報告し、**project に閉じるもの (worktree) だけ** escalation に載せる。
+def _report_worktrees(book, *, runtime, run_git):
+    """資源の巡回結果のうち **project に閉じるもの (worktree) だけ** escalation に載せる。
+
+    載せるのは台帳外の worktree (rule #10) と、非終端 WorkOrder のツリーが git の登録から
+    消えたもの (rule #12、ADR 0063)。
 
     session の handle を escalation に載せないのは、**runtime が machine 単位だから** —
     workspace には他 project の worker も人間自身の pane も居るので、project ごとの tick が
@@ -769,7 +880,10 @@ def _report_orphans(book, *, runtime, run_git):
     raise_escalations(
         book,
         escalation_rules.SCOPE_RESOURCES,
-        escalation_rules.ResourceSnapshot(orphan_worktrees=report["orphan_worktrees"]),
+        escalation_rules.ResourceSnapshot(
+            orphan_worktrees=report["orphan_worktrees"],
+            vanished_worktrees=report["vanished_worktrees"],
+        ),
     )
     return report
 
@@ -789,16 +903,15 @@ def _guard(job, log):
 
 
 class PacedTick:
-    """周期を測って `Reconciler.run_tick` を呼ぶ callable (server の `service_actions` へ渡す)。
+    """周期を測って `Reconciler.run_tick` を呼ぶ callable (周期処理スレッドへ渡す)。
 
-    server は毎ループ知らせるだけで、**周期を持つのはこちら**。観測の周期が store ごとに違う
-    (tracker / CL 60 秒、SessionRuntime 10 秒) ので、周期を server 側に置くと store を足すたびに
-    server を変えることになる。
+    周期処理スレッドは毎周回知らせるだけで、**周期を持つのはこちら**。観測の周期が store
+    ごとに違う (tracker / CL 60 秒、SessionRuntime 10 秒) ので、周期を呼び出し側に置くと
+    store を足すたびにそちらを変えることになる。
 
-    **最初の tick は短く待つ**。tick は serve と同じスレッドなので、bind 直後に観測を始めると
-    その間 accept が止まる — daemon を lazy 起動した client は health が返らないのを「起動して
-    いない」と読み、2 つ目の daemon を spawn して flock で死ぬ (`client.ensure_daemon`)。
-    最初の 1 往復を通してから観測に入れば、この競合は構造で消える。
+    **最初の tick は短く待つ**。bind 直後に観測を始めると、その間 台帳の門が塞がる —
+    daemon を lazy 起動した client は起こしてすぐ台帳を叩くので、1 回目が 503 で戻る
+    (`client.ensure_daemon`)。最初の 1 往復を通してから観測に入れば、この競合は構造で消える。
     """
 
     def __init__(

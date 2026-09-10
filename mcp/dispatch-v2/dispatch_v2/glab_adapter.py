@@ -45,8 +45,8 @@ from dispatch_v2 import adapter_cli, ports, refs
 
 TRACKER = "glab"
 
-# 1 回の CLI 起動に許す上限秒。理由は `gh_adapter.SUBPROCESS_TIMEOUT_SEC` と同じ (daemon の
-# HTTP は単一スレッドで、tick の CLI 呼び出しはその間 tool 応答を塞ぐ)
+# 1 回の CLI 起動に許す上限秒。理由は `gh_adapter.SUBPROCESS_TIMEOUT_SEC` と同じ (tick は
+# 台帳の門を掴んで走るので、tick の CLI 呼び出しはその間 他の tool を門の外で待たせる)
 SUBPROCESS_TIMEOUT_SEC = 15
 
 # `--per-page` の上限 (GitLab API 側の制約)。1 ページで取り切れないぶんは `--page` で進める
@@ -59,8 +59,8 @@ CANDIDATE_LIMIT = 1000
 
 # **次のページを取りに行ってよい間**。候補観測は本 adapter で唯一 CLI を複数回起こす経路なので、
 # 1 回ぶんの timeout では全体が抑えられない — 上限まで詰まったプールで毎ページが timeout 際まで
-# 粘ると、単一スレッドの daemon が 11 回ぶん (165 秒) HTTP を塞ぎ、client の応答待ち
-# (`client.REQUEST_TIMEOUT_SEC` = 20 秒) を大きく超えて「daemon が居ない」と読まれる。
+# 粘ると、daemon が 11 回ぶん (165 秒) 台帳の門を掴み、client の応答待ち
+# (`client.REQUEST_TIMEOUT_SEC` = 20 秒) を大きく超えて他の全 tool が 503 になる。
 #
 # **予算は「次を取りに行くか」の判定にだけ使い、走り出したページは最後まで待つ**ので、最悪は
 # 予算 + CLI 1 回 = 30 秒。gh の 15 秒よりは長いが、165 秒とは桁が違う。予算を CLI 1 回ぶんと

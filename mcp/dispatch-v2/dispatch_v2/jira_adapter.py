@@ -40,8 +40,8 @@ from dispatch_v2 import adapter_cli, ports, refs
 
 TRACKER = "jira"
 
-# 1 回の CLI 起動に許す上限秒。理由は `gh_adapter.SUBPROCESS_TIMEOUT_SEC` と同じ (daemon の
-# HTTP は単一スレッドで、tick の CLI 呼び出しはその間 tool 応答を塞ぐ)
+# 1 回の CLI 起動に許す上限秒。理由は `gh_adapter.SUBPROCESS_TIMEOUT_SEC` と同じ (tick は
+# 台帳の門を掴んで走るので、tick の CLI 呼び出しはその間 他の tool を門の外で待たせる)
 SUBPROCESS_TIMEOUT_SEC = 15
 
 # 1 回の観測で扱える候補の上限。**現実の候補プールより桁で大きく取る** — 溢れの検知は観測を

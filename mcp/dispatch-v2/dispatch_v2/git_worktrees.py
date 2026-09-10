@@ -141,7 +141,7 @@ def registered(run_git, *, clone_path):
     return _parse_worktree_list(_run(run_git, ["worktree", "list", "--porcelain"], clone_path))
 
 
-def scan_orphans(clone_path, *, registered_entries, owned_paths):
+def scan_orphans(clone_path, *, registered_entries, owned_paths, excluded_paths):
     """台帳外の作業ツリーを**報告する**(削除はしない — ADR 0048)。
 
     返すのは `{"orphan_worktrees", "unverified_worktrees"}`。**判定できなかったもの
@@ -152,6 +152,9 @@ def scan_orphans(clone_path, *, registered_entries, owned_paths):
 
     - git の登録に無いディレクトリ (`worktree remove` がツリー削除に失敗した残骸)
     - git には登録されているが、台帳のどの WorkOrder も所有していないツリー
+
+    `excluded_paths` は別の報告が担当する path (非終端 WorkOrder の消失、rule #12) — 同じ path を
+    2 つの報告に載せない。
     """
     directory = worktrees_dir(clone_path)
     registered_paths = {entry["path"] for entry in registered_entries}
@@ -162,7 +165,7 @@ def scan_orphans(clone_path, *, registered_entries, owned_paths):
     ]
     unverified = []
     for child in _child_dirs(directory):
-        if str(child) in registered_paths:
+        if str(child) in registered_paths or str(child) in excluded_paths:
             continue
         reason = _classify_unregistered(child)
         if reason == UNVERIFIED:

@@ -164,7 +164,7 @@ if printf '%s\n' "$COMMAND" | grep -qE '^[[:space:]]*git[[:space:]]+push([^[:aln
   # `[ -lt ]` がエラー終了して allow へ抜ける fail-open を塞ぐ)。
   TIMEOUT_MS=$(printf '%s\n' "$INPUT" | jq -r 'try (.tool_input.timeout | floor) catch empty')
   # 未指定・null・非数はすべて fail-closed で deny する (docs/adr/0046 /
-  # swat-skills:principle-fail-loudly)。読めない値を床通過とみなすと guard が黙って無効になる。
+  # principle-fail-loudly)。読めない値を床通過とみなすと guard が黙って無効になる。
   case $TIMEOUT_MS in
     '' | *[!0-9]*)
       deny "git push は Bash tool の timeout に ${PUSH_TIMEOUT_FLOOR_MS} (10 分。Bash tool の上限値) を指定して実行してください。pre-push が全 pytest を回すため、既定の 120s では SIGTERM (exit 143) で push が死にます"

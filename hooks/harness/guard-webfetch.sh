@@ -45,7 +45,7 @@ fi
 # 末尾 5 件は一次資料の発行元 (二次まとめ記事のドメインは載せない)。
 # ar5iv.labs.arxiv.org は arXiv 論文の HTML 版で、完全一致のため arxiv.org
 # とは別 entry が要る。
-ALLOWLIST="code.claude.com platform.claude.com docs.anthropic.com claude.com www.anthropic.com github.com raw.githubusercontent.com gist.githubusercontent.com gitlab.com docs.python.org peps.python.org doc.rust-lang.org pkg.go.dev developer.mozilla.org docs.rs crates.io pypi.org npmjs.com registry.npmjs.org rubygems.org stackoverflow.com qiita.com zenn.dev martinfowler.com arxiv.org ar5iv.labs.arxiv.org www.oreilly.com dora.dev www.thoughtworks.com"
+ALLOWLIST="code.claude.com platform.claude.com docs.anthropic.com claude.com www.anthropic.com github.com raw.githubusercontent.com gist.githubusercontent.com gitlab.com docs.python.org peps.python.org doc.rust-lang.org pkg.go.dev developer.mozilla.org docs.docker.com docs.rs crates.io pypi.org npmjs.com registry.npmjs.org rubygems.org stackoverflow.com qiita.com zenn.dev martinfowler.com arxiv.org ar5iv.labs.arxiv.org www.oreilly.com dora.dev www.thoughtworks.com"
 
 for allowed in $ALLOWLIST; do
   if [ "$HOST" = "$allowed" ]; then

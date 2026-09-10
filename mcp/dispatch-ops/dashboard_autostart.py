@@ -25,7 +25,7 @@ dispatch-ops server は **dispatch-ops を読む全 session で 1 つずつ起�
 
 競合 (2 つの server が同時に「居ない」と見る) は OS が解決する — bind に成功するのは 1 つ
 だけで、負けた子は起動直後に終わる。終状態は同じなので lock は置かない
-(`swat-skills:principle-isolate-shared-writes` の「ロックを既定の答えにしない」)。
+(`principle-isolate-shared-writes` の「ロックを既定の答えにしない」)。
 """
 
 import os

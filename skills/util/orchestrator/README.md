@@ -56,7 +56,7 @@ pane の起動・観測・rename は [herdr](https://github.com/HerdrHQ/herdr) (
 | **herdr session 内で Claude Code を起動している** | `echo $HERDR_ENV` が `1` | `HERDR_ENV=1 でない (herdr session の外で server が起動している)` |
 | **herdr の Claude 連携 hook が現行版** | `herdr integration status` の出力に `claude: current` の行 | `herdr integration status に \`claude: current\` が無い (hook が古い / 未導入)`。導入は `herdr integration install claude` |
 | herdr daemon へ疎通できる | `herdr status` が exit 0 | `herdr status が失敗 (socket に届かない)` |
-| `HERDR_PANE_ID` / `HERDR_WORKSPACE_ID` が設定済み | `echo $HERDR_PANE_ID` | `HERDR_PANE_ID が未設定 (herdr session 外で server が起動している)` |
+| `HERDR_PANE_ID` / `HERDR_WORKSPACE_ID` が設定済み | `echo $HERDR_PANE_ID` | server 側: `HERDR_PANE_ID と HERDR_WORKSPACE_ID が揃わないので割り元を名乗らない` (stderr)、daemon 側: `session_spawn` が `anchor_handle / anchor_workspace が無い` で 400。**worker の pane は割り元の隣に開く**ので、割り元を名乗れない spawn は起こさない (ADR 0065) |
 
 **この 4 検査はすべて loud に落ちる** (fail-closed)。前提不成立のまま誤 dispatch へ進む経路は無い。
 
@@ -231,7 +231,7 @@ close_idle_session_on_terminal_workorder = false
 |---|---|---|---|
 | 1 | 現行 binary で新規起動した Claude Code セッション (`CLAUDE_CODE_MESSAGING_SOCKET` が設定済み) | 導入者 | loud |
 | 2 | herdr が PATH に在る / daemon 稼働 | 導入者 | loud |
-| 3 | herdr session 内での起動 (`HERDR_ENV=1` / `HERDR_PANE_ID` 非空) | 導入者 | loud |
+| 3 | herdr session 内での起動 (daemon 側 `HERDR_ENV=1` / 呼び出し側 `HERDR_PANE_ID` + `HERDR_WORKSPACE_ID` 非空) | 導入者 | loud |
 | 4 | herdr の Claude 連携 hook (`claude: current`) | 導入者 | loud |
 | 5 | `uv` | 導入者 | loud (server が起動しない) |
 | 6 | `gh` / `glab` 認証 | 導入者 | loud |

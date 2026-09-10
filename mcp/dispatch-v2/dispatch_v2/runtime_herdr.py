@@ -6,26 +6,33 @@
 
 CLI の失敗 (非 0 exit / 非 JSON) は `SessionRuntimeError` として即座に表面化させる。
 「CLI の実行失敗」を「session が居ない」と読ませると、生きている worker を全部終わったことに
-してしまう (v1 が同じ判断をしている)。
+してしまう (v1 が同じ判断をしている)。**唯一の例外は herdr が `pane_not_found` を名乗ったとき**
+で、これだけは「その pane はもう無い」の一次情報なので gone として読む (gh#972)。code を
+名乗らない失敗も別 code の失敗も従来どおり上げる — 「消えた」と「観測できない」は別物。
 
-環境変数 (`HERDR_ENV` / `HERDR_PANE_ID` / `HERDR_WORKSPACE_ID`) は daemon プロセスが継承した
-ものを読む。**daemon はマシンに 1 プロセスで長命なので、継承した pane は先に死にうる** —
-そのため割り元は `launch` の `anchor` (呼び出し側が観測した生きた pane) を優先し、env の
-pane は anchor を観測していないときの縮退先として残す (gh#932)。どちらの pane も死んで
-いれば失敗は `herdr pane split` の非 0 exit として loud に出る (黙って別 pane を探さない)。
+環境変数 (`HERDR_ENV` / `HERDR_WORKSPACE_ID`) は daemon プロセスが継承したものを読む。
+**割り元 (anchor) は env から採らない** — daemon はマシンに 1 プロセスで長命なので、継承した
+pane は先に死ぬし (gh#932)、生きていても呼び出し元とは無関係な workspace の pane でありうる
+(gh#952)。割り元は `launch` の `anchor` (呼び出し側が観測した生きた pane) だけで、名乗らない
+spawn は `LaunchFailed` として loud に落とす。env の workspace は観測 (`sight_all`) の既定の
+窓としてだけ残る。
 """
 
 import json
 import os
 import shutil
-import subprocess
 import sys
 
-from dispatch_v2 import session_runtime, session_vocabulary
+from dispatch_v2 import proc, session_runtime, session_vocabulary
 
 BACKEND = "herdr"
 
-SUBPROCESS_TIMEOUT_SEC = 60
+# 1 回の CLI 起動に許す上限秒。**tracker CLI と同じ 15 秒に揃える**
+# (`gh_adapter.SUBPROCESS_TIMEOUT_SEC` が理由の正本) — herdr は同じマシンの multiplexer への
+# RPC で実測は 1 桁ミリ秒なので、15 秒は「返らない」の打ち切りであって期待値ではない。
+# 60 秒のままだと 1 回の hang が client の応答待ち (20 秒) を単独で超え、daemon が
+# 台帳の門を掴んだまま全 tool を 503 にする (gh#956)
+SUBPROCESS_TIMEOUT_SEC = 15
 
 # herdr の `AgentStatus` (`herdr api schema --json` の $defs.AgentStatus = idle / working /
 # blocked / done / unknown) → 中立 3 値。**blocked を独立させるのが v1 との差** — v1 は
@@ -41,18 +48,37 @@ ACTIVITY_BY_AGENT_STATUS = {
 # 生 status を写せなかったことを示す herdr 側の値。表に載せずに未分類へ倒す
 UNKNOWN_AGENT_STATUS = "unknown"
 
-# 「その pane は無い」を表す herdr の error code。失敗応答は **stdout に JSON で**返り
-# (`{"error":{"code":"pane_not_found",...}}`)、exit code は 1 で他の失敗と区別が付かない
+# 「その pane は無い」を表す herdr の error code。**失敗応答は stderr に JSON で**返り
+# (実測 2026-09-08: rc=1 / stdout 空 / stderr に `{"error":{"code":"pane_not_found",...}}`)、
+# exit code は 1 で他の失敗と区別が付かない。**成功応答は stdout** なので流し先が入れ替わる —
+# stdout だけを読んでいたあいだ code が読めず、「消えた pane」が「観測できない」に化けて
+# session_close が 502 で拒み続けた (gh#972)
 PANE_NOT_FOUND_CODE = "pane_not_found"
 
 
+class HerdrFailure(session_runtime.SessionRuntimeError):
+    """herdr が非 0 で返した失敗。`code` は error 封筒の code (名乗らなければ None)。
+
+    code を例外に載せるのは、**「その pane は無い」だけを他の失敗と区別して読む**ため。
+    port 側 (`SessionRuntimeError`) に持たせないのは、code の語彙が herdr 固有だから。
+    """
+
+    def __init__(self, message, *, code):
+        super().__init__(message)
+        self.code = code
+
+
 def run_herdr_command(args):
-    """herdr CLI を起動して (rc, stdout, stderr) を返す (テストが差し替える継ぎ目)。"""
+    """herdr CLI を起動して (rc, stdout, stderr) を返す (テストが差し替える継ぎ目)。
+
+    起動は `proc.run_bounded` を通す — herdr も子を持つので、上限を過ぎたときに倒す相手は
+    直の子ではなく process group (gh#967)。
+    """
     try:
-        completed = subprocess.run(
-            ["herdr", *args], capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SEC
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        completed = proc.run_bounded(["herdr", *args], timeout_sec=SUBPROCESS_TIMEOUT_SEC)
+    except proc.CommandTimedOut as exc:
+        raise session_runtime.SessionRuntimeError(str(exc)) from exc
+    except OSError as exc:
         raise session_runtime.SessionRuntimeError(f"herdr を起動できない: {exc}") from exc
     return completed.returncode, completed.stdout, completed.stderr
 
@@ -69,11 +95,19 @@ class HerdrRuntime(session_runtime.SessionRuntime):
         # **成功だけを覚える** — 失敗を覚えると、herdr を再起動すれば直る種類の失敗が
         # daemon の寿命のあいだ固定される
         self._ready = None
+        # 割った先の workspace。**split を撃つ前に覚える** — 応答を取りこぼした split の残骸は
+        # 台帳のどこからも指されないので、ここに残さないと観測窓がその workspace へ届かない
+        self._split_workspaces = set()
 
     # --- 前提検査 -------------------------------------------------------------
 
     def ensure_ready(self):
-        """herdr session の中で動いていること + 割り元 (anchor) pane が在ることを検査する。"""
+        """herdr session の中で動いていること + agent を起動できることを検査する。
+
+        **`HERDR_PANE_ID` は見ない** — daemon が継承した pane は割り元に使わなくなったので
+        (gh#952)、要求すると「使わない前提」を検査することになる。`HERDR_WORKSPACE_ID` は
+        観測 (`sight_all`) の既定の窓として今も要る。
+        """
         if self._ready is not None:
             return self._ready
         if self._environ.get("HERDR_ENV") != "1":
@@ -81,7 +115,6 @@ class HerdrRuntime(session_runtime.SessionRuntime):
                 "HERDR_ENV=1 でない (herdr session の外で daemon が起動している。"
                 "herdr session 内から起動し直す)"
             )
-        inherited_anchor = self._require_env("HERDR_PANE_ID")
         workspace = self._require_env("HERDR_WORKSPACE_ID")
         agent_bin = self._which(session_runtime.AGENT_BIN)
         if not agent_bin:
@@ -90,8 +123,6 @@ class HerdrRuntime(session_runtime.SessionRuntime):
             )
         self._ready = {
             "backend": self.backend,
-            # daemon が起動時に継承した anchor。呼び出し側が anchor を名乗らないときの縮退先
-            "anchor_handle": inherited_anchor,
             "workspace": workspace,
             "agent_bin": agent_bin,
         }
@@ -103,11 +134,12 @@ class HerdrRuntime(session_runtime.SessionRuntime):
         """pane を割り → label を付け → command を走らせ、pane_id を返す。
 
         割り元に `--current` ではなく pane id を明示して渡すのは、`--current` の解決先が
-        UI フォーカス中の pane に落ちることがあり、別 workspace の pane から割ると
-        `pane list --workspace` の観測窓の外へ worker が出るため (v1 の実測)。
+        UI フォーカス中の pane に落ちるため (v1 の実測)。**pane はその id が属する workspace
+        に開く**ので、呼び出し元の pane を渡せば worker はそこへ並ぶ。
         """
-        ready = self.ensure_ready()
-        anchor_handle, rejection = self._anchor_choice(anchor, ready)
+        self.ensure_ready()
+        anchor_handle = _require_anchor(anchor)
+        self._split_workspaces.add(anchor.workspace)
         try:
             created = self._pane(
                 self._run(
@@ -126,12 +158,7 @@ class HerdrRuntime(session_runtime.SessionRuntime):
             )
             handle = created["pane_id"]
         except session_runtime.SessionRuntimeError as exc:
-            # **採らなかった anchor があれば失敗にそれを載せる** — 呼び出し側から見えるのは
-            # この message だけなので、載せないと「anchor を渡したのに死んだ pane から割られた」
-            # ことが gh#932 と同じ `pane_not_found` にしか見えない
-            raise session_runtime.LaunchFailed(
-                str(exc) if rejection is None else f"{exc} / {rejection}"
-            ) from exc
+            raise session_runtime.LaunchFailed(str(exc)) from exc
         # split の後は pane が既に在る。**以降の失敗は handle を載せて上げる** — pane を消さず
         # handle も捨てると、生きている pane が台帳のどこからも指されない残骸になる
         try:
@@ -140,31 +167,6 @@ class HerdrRuntime(session_runtime.SessionRuntime):
         except session_runtime.SessionRuntimeError as exc:
             raise session_runtime.LaunchFailed(str(exc), handle=handle) from exc
         return handle
-
-    def _anchor_choice(self, anchor, ready):
-        """割り元 (anchor) pane と、採らなかった anchor の理由を返す。
-
-        呼び出し側の anchor を優先する。env の pane は daemon が起動時に継承した化石で、その
-        pane が閉じられると以後の `pane split` が `pane_not_found` で落ち続ける (gh#932 の故障)。
-        呼び出し側 (MCP server) は orchestrator セッションの子プロセスなので、渡ってくる anchor
-        は今生きている pane。
-
-        **別 workspace の anchor は採らない** — そこへ割った worker は `sight_all`
-        (`pane list --workspace`) の観測窓の外に出て、生きたまま台帳から見えなくなる。この
-        制約のぶん、daemon と別 workspace に居る呼び出し側は依然として daemon が継承した pane
-        に頼る (gh#932 の故障がその範囲に残る)。だから採らなかった理由を 2 通り返す — daemon の
-        log と、split が落ちたときの失敗メッセージの両方に出す。
-        """
-        if anchor is None:
-            return ready["anchor_handle"], None
-        if anchor.workspace != ready["workspace"]:
-            rejection = (
-                f"呼び出し側の anchor {anchor.handle} は workspace {anchor.workspace} に属して"
-                f"いて daemon の観測窓 ({ready['workspace']}) の外なので割り元に採らなかった"
-            )
-            print(f"[dispatch-v2] {rejection}", file=sys.stderr)
-            return ready["anchor_handle"], rejection
-        return anchor.handle, None
 
     def send(self, handle, text):
         """テキスト送出 + Enter で submit する。
@@ -187,7 +189,17 @@ class HerdrRuntime(session_runtime.SessionRuntime):
         self.send(handle, session_runtime.NUDGE_TEXT)
 
     def close(self, handle):
-        self._run(["pane", "close", handle])
+        """pane を閉じる。**既に無ければ閉じ終わったものとして返る**。
+
+        観測してから閉じるまでの隙に pane が消えることがあり、そこで落とすと「片付いたのに
+        失敗を報告する」経路になる (再実行しても同じ終状態へ収束させる)。`pane_not_found`
+        以外の失敗は従来どおり上げる — 「消えた」と「届かない」を混同しない。
+        """
+        try:
+            self._run(["pane", "close", handle])
+        except HerdrFailure as exc:
+            if exc.code != PANE_NOT_FOUND_CODE:
+                raise
 
     def sight(self, handle):
         """pane 1 件の観測。pane が無ければ None (= gone)。
@@ -195,24 +207,57 @@ class HerdrRuntime(session_runtime.SessionRuntime):
         「無い」の判定に **herdr が返す error code (`pane_not_found`) を使う** — message の
         綴りで判定すると文言の変更で黙って壊れ、生きている pane を gone と読む。
         """
-        rc, stdout, stderr = self._run_command(["pane", "get", handle])
-        payload = _decode(stdout, "pane get")
-        if rc != 0:
-            if _error_code(payload) == PANE_NOT_FOUND_CODE:
+        try:
+            payload = self._run(["pane", "get", handle])
+        except HerdrFailure as exc:
+            if exc.code == PANE_NOT_FOUND_CODE:
                 return None
-            raise session_runtime.SessionRuntimeError(_failure_text("pane get", rc, payload, stderr))
+            raise
         return _sighting_of(self._pane(payload))
 
-    def sight_all(self):
-        """自 workspace の pane を列挙する。
+    def sight_all(self, *, scope_handles):
+        """観測窓の中の pane を列挙する。
 
-        `--workspace` を明示するのは、省くと全 workspace が返り、別 project の label と
-        衝突した pane を自分の追跡対象として拾うため (v1 の実測)。
+        窓は **daemon 自身の workspace + `scope_handles` が居る workspace + この daemon が
+        割った先の workspace**。全 workspace をそのまま返さないのは、別 project の pane や
+        人間自身の pane を自分の追跡対象として拾うため (v1 の実測)。逆に daemon の workspace
+        だけに閉じると、呼び出し元の workspace へ割った worker (gh#952) とその周りの残骸が
+        窓の外に出る。
+
+        列挙そのものは `pane list` 1 回で済ませて手元で絞る (`--workspace` は 1 つしか取れず、
+        窓の数だけ CLI を起動すると周期観測のたびに回数が増える)。**`scope_handles` の居場所も
+        この応答から引く** — id の綴りから読むと、窓を作る綴りと突合する綴りの出所が 2 つに
+        なり、herdr が名乗りを変えたときに例外にならないまま窓が空になる。
         """
-        workspace = self.ensure_ready()["workspace"]
-        payload = self._run(["pane", "list", "--workspace", workspace])
+        panes = self._list_panes()
+        window = self._observation_window(scope_handles, panes)
+        return [_sighting_of(pane) for pane in panes if pane.get("workspace_id") in window]
+
+    def _list_panes(self):
+        """`pane list` の応答のうち、workspace を名乗る pane だけ。
+
+        名乗らない pane は**窓の内外を判定できない**ので数えず、そのことを log へ出す。落とさ
+        ないのは、この列挙が全 workspace を舐める以上、無関係な 1 pane の異常で報告経路
+        (`orphan_sessions` / `stranded_sessions`) ごと止まるほうが害が大きいため。
+        """
+        payload = self._run(["pane", "list"])
         panes = (payload or {}).get("result", {}).get("panes", [])
-        return [_sighting_of(pane) for pane in panes]
+        placed = [pane for pane in panes if pane.get("workspace_id")]
+        if len(placed) != len(panes):
+            print(
+                f"[dispatch-v2] herdr の pane list に workspace_id を持たない pane が "
+                f"{len(panes) - len(placed)} 件あるので観測から外した",
+                file=sys.stderr,
+            )
+        return placed
+
+    def _observation_window(self, scope_handles, panes):
+        """列挙を絞る workspace の集合。"""
+        return (
+            {self.ensure_ready()["workspace"]}
+            | {pane["workspace_id"] for pane in panes if pane.get("pane_id") in scope_handles}
+            | self._split_workspaces
+        )
 
     def classify_activity(self, activity_raw):
         """herdr の agent_status を中立 3 値へ写す。表に無い値は未分類 (None) のまま返す。"""
@@ -223,13 +268,16 @@ class HerdrRuntime(session_runtime.SessionRuntime):
     # --- CLI の呼び出し -------------------------------------------------------
 
     def _run(self, args):
+        """成功なら応答本文を返し、非 0 なら `HerdrFailure` を上げる。
+
+        **成功と失敗で応答の流し先が違う** (成功は stdout / 失敗は stderr) ので、
+        本文の厳密な decode は成功経路だけに当てる — 失敗の出力を「JSON でない」で落とすと、
+        失敗の説明が例外にすり替わって元の失敗が読めなくなる。
+        """
         rc, stdout, stderr = self._run_command(args)
-        payload = _decode(stdout, " ".join(args))
         if rc != 0:
-            raise session_runtime.SessionRuntimeError(
-                _failure_text(" ".join(args), rc, payload, stderr)
-            )
-        return payload
+            raise _failure(" ".join(args), rc, stdout, stderr)
+        return _decode(stdout, " ".join(args))
 
     @staticmethod
     def _pane(payload):
@@ -247,6 +295,23 @@ class HerdrRuntime(session_runtime.SessionRuntime):
                 f"{name} が未設定 (herdr session の外で daemon が起動している)"
             )
         return value
+
+
+def _require_anchor(anchor):
+    """割り元 (anchor) を名乗らない spawn は落とす。
+
+    **縮退先を持たない** — daemon が継承した pane から割ると、その pane が属する workspace
+    (呼び出し元とは無関係で、往々にして最後に focus された project のもの) に worker が開き、
+    人間が pane を探せなくなる (gh#952)。誰の隣に並べるかを知っているのは呼び出し側だけなので、
+    名乗られなければ起こさない。
+    """
+    if anchor is None:
+        raise session_runtime.LaunchFailed(
+            "呼び出し側が割り元 (anchor) を名乗らないので worker を起こさない "
+            "(herdr session の中から dispatch する。daemon の割り元へ縮退すると、"
+            "呼び出し元と無関係な workspace に worker が開く)"
+        )
+    return anchor.handle
 
 
 def _decode(stdout, source):
@@ -275,14 +340,28 @@ def _sighting_of(pane):
     )
 
 
-def _error_code(payload):
-    """herdr の失敗応答が持つ error code (`{"error": {"code": ...}}`)。無ければ None。"""
-    error = (payload or {}).get("error")
-    return error.get("code") if isinstance(error, dict) else None
+def _error_envelope(stderr):
+    """herdr の失敗応答が名乗る `{"code", "message"}`。名乗っていなければ None。
+
+    **読むのは stderr だけ** (gh#972)。封筒でない出力 — usage 文や herdr 以前で落ちた失敗 —
+    もここへ来るので、JSON でなければ封筒が無いものとして扱い落とさない。封筒を読めなければ
+    code の無い失敗として loud に上がるので、herdr が流し先を変えたら黙って gone に化ける
+    のではなくその場で見える。
+    """
+    try:
+        payload = json.loads(stderr)
+    except ValueError:
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return error if isinstance(error, dict) else None
 
 
-def _failure_text(source, rc, payload, stderr):
-    """失敗の説明。**herdr が返した message を優先する** (stderr は空のことがある)。"""
-    error = (payload or {}).get("error")
-    detail = error.get("message") if isinstance(error, dict) else None
-    return f"herdr {source} が失敗 (exit {rc}): {detail or stderr.strip() or '出力なし'}"
+def _failure(source, rc, stdout, stderr):
+    """失敗の説明。**herdr が返した message を優先する** (素の出力は綴りが揺れる)。
+
+    封筒を読むのは stderr だけだが、**説明に使う素の出力は両方から拾う** — 落ちたことだけ
+    伝わって中身が『出力なし』になると、loud に落ちても運用者が原因を読めない。
+    """
+    error = _error_envelope(stderr) or {}
+    detail = error.get("message") or stderr.strip() or stdout.strip() or "出力なし"
+    return HerdrFailure(f"herdr {source} が失敗 (exit {rc}): {detail}", code=error.get("code"))

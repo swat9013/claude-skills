@@ -43,47 +43,14 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | `dev-env-best-practices` | 自動 | 開発環境構築時に言語/FW 別のベストプラクティス reference と構築観点を引き出す。 |
 | `dialogue` | コマンド | 安易な解決に走らない・sycophancy 禁止の対話モード。 |
 | `engineering-judgment` | 自動 | swat9013 のエンジニアリング価値観を蒸留した決定規則集。 |
+| `playbook-diagnosis` | コマンド | bug の診断を、原則の索引 Read から根本原因の記録・返却までの番号付き step で通す playbook。 |
 | `playbook-implementation` | コマンド | 実装作業を、原則の索引 Read から 2 軸レビュー通過までの番号付き step で通す playbook。 |
 | `playbook-plan-verification` | コマンド | 計画・spec の検証を、原則の索引 Read から判定の差し戻しまでの番号付き step で通す playbook。 |
 | `playbook-research` | コマンド | 調査作業を、原則の索引 Read から成果物の受け渡しまでの番号付き step で通す playbook。 |
-| `playbook-triage` | コマンド | issue の triage を、原則の索引 Read から tracker への記入までの番号付き step で通す playbook。 |
+| `playbook-test-optimization` | コマンド | テストスイートの 4 軸診断を、原則の索引 Read から適用判断の返却までの番号付き step で通す playbook。 |
+| `playbook-test-perf-tuning` | コマンド | テスト実行時間の短縮を、原則の索引 Read から 2 軸レビュー通過までの番号付き step で通す playbook。 |
 | `pr-quality` | 自動 | Google Engineering Practices を蒸留した PR 品質の決定規則集。 |
-| `principle-ai-delegation-boundary` | 自動 | AI エージェントへ自律実行を委譲する範囲を決めるとき、許可と禁止を設計するとき、人間へ返す境界を決めるときに適用する。 |
-| `principle-artifact-register` | 自動 | README・正本・蒸留版・spec / plan / PR 説明文・エージェント向け指示書といった文書を書くときに適用する。 |
-| `principle-automate-when-it-hurts` | 自動 | 反復作業を自動化するか決めるとき、規約の遵守をどう守らせるか決めるとき、LLM 推論を script へ追い出すか判断するときに適用する。 |
-| `principle-balance-coupling` | 自動 | モジュール / サービス境界の結合を評価するとき、境界を分割するか統合するか判断するときに適用する。 |
-| `principle-build-vs-buy` | 自動 | 自前実装と既製品が拮抗したとき、言語・フレームワーク・ライブラリを選定するときに適用する。 |
-| `principle-collective-ownership` | 自動 | コードの所有範囲・レビューの目的・設計判断の記録先を決めるときに適用する。 |
-| `principle-comment-intent` | 自動 | コメントや docstring を書くか迷うとき、変更の意図をどこに残すか決めるときに適用する。 |
-| `principle-context-budget` | 自動 | 大きな出力・長いファイル・委譲や参照の設計で context を消費するときに適用する。 |
-| `principle-coverage-as-floor` | 自動 | カバレッジやミューテーションスコアを運用するとき、数値目標や閾値を決めるときに適用する。 |
-| `principle-debt-quadrant` | 自動 | 品質と速度が競合したとき、技術的負債を作るか・いつ返すか決めるときに適用する。 |
-| `principle-delegate-opaquely` | 自動 | 他の skill / module / service へ処理を委譲する側を書くとき、委譲先の前提・失敗・コストを呼び出し側でどう扱うか決めるときに適用する。 |
-| `principle-deletability` | 自動 | 拡張しやすさと捨てやすさが競合したとき、機能・仕組みを撤去するか決めるとき、撤去した後に何を残すか決めるときに適用する。 |
-| `principle-design-derivation-order` | 自動 | アーキテクチャや構造を新しく決めるとき、不可逆な決定を今下すか遅らせるか迷ったときに適用する。 |
-| `principle-fail-loudly` | 自動 | エラー処理・例外・フォールバック・縮退の挙動を書くときに適用する。 |
-| `principle-fix-root-causes` | 自動 | バグを直すとき・デバッグするとき、回避策で症状だけ消したくなったときに適用する。 |
-| `principle-idempotent-operations` | 自動 | 再実行・再起動・リトライが起こりうる処理 (コマンド・ライフサイクル・処理ループ) を設計するときに適用する。 |
-| `principle-index` | 自動 | 原則 leaf 全件の適用条件を 1 行ずつ並べた索引。 |
-| `principle-isolate-shared-writes` | 自動 | 並行する書き手が同じ書き込み先 (ファイル・キー・状態オブジェクト) へ触れうる設計をするときに適用する。 |
-| `principle-localize-change-impact` | 自動 | 設計原則同士が競合したとき (DRY と KISS、共通化と独立性のどちらを取るか) に適用する。 |
-| `principle-mechanism-not-policy` | 自動 | 他の project へ配布されるもの (skill / CLI / library / template) の本文・手順・description を書くときに適用する。 |
-| `principle-observable-behavior` | 自動 | テストの検査対象を決めるとき、振る舞い不変のリファクタリングでテストが壊れたときに適用する。 |
-| `principle-operability-first` | 自動 | 運用性 (可観測性・デプロイ容易性) を設計するとき、監視と observability の投資順序を決めるとき、信頼性の余力をどう使うか決めるときに適用する。 |
-| `principle-quarantine-flaky` | 自動 | 再実行すると結果が変わるテスト (flaky) を検知したときに適用する。 |
-| `principle-review-ready-bar` | 自動 | 変更を完了と宣言する前、レビューへ出す前に適用する。 |
-| `principle-risk-based-security` | 自動 | セキュリティ検査をどの工程に置くか、防御にどれだけ投資するか決めるときに適用する。 |
-| `principle-short-lived-integration` | 自動 | branch の寿命・リリース単位・展開方法を決めるとき、作業の土台をいつ最新化するか決めるときに適用する。 |
-| `principle-signature-intent` | 自動 | 関数・メソッドのシグネチャと引数を設計するとき、boolean 引数やオプショナル引数を足したくなったときに適用する。 |
-| `principle-structure-simplicity` | 自動 | 関数・クラス・モジュールの構造を決めるとき、責務の置き場や共通化の有無で迷ったときに適用する。 |
-| `principle-tdd-rhythm` | 自動 | 機能実装・バグ修正に着手するとき、テストを先に書くか後に書くか決めるときに適用する。 |
-| `principle-test-as-spec` | 自動 | 個々のテストを書くときに適用する。 |
-| `principle-test-double-boundary` | 自動 | テストで依存を差し替えるとき (mock / stub / fake / 実物のどれを使うか)、時刻・乱数・環境変数を制御するときに適用する。 |
-| `principle-test-level-allocation` | 自動 | 新しくどのレベルにテストを書くか決めるとき (単体 / 統合 / e2e の配分) に適用する。 |
-| `principle-test-pruning` | 自動 | 既存テストを削るか決めるとき、テストが多すぎる・保守コストが高いと感じたときに適用する。 |
-| `principle-ubiquitous-naming` | 自動 | 変数・関数・概念・論点に名前を付けるとき、記号や略号で済ませたくなったときに適用する。 |
-| `principle-validate-at-boundaries` | 自動 | 入力検証・型の絞り込み・防御的なエラー処理をどこに置くか決めるときに適用する。 |
-| `principle-verify-the-real-artifact` | 自動 | 作業を完了と宣言する前、委譲した作業を受け取るときに適用する。 |
+| `principle-index` | コマンド / 自動 | 原則 leaf 全件の適用条件を 1 行ずつ並べた索引。 |
 | `python-single-file-script` | 自動 | PEP 723 インラインメタデータ + uv run で単一ファイル Python スクリプトを新規作成・編集する場面に参照する。 |
 | `repo-agent-maturity` | コマンド / 自動 | コーディングエージェント (Claude Code / Cursor / Windsurf) の受け入れ準備度で repo を Lv.1〜5 に採点する。 |
 | `shell-script` | 自動 | bash で .sh single-file script を新規作成・編集する場面に参照する。 |
@@ -99,6 +66,7 @@ ADR・コミットメッセージ・フロントエンドなど、成果物を�
 | --- | --- | --- |
 | `contextual-commits` | 自動 | Adds structured action lines to commit bodies. |
 | `frontend-refine` | コマンド / 自動 | HTML/フロントエンドの成果物 1 つを作成・改善するとき、デザインシステムの規範 (トークン 3 層 / Refactoring UI tactics / WCAG AA / Rams・Nielsen heuristics) に照らして Prep (骨格トークン生成) → Build (tactics 参照) → Review (51 項目 self-review + 静的検査) の 3 フェーズで洗練させる。 |
+| `sud-design` | コマンド / 自動 | 設計ドキュメント一式をシステム関連図 → ユースケース → ドメインモデル図の順の 対話的セッションで作成・更新する。 |
 | `worktree-setup` | コマンド | 対象リポジトリに Claude Code の worktree 並列セッション環境 (settings の worktree キー / .worktreeinclude / 初期化 hook) をセットアップする。 |
 
 ### util
@@ -110,6 +78,7 @@ ADR・コミットメッセージ・フロントエンドなど、成果物を�
 | `dispatch-dashboard` | コマンド / 自動 | dispatch v2 の現況を人間が 1 枚で読む read-only な dashboard の開き方と読み方。 |
 | `dispatch-setup` | コマンド | dispatch v1 (`dispatch-ops`) を新しい project で使えるようにする初期設定ステップ。 |
 | `inventory-launcher` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-project-values) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動する launcher。 |
+| `issue-triage` | コマンド | open issue を読み取りで調査し、label・コメント・close の推奨案を人間の承認を通して tracker へ反映する対話 triage。 |
 | `orchestrator` | コマンド | herdr session 内で着手可能な open issue を分割 pane の Claude Code セッションへ dispatch し、worker の質問と reconciler の escalation を捌く常駐 orchestrator。 |
 <!-- /generated:skills -->
 

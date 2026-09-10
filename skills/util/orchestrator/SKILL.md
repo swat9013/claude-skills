@@ -26,7 +26,7 @@ herdr session 内で、宣言された issue 置き場の open issue から着�
 
 **worker を独立プロセス (pane) に置くのは、orchestrator を再起動しても死なないため。** pane は通常見ない緊急ハッチで、**日常の連絡経路はメッセージ**。
 
-**並列化はすでに pane (worker / concierge) の形で表現してある。** 観測 (`wo_list` / `observe_*`)・台帳への記帳・回収と駐機の判断は、このセッションが自分の手で行う — Task subagent へ委任しない。台帳の書き手が 1 つでなくなると、どの観測でその phase にしたかを次セッションの自分が再現できなくなる。**この禁止の射程は台帳に触る仕事**なので、**台帳へ一切触れない concierge の spawn (E) は対象外**。
+**並列化はすでに pane (worker) の形で表現してある。** 観測 (`wo_list` / `observe_*`)・台帳への記帳・回収と駐機の判断は、このセッションが自分の手で行う — Task subagent へ委任しない。台帳の書き手が 1 つでなくなると、どの観測でその phase にしたかを次セッションの自分が再現できなくなる。
 
 **worker / user の領分には手を出さない** — 実装・調査・triage の中身、issue を close する判断、CL の作成・merge、conflict 解消そのもの (このセッションが持つのは起動まで)、既存 issue の label / status 遷移 (自分で起票した issue を着手可の印まで運ぶのは E の起票節が持つ)。
 
@@ -49,6 +49,7 @@ Session 系 tool が前提不成立で失敗したら、error 文言に応じて
 | `HERDR_ENV=1 でない` | herdr session 内で Claude Code を起動し直してもらう (herdr 以外の terminal multiplexer は非対応) |
 | `claude: current` が無い | `herdr integration install claude` の実行を依頼する。hook は session identity を herdr に報告して pane と Claude session を 1:1 対応させる。無いと agent の検出が効かず、`alive` と `ended` の見分けが壊れる |
 | `herdr status が失敗 (socket に届かない)` | herdr daemon の起動を依頼する |
+| `anchor_handle / anchor_workspace が無い` (`session_spawn` が 400) | herdr session 内の pane から起動し直してもらう。**worker の pane は割り元 (このセッションの pane) の隣に開く**ので、割り元を名乗れないと呼び出し元と無関係な workspace へ開いてしまう (ADR 0065) |
 | `CLAUDE_CODE_MESSAGING_SOCKET が未設定` | 現行 binary で**新規起動**した Claude Code セッションから実行し直してもらう。旧 binary の resume セッションは送信できても受信できず、worker の質問が誰にも届かない |
 
 Remote Control (`/remote-control`) の有効化を user に薦める (前提ではない)。有効なら質問中継と承認を claude.ai web / mobile から返せる。無効でも herdr pane の terminal で同じ操作ができるので、断られたらそのまま進む。
@@ -122,6 +123,7 @@ pane が増えたときに人間が herdr 画面で役 (`orchestrator` / issue s
 | `store_unreachable` | 同一 store の観測失敗が 3 連続 | 前提不成立 (前提の表) なら user へ依頼。それ以外は認証・network を疑って報告する。**「観測できていない」を「変化が無かった」と読まない** |
 | `orphan_resources` | 台帳外の worktree を検出 | `worktree_sweep` の報告を読み、回収は repo 側の手順へ返す (**daemon は消さない**) |
 | `deploy_degraded` | pull 失敗 / pull 後 dirty / ff 不可 | 下記「deploy が縮退したとき」 |
+| `worktree_vanished` | 非終端 WorkOrder の作業ツリーが git の登録に無い (repo の外から消された — `git tidy` 等) | worker が居るなら `session_close` してから、再 spawn か `released` で候補へ返すかを決める。evidence の `present` が偽なら再 spawn が同じ path へ作り直す。真なら残骸が残っていて `session_spawn` は作り直しを拒むので、先に repo 側の手順で path を空にする (ADR 0048)。branch に残っていない成果は失われている |
 
 **catalog に無い事象は上がらない。** したがって **inbox が空でも「判断待ちが無い」とは限らない**。上げないと決めた沈黙が 2 つあるので、A と E の照合で自分で拾う:
 
@@ -136,7 +138,7 @@ pane が増えたときに人間が herdr 画面で役 (`orchestrator` / issue s
 - **確信が持てない issue は dispatch しない側に倒す** (誤 dispatch のコストは、補充が 1 回遅れるコストより高い)
 - 除外する: **台帳に非終端 WorkOrder がある issue** (`wo_list` で引く)。**終端の WorkOrder しか無い issue は再 dispatch 可**で、直前に `released` へ送った issue もここに戻る。**終端 WorkOrder の `outcome` は除外根拠にならない** — 「作業不要と判断した」で終わった issue も、open で着手可の印が付いていれば候補に戻る。dispatch しないと決めたなら候補として報告し、close / label 剥がしを user へ返す (放置すると毎サイクル浮上する)
 - **assignee では除外しない** — 人が担当に付いた着手可 issue も dispatch 対象で、assignee は人の担当だけを意味する
-- **issue 本文が要るなら `gh issue view <N> --json body -q .body` で引く** (`observe_candidates` が返すのは title / labels / state で、本文は含まない)。**ループで回さず 1 呼び出し 1 issue** — 除外の照合単位は Bash 呼び出しの top-level segment なので、`for` / `while` / `if` の本体に埋めた `gh` は `sandbox.excludedCommands` に当たらず、呼び出し全体が sandbox 内で走って認証 token が読めずに落ちる。**除外対象コマンドは 1 呼び出しにつき top-level の 1 断片として書く**
+- **issue 本文が要るなら `gh issue view <N> --json body -q .body` で引く** (`observe_candidates` が返すのは title / labels / state で、本文は含まない)。**ループで回さず 1 呼び出し 1 issue で引く** (埋め込み・連結の可否は同梱の PreToolUse hook が発火時に案内する)
 - **blocker は自分で確かめる** — daemon は blocker 検査を持たない。issue 本文の `Blocked by` と、その issue の state を `gh issue view` で読む。読めなければ blocked 扱いで skip する
 - 整列も判断のうち — 完成に近い段階から slot を埋めると、同じ slot 数でも成果が出る速度が上がる
 
@@ -148,7 +150,8 @@ pane が増えたときに人間が herdr 画面で役 (`orchestrator` / issue s
 - `session_spawn(wo_id, prompt, model)` が作業ツリーの用意と pane 起動をまとめて行う。**作業ツリー名も pane label も daemon が issue ref から導く**ので、綴りをこちらで決めない (v1 で綴りを外すと保護も回収も効かなくなった経路が構造ごと消えた)
 - **作業ツリーは WorkOrder の持ち物**で、Session が終わっても残る。同じ WorkOrder への再 spawn は同じツリーを引き継ぐ — 駐機ツリーへの再入も `session_spawn` を撃ち直すだけで、別の起動パターンは無い
 - **起動に失敗しても WorkOrder は phase を変えない。** Session が `ended(launch_error)` として残るので、そのまま再発行できる。**2 度目も失敗した issue は自動再試行を打ち切り**、報告に載せて user の判断へ返す (常駐なので「このセッション中は skip」は恒久 skip と同義になる)
-- **どの issue の spawn も同じ理由 (割り元が見つからない) で落ちるなら、打ち切る前に `daemon_restart` を 1 回撃つ。** daemon は長命なので、起動時に継承した割り元が先に死んだ状態で走り続けることがある。起こし直した daemon はこのセッションの実行単位を割り元として継承する。**復旧の確認は `session_spawn` が live な handle を返すこと**で行う (daemon が戻ったことは復旧の証拠にならない)。影響はマシン全体に及ぶ (全 project の観測が数秒止まる。台帳と worker は無事) ので、個別の起動失敗には撃たない
+- **worker の pane は呼び出し元 (このセッション) の workspace に開く。** 割り元はこのセッションの pane で、`session_spawn` はそれを名乗れないと起動せずに落ちる (`割り元 (anchor) を名乗らない` を含む失敗)。この失敗が出るのは herdr session の外から dispatch しているときなので、`daemon_restart` では直らない — herdr session の中から呼び直す
+- **どの issue の spawn も同じ理由 (割り元の pane が見つからない) で落ちるなら、打ち切る前に `daemon_restart` を 1 回撃つ。** 走行中の daemon が古いと、この修正が載っていない (継承した割り元へ縮退する) 版のまま動いている。**復旧の確認は `session_spawn` が live な handle を返すこと**で行う (daemon が戻ったことは復旧の証拠にならない)。影響はマシン全体に及ぶ (全 project の観測が数秒止まる。台帳と worker は無事) ので、個別の起動失敗には撃たない
 
 #### 実装 repo の選定と clone の解決
 
@@ -185,8 +188,8 @@ daemon は prompt を一切解釈しない。worker が自走し、orchestrator 
 | **レビュー指摘への対応で再入させるときの 3 点** — その thread へ返信し、対応を CL へ反映したうえで、自分で resolve する。**同意できない指摘は CL 上で反論せず**、SendMessage で orchestrator へ上げる (質問と同じ経路)。**v2 には thread 操作の tool が無いので `gh api` / `glab` の綴りを逐語で渡す** (下記「v2 が持たない tracker 作用」) | 閉じないと `parked_review_pending` が毎 tick 立ち続ける。CL 上で反論すると user の窓口が 2 つになり、user が知らないまま CL 上で議論が進む |
 | 着手前に **`git pull --no-rebase origin main`** で最新を取り込む、という明示 (コマンドごと書く) | worker が古い main を土台に作業し、merge 時に conflict する |
 | **`gh` / `glab` は 1 呼び出しにつき top-level 断片の先頭に置いて単体で実行する**という指定 (`N=$(gh …)` のように埋め込むと `sandbox.excludedCommands` に照合されず起動に失敗する) | worker の gh がすべて起動失敗する。**失敗が capability の欠落に見える**ので、worker は「gh が使えない」と判断して回避に走る |
-| **作業に着手する前 (最初の Edit / Write より前) に、作業種別に対応する playbook 1 本と原則索引の絶対 path を Read で開かせる契約** — `playbook-implementation` / `playbook-research` / `playbook-triage` / `playbook-plan-verification` のうち種別に当たる 1 本と `principle-index` の `SKILL.md` を並べ、「playbook の step を逐語で todolist へ写す」「索引から今回の作業に当たる leaf を Read する」と書く。path は本 SKILL.md 本文の `${CLAUDE_SKILL_DIR}/../../knowledge/<name>/SKILL.md` が**ロード時に展開された実 path** で渡す | 原則をセッション開始時に注入する経路は存在しないので、この行が無いと playbook も leaf も worker へ届かない。**spawn prompt が唯一の届け方**。相対 path や `${` を残した文面を渡すと、別 clone の作業ツリーで走る worker からは 1 本も解決できず、原則なしの作業が silent に成立する |
-| **playbook と索引は Read で開かせ、review skill は Skill tool で invoke させる** という使い分けの明示 | playbook 4 本は `disable-model-invocation: true` を持ち、Skill tool の invoke を拒否される — 「invoke せよ」と書いた契約は空振りし、worker は skill が壊れていると読んで原則なしで先へ進む |
+| **作業に着手する前 (最初の Edit / Write より前) に、作業種別に対応する playbook 1 本と原則索引の絶対 path を Read で開かせる契約** — `playbook-implementation` / `playbook-research` / `playbook-plan-verification` のうち種別に当たる 1 本と `principle-index` の `SKILL.md` を並べ、「playbook の step を逐語で todolist へ写す」「索引から今回の作業に当たる leaf を Read する」と書く。path は本 SKILL.md 本文の `${CLAUDE_SKILL_DIR}/../../knowledge/<name>/SKILL.md` が**ロード時に展開された実 path** で渡す | 原則をセッション開始時に注入する経路は存在しないので、この行が無いと playbook も leaf も worker へ届かない。**spawn prompt が唯一の届け方**。相対 path や `${` を残した文面を渡すと、別 clone の作業ツリーで走る worker からは 1 本も解決できず、原則なしの作業が silent に成立する |
+| **playbook と索引は Read で開かせ、review skill は Skill tool で invoke させる** という使い分けの明示 | playbook 3 本は `disable-model-invocation: true` を持ち、Skill tool の invoke を拒否される — 「invoke せよ」と書いた契約は空振りし、worker は skill が壊れていると読んで原則なしで先へ進む |
 | **CL 到達前に `swat-skills:two-axis-review` を Skill tool で invoke する契約**。回数と 2 回目の中身は `playbook-implementation` の review step が正本で、playbook を Read させる契約 (上記) で worker へ届く | 原則の遵守が CL に現れず、「skill を届けたか」しか残らない |
 | **打ち切り時点で open な Act on と、反証で落とした Dismissed を具体物ごと CL 説明文へ載せる要求** | worker = 作業した本人が自分の指摘を落とす構造の唯一の歯止め (人が review で読んで覆す) が消える |
 
@@ -197,21 +200,19 @@ ${CLAUDE_SKILL_DIR}/../../knowledge/playbook-implementation/SKILL.md を Read �
 ${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md を Read し、今回の作業に適用条件が当たる leaf を Read する
 ```
 
-- **索引は毎回埋め、playbook は当たる種別が読めたときだけ埋める。** 4 種別のどれとも読めなかった作業は索引が拾う (当たらない playbook を渡すと、作業と無関係な step が worker の todolist を占める)
+- **索引は毎回埋め、playbook は当たる種別が読めたときだけ埋める。** 3 種別のどれとも読めなかった作業は索引が拾う (当たらない playbook を渡すと、作業と無関係な step が worker の todolist を占める)
 - **review 段を 2 回通したのは worker 自身の終端であって、台帳の `completed` ではない。** 完了判定は closes CL の merge が正。worker には CL 到達までを書き、自分で終端を名乗らせない
 - **作業ツリーの外にある実体を触る acceptance criteria は worker に渡さない。** worker の sandbox は clone root への書き込みを構造的に拒否する。該当する AC を含む issue は、その項目だけ user の領分として切り分けてから dispatch し、報告に「user に残る作業」として載せる
 - **worker の sandbox が拒否した書き込みは、このセッションが肩代わりしない** — user の承認があってもやらない。その clone に外部の自動 commit 機構が居ると変更が main へ載り、同じ file を触る駐機中の CL を conflict にする
 - `--no-rebase` にするのは worker が既に commit していると `--ff-only` が成立しないから (merge commit ができる点は許容する)
 - `outcome` の語彙を daemon は検証しない。orchestrator が読んで判断する材料なので、**この session が読み分けられる語彙を prompt 側で指定する** (最低限「CL に到達した」「作業不要と判断した」「人手が要って停止した」の 3 系統 + 理由)
-- 作業種別 (実装 / 調査 / triage / 計画検証) は issue の label 体系と本文から読み、**同じ読みで `model` と、prompt に埋める playbook を決める** (種別と playbook は 1:1)。**`session_spawn` は `effort` を取らない** — 起動セッションの effort は agent の既定で決まる (`mcp/dispatch-v2/` に `effort` の綴りは 1 箇所も無い)。実装系を `medium` に固定していた v1 の運用は v2 では表現できない (振り分けたいなら、必要性を実測してから issue にする — README §1)
+- 作業種別 (実装 / 調査 / 計画検証) は issue の label 体系と本文から読み、**同じ読みで `model` と、prompt に埋める playbook を決める** (種別と playbook は 1:1)。**`session_spawn` は `effort` を取らない** — 起動セッションの effort は agent の既定で決まる (`mcp/dispatch-v2/` に `effort` の綴りは 1 箇所も無い)。実装系を `medium` に固定していた v1 の運用は v2 では表現できない (振り分けたいなら、必要性を実測してから issue にする — README §1)
 
 ### E. 常駐 (イベント処理)
 
 **このセッションでポーリングループを組まない。タイマーを置かない。** 周期観測は reconciler の担当で、こちらは届いたものを処理する。補充と照合を済ませたら turn を終えて待つ — idle なら受信で新しい turn が始まり、tool 実行中なら tool call の合間に読まれる。キューは会話そのものなので、届いた順に 1 件ずつ処理すれば足りる。
 
 **起床したら、届いたものを処理する前に `inbox_read` を撃つ** (nudge で起きたときに限らない)。nudge は空の合図で配送保証を持たないので、質問や user の指示で起きた回にも判断待ちが溜まっている。
-
-**`observe_sessions` を見たついでに concierge の残骸を畳んでよい** (裁量であって義務ではない)。対象は台帳外 (`orphan_sessions`) × label が `concierge-*` × agent が居ない Session だけで、`session_close` する。concierge は自律終了しても pane が残り、台帳外なので回収の担い手が他に居ない — 条件が揃わない pane は対話中かもしれないので触らない。
 
 **user への確認は AskUserQuestion で行わない。** 設問は報告文に書いて turn を終える。AskUserQuestion は tool 実行中の扱いになり、**回答が返るまで worker の質問も nudge も配送されない**。同じ理由で、**判断を外部へ出して長く待つ tool 呼び出しも起床の処理中は避ける**。
 
@@ -223,7 +224,7 @@ ${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md を Read し、今�
 | daemon の空 nudge | `inbox_read` → B の表で 1 件ずつ処理 → `inbox_ack` |
 | user からの指示 | 該当 worker への送信 (下記の規範) / 状況照会 / max の変更 / 終了 |
 | user からの作業依頼 (対話が本体でないもの) | **issue を起票してから通常経路へ乗せる** (下記「user から直接頼まれた作業」)。issue-less の spawn はしない |
-| user からの「人間との多ターン対話が本体である作業」の依頼 | **自分で処理しない。** concierge として別 pane へ spawn し、セッション名を返信で案内する (下記「concierge の spawn」)。spawn できなくても自セッションで代替しない |
+| user からの「人間との多ターン対話が本体である作業」の依頼 (issue の triage 判断・grill 系 skill 等) | **自分で処理しない。** user に自セッションで対話 skill (`/swat-skills:issue-triage` / grill 系) を呼ぶよう、依頼文を添えて案内する — 自分で受けると escalation と worker の質問が対話に割り込み、対話の全文が配車判断のコンテキストを希釈する。一問一答で済む照会は対象外で、その場で答える |
 
 イベントを 1 件処理したら、続けて回収と補充 (C / D) を回してから待ちに戻る。**稼働中の Session が max 未満なら `observe_candidates` は必須** — 「前回から変わっていないはず」を理由に飛ばさない。飛ばすと、その間に着手可になった issue は user が声をかけるまで拾われず、slot が空のまま遊ぶ。
 
@@ -288,8 +289,6 @@ gh   issue close <番号> -R <issue 置き場>
 glab issue close <番号> -R <issue 置き場>
 ```
 
-`gh` / `glab` は sandbox の除外対象なので、**1 呼び出しにつき top-level 断片の先頭に単体で置く**。
-
 **閉じたら報告に 1 行載せる** (どの置き場のどの issue を閉じたか)。外部 tracker への不可逆な書き込みなので、成功も user から見える形にする。**失敗したら据え置く** — issue を触らず、phase も動かさず (閉じられなかったことは完了の否定ではない)、`wo_annotate` で `note` へ理由を残して報告に載せる。**次のサイクルで自動再試行しない** (同じ失敗が WorkOrder の数だけ並び、報告が失敗で埋まる)。原因を直せば同じ WorkOrder がまた対象になるので、user から再試行の指示を受けたら通し直す。
 
 #### worker へ送るときの規範
@@ -304,7 +303,7 @@ glab issue close <番号> -R <issue 置き場>
 
 #### user から直接頼まれた作業 (issue を起こしてから dispatch する)
 
-**user が作業を直接頼んできたら、issue を起票してから通常経路 (C → D) へ乗せる。** 依頼の大きさで経路を分けない。対象は **worker が作業ツリーで実行する変更・調査・triage** の依頼で、状況照会・max の変更・終了指示・worker への中継はここへ乗せずその場で処理する。
+**user が作業を直接頼んできたら、issue を起票してから通常経路 (C → D) へ乗せる。** 依頼の大きさで経路を分けない。対象は **worker が作業ツリーで実行する変更・調査** の依頼で、状況照会・max の変更・終了指示・worker への中継はここへ乗せずその場で処理する (triage の判断は対話が本体なので上の表の案内行が受ける)。
 
 1. **依頼文を逐語で本文にした issue を issue 置き場へ起票する。** title は依頼の要約。本文は依頼文をそのまま写す — 要約すると worker が読むのは orchestrator の解釈になる。label は宣言 config の `[issue] ready_label` をそのまま付ける (C の観測が使うのと同じ 1 つの値)
 2. **起票した番号を報告に載せる**
@@ -320,18 +319,6 @@ glab issue create -R <issue 置き場> -t      "<依頼の要約>" --label "<着
 - **本文の書き出しと CLI 呼び出しを 1 つの Bash 呼び出しへ連結しない** (`printf … > f && gh issue create …` の形にしない) — 連結すると CLI が `sandbox.excludedCommands` に照合されず sandbox 内で走り、起動に失敗する
 - **本文は scratchpad の絶対パスへ書き出して渡す。** `$TMPDIR` に置かない — CLI は sandbox の外へ出るため、sandbox 内の `$TMPDIR` に書いた file を見つけられない
 - **起票が落ちたら spawn へ進まず、error 文言を逐語で報告して user へ返す。** label が置き場に無いだけなら作ってもらう
-
-#### concierge の spawn (人間との対話が本体の依頼)
-
-**「人間との多ターン対話が本体である作業」の依頼は自セッションで処理しない。** remote-control 付きの独立セッションを別 pane に spawn し、人間とはそのセッションが直接対話する。自分で受けると escalation と worker の質問が対話に割り込み、対話の全文が配車判断のコンテキストを希釈する。worker として dispatch する経路も使えない — worker 契約は AskUserQuestion 禁止 + 質問の中継なので、対話が本体の作業とは構造が逆立ちする。
-
-- **対象判定は性質基準** —「人間との多ターン対話が本体か」で判断する (例: `/grill-with-docs` のような対話型 skill の依頼)。**skill の allowlist にしない** (対話型 skill が増えるたびに更新が要る drift 源になる)。一問一答で済む照会は対象外で、その場で答える
-- **台帳に載せない。** `wo_create` を通さず、slot も消費しない
-- **初期 prompt は依頼文 + skill の invoke 指示 + 終了条件だけ。** orchestrator 側の経緯・台帳の状況・他 issue の話は渡さない (逆向きの汚染を避ける)。**worker 契約と違い AskUserQuestion を許可し、orchestrator への SendMessage 義務も課さない** — 相手は人間で、対話がその pane に閉じるのが目的
-- **成功・失敗とも必ず一言返す。** 成功したらセッション名を user へ案内する。起動できなければ断って報告する — **起動できないからといって自セッションで代わりに対話しない** (コンテキスト汚染を避けるという目的の自己否定になる)
-- **成果は fire-and-forget。** orchestrator への報告経路は作らない (成果は tracker 等の外部 store に落ちる)
-
-**v2 の `session_spawn` は WorkOrder を要求するので、台帳外の pane 起動には使えない。** concierge を起こす経路は v2 の tool 面に無い — 起こせないと分かったら、依頼文と起動コマンドを user へ渡して手で開いてもらう (下記「v2 が持たない tracker 作用」と同じ扱いで、silent に自分で抱えない)。
 
 ### 報告
 

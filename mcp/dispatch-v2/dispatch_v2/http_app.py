@@ -4,8 +4,12 @@
 ごと) は daemon への薄い client で、接続は **UDS 上の HTTP/JSON**。dashboard も後続 issue で
 同じ daemon に同居する。
 
-- **単一スレッド**で回す (`socketserver.UnixStreamServer` の既定)。書き手が 1 つに揃うので
-  追記の直列性が構造で真になり、in-process の lock が要らなくなる
+- **接続ごとにスレッドを立て、台帳へ触れる作業だけを `LedgerGate` で 1 つずつに直列化する**
+  (gh#956)。追記の直列性は門が保証し、**`/health` だけが門を通らない** — 台帳が長い作業に
+  占有されている間も「誰が何秒掴んでいるか」を答えられないと、詰まりを外から観測できず、
+  client は health の無応答を「daemon が居ない」と読んで起こし直しに行く (`client.ensure_daemon`)
+- **門へ入れなかった呼び出しは待ち続けず 503 で諦める**。client の応答待ちより短い予算で
+  切り上げ、占有している route 名と経過秒を本文に載せる (timeout は「何が起きたか」を運ばない)
 - **data を返す応答に `as_of` を載せる** (設計 system.md「9. MCP tool 面」の「全応答に観測時刻
   (鮮度) を明記する」)。
   台帳コアの段階では外部 store の観測 cache がまだ無いので、`as_of` は **daemon が memory の
@@ -15,12 +19,14 @@
   daemon の log へ残す (握り潰さない)
 """
 
+import contextlib
 import functools
 import http.server
 import json
 import re
 import socketserver
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -51,12 +57,21 @@ _SEGMENT = r"[^/]+"
 # だけを保証する — これらの値は後で外部 CLI の引数になるので、改行や制御文字を通さない
 RUNTIME_ID_PATTERN = re.compile(r"^[\w:@./+-]{1,128}$")
 
-# 1 接続が読み待ちで daemon を占有してよい上限 (秒)。**単一スレッドなので、黙った接続 1 本が
-# daemon 全体を止める** — keep-alive で idle した client (dashboard を開いた browser) も、
-# request の途中で死んだ client も同じ。並行化は「単一書き手を単一スレッドで保証する」不変
-# 条件と衝突するので、read を諦める側で上限を付ける。同梱 client は 1 往復ごとに閉じるので
-# 通常は効かず、効くのは黙った接続を掴んだときだけ。**既定の所在はここ 1 箇所**
+# 1 接続が読み待ちでスレッドを占有してよい上限 (秒)。黙った接続 (keep-alive で idle した
+# browser / request の途中で死んだ client) がスレッドを掴んだままにならないよう、read を
+# 諦める側で上限を付ける。同梱 client は 1 往復ごとに閉じるので通常は効かない。
+# **既定の所在はここ 1 箇所**
 REQUEST_IDLE_TIMEOUT_SEC = 10
+
+# 台帳の門へ入れるのを待ってよい上限 (秒)。**client の応答待ち (`client.REQUEST_TIMEOUT_SEC`
+# = 20 秒) より短く取る** — client が先に諦めると、応答に載せた「誰が掴んでいるか」が誰にも
+# 届かないまま、呼び出し側には無応答としてしか見えない (gh#956 が報告した見え方そのもの)。
+# 掴んだ側の作業そのもの (git / herdr) が続く時間も client の予算に収まる必要があるので、
+# 半分を待ちに、半分を作業に残す
+GATE_WAIT_BUDGET_SEC = 10
+
+#: 台帳の門を通さない route。**health だけ**が例外で、それ以外は読みも書きも門の内側で走る
+UNGATED_ROUTE = "health"
 
 ROUTES = (
     ("GET", re.compile(r"^/health$"), "health"),
@@ -155,6 +170,76 @@ class RuntimeNotConfigured(RuntimeError):
     """worker runtime を持たない daemon で Session 系の経路が呼ばれた (server 側の構成不備)。"""
 
 
+class LedgerBusy(RuntimeError):
+    """待ち予算の内に台帳の門へ入れなかった (別の作業が掴んでいる)。
+
+    **`RuntimeNotConfigured` のような構成不備と分けてある** — こちらは待てば消える一過性の
+    混雑で、呼び出し側の正しい反応は「引数を直す」ではなく「掴んでいる作業を見て、待つか
+    降ろすか決める」。message が掴んでいる route と経過秒を名乗るのはそのため。
+    """
+
+
+class LedgerGate:
+    """台帳の状態へ触れる作業を 1 つずつに直列化する門 (gh#956)。
+
+    v1 の設計は「serve も tick も単一スレッドなので追記の直列性が構造で真」に頼っていたが、
+    その構造は **1 本の長い作業が health まで巻き込む**ことと引き換えだった。門に置き換えると
+    直列性はそのままで、門を通らない route (`/health`) を作れる。
+
+    `principle-isolate-shared-writes` が「lock は設計の見直し合図」と言うとおり、まず共有を
+    解消できないかを見た: 台帳の追記・fold の state・観測 cache は **1 つの可変オブジェクトを
+    全経路が読み書きする** (WorkOrder を書く経路と読む経路が同じ fold 結果を指す) ので、
+    書き込み先を分ける形にはならない。残った共有を構造で直列化するのがこの門。
+
+    **誰が掴んでいるかを名乗れる**のが素の `Lock` との差 (`principle-operability-first`) —
+    詰まりを外から観測できないことが gh#956 の実害そのものだった。
+    """
+
+    def __init__(self, *, monotonic=time.monotonic):
+        self._lock = threading.Lock()
+        self._monotonic = monotonic
+        # 掴んでいる作業 (route 名, 掴んだ時刻)。**lock の外から読む** — 詰まりの観測が
+        # 詰まりの原因の後ろに並んだら観測にならない
+        self._holder = None
+
+    @contextlib.contextmanager
+    def enter(self, label, *, wait_sec):
+        """門を通って台帳へ触れる。待ち予算を超えたら `LedgerBusy`。
+
+        `wait_sec=0` は「空いていなければ即諦める」— 周期処理 (tick / 投影) はこちらを使う。
+        周期処理が request の後ろに並んで待つ理由は無く、諦めても次の周回で入り直せる
+        (待つ形にすると、request が続く間 周期処理が門の待ち行列を占める)。
+        """
+        if not self._lock.acquire(timeout=wait_sec):
+            raise LedgerBusy(f"台帳は {self._describe_holder()}。{label} は入れなかった")
+        self._holder = (label, self._monotonic())
+        try:
+            yield
+        finally:
+            self._holder = None
+            self._lock.release()
+
+    def busy(self):
+        """今 門を掴んでいる作業。health と error message が読む。
+
+        **`None` は「空いている」の証拠ではない** — 門を取ってから名乗るまでの 2 命令の間に
+        撮ると `None` が返る。掴んでいる作業が居れば名乗る、までが保証。
+        """
+        holder = self._holder
+        if holder is None:
+            return None
+        label, since = holder
+        return {"route": label, "held_for_sec": round(self._monotonic() - since, 3)}
+
+    def _describe_holder(self):
+        holder = self.busy()
+        if holder is None:
+            # 待っている間に相手が抜けた (次の呼び出しは通る)。**「空いている」とは言わない** —
+            # 入れなかったのは事実なので、観測できなかったことをそのまま名乗る
+            return "掴んでいた作業が判らないまま塞がっていた"
+        return f"{holder['route']} が掴んでいる ({holder['held_for_sec']} 秒経過)"
+
+
 # domain 例外 → HTTP status。**未知の例外をここへ足さない**限り 500 に落ちるので、
 # 新しい失敗様式が「それらしい 4xx」に化けない
 STATUS_BY_ERROR = (
@@ -171,6 +256,9 @@ STATUS_BY_ERROR = (
     (worker_sessions.SessionNotReady, 409),
     (worker_sessions.SpawnFailed, 502),
     (RuntimeNotConfigured, 500),
+    # 混雑は上流の不調でも呼び出し側の誤りでもない「今は無理」なので 503。retry で消える種類の
+    # 失敗を 4xx / 5xx に混ぜると、呼び出し側が retry してよいかを status から読めない
+    (LedgerBusy, 503),
     (session_runtime.SessionRuntimeError, 502),
     (declaration.DeclarationError, 400),
     (event_log.EventLogError, 500),
@@ -211,7 +299,14 @@ class LedgerRegistry:
         return project.ledger_dir(self.root, project_key)
 
     def known_projects(self):
-        """既に開いた project key。**root 配下の走査はしない** (`adopt_existing_projects` が別)。"""
+        """既に開いた project key。**root 配下の走査はしない** (`adopt_existing_projects` が別)。
+
+        **`/health` だけが台帳の門を通らない**ので (`LedgerGate`)、ここは門の内側で project を
+        迎え入れている最中に走りうる。`sorted(dict)` は CPython では単一の C ループで写すので
+        「dictionary changed size during iteration」にはならない — **Python の for で回さない**
+        ことがその保証で、並行して迎え入れている最中なら写した時点の集合が返る (health の
+        project 一覧は鮮度を売りにしていないので、それで足りる)。
+        """
         return sorted(self._ledgers)
 
     def adopt_existing_projects(self):
@@ -265,10 +360,14 @@ class Api:
         health_facts=None,
         runtime=None,
         run_git=project.run_git,
+        gate=None,
     ):
         self.registry = registry
         self._clock = clock
         self._health_facts = health_facts or (lambda: {})
+        # 台帳へ触れる作業を直列化する門。**Api が持ち主**で、handler は `server.api.gate` から
+        # 引く — 門と台帳の持ち主が別だと、門を通さずに台帳へ触れる経路を足せてしまう
+        self.gate = gate or LedgerGate()
         # 観測 cache の持ち主。**必須** — 観測経路を持たない daemon は組み立て経路に存在しない
         # ので、任意にすると「未観測」の理由語彙が本番に無い分岐のぶんだけ増える
         self.reconciler = reconciler
@@ -278,7 +377,21 @@ class Api:
         self._run_git = run_git
 
     def health(self, _params, _query, _body):
-        return {**self._health_facts(), "projects": self.registry.known_projects()}
+        """daemon の生存と**今 台帳を掴んでいる作業**を答える (門を通らない唯一の route)。
+
+        `busy` を載せるのが gh#956 の要 — これが読めれば「詰まっている」と「daemon が居ない」を
+        呼び出し側が言い分けられる。載せないと、健康な daemon の無応答が「起動していない」と
+        読まれて起こし直され、同じ作業がまた詰まる。
+
+        **`周期処理` が短く名乗るのは正常**。周期処理スレッドは 0.5 秒ごとに門を取るので、
+        健康な daemon でも `held_for_sec` が 0 に近い `周期処理` がしばしば見える。
+        読むべきは**名前と経過秒の組**で、`busy` が埋まっていること自体は詰まりの証拠ではない。
+        """
+        return {
+            **self._health_facts(),
+            "projects": self.registry.known_projects(),
+            "busy": self.gate.busy(),
+        }
 
     def create_work_order(self, params, _query, body):
         book = self.registry.ledger_for(params["project_key"])
@@ -516,7 +629,7 @@ class Api:
             # 稼働 clone は**呼び出し側 (cwd を知っている MCP server) が渡した観測値**。
             # 正本へ書く値なので、境界で形を検証してから内側へ渡す
             clone_path=_require_directory(body, "repo_root"),
-            anchor=_optional_anchor(body),
+            anchor=_require_anchor(body),
         )
 
     def list_sessions(self, params, _query, _body):
@@ -592,20 +705,24 @@ def _optional_text(body, field):
     return None if body.get(field) is None else _require_text(body, field)
 
 
-def _optional_anchor(body):
-    """呼び出し側が観測した割り元 (`anchor_handle` + `anchor_workspace`)。無ければ `None`。
+def _require_anchor(body):
+    """呼び出し側が観測した割り元 (`anchor_handle` + `anchor_workspace`)。
 
-    **省略できる**のは version skew のため — 新しい MCP server と、まだ再起動していない古い
-    daemon が同居しうる。省略された spawn は今日どおり daemon 自身の割り元へ縮退する。
+    **境界で必須にする** — 割り元は「どの実行単位の隣に worker を並べるか」で、知っているのは
+    呼び出し側だけ (gh#952)。名乗らない spawn を内側へ通すと、作業ツリーを作り Session を
+    `launch_error` で記帳してから、決して成功しえない起動が失敗する。呼び出し側が直せる不備
+    なので、runtime の不調 (502) ではなく 400 で返す。
 
-    片方だけ渡された anchor は **400 にする** (縮退させない) — workspace が無いと adapter は
-    観測窓の内か外かを判定できず、渡した側は「割り元を指定した」と思ったまま別の pane から
-    割られる。
+    片方だけ渡された anchor も **400 にする** — workspace が無いと adapter は観測窓をそこへ
+    広げられず、割った worker が列挙から漏れたまま生き続ける。
     """
     handle = body.get("anchor_handle")
     workspace = body.get("anchor_workspace")
     if handle is None and workspace is None:
-        return None
+        raise BadRequest(
+            "anchor_handle / anchor_workspace が無い (herdr session の中から dispatch する。"
+            "割り元を名乗らない spawn は、呼び出し元と無関係な workspace へ worker を開く)"
+        )
     if not isinstance(handle, str) or not RUNTIME_ID_PATTERN.match(handle):
         raise BadRequest(f"anchor_handle が runtime の識別子の形をしていない: {handle!r}")
     if not isinstance(workspace, str) or not RUNTIME_ID_PATTERN.match(workspace):
@@ -627,18 +744,41 @@ def _require_directory(body, field):
     return str(path)
 
 
-class UnixHttpServer(socketserver.UnixStreamServer):
-    """UDS 上の HTTP server。単一スレッドで 1 request ずつ処理し、**同じスレッドで tick も回す**。
+class UnixHttpServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    """UDS 上の HTTP server。**接続ごとにスレッドを立て、台帳は `LedgerGate` で直列化する**。
 
     `BaseHTTPRequestHandler` は client_address を (host, port) の組として読むが、AF_UNIX の
     accept が返すのは空文字なので、ここで組へ差し替える。
 
-    polling tick を `service_actions()` に乗せるのは、**書き手を 1 スレッドに保つため**。
-    `serve_forever` は毎ループ同じスレッドから `service_actions()` を呼ぶので、ここから tick を
-    駆動すれば event log の書き手が増えない (別スレッドにすると、この class が前提にしている
-    「単一スレッドなので追記の直列性が構造で真」が崩れる)。代償は tick 中 HTTP が塞がること
-    で、tracker CLI の timeout を client の応答待ちより短く取ることで受けている。
+    ## なぜ単一スレッドをやめたか (gh#956)
+
+    以前は「serve も tick も 1 スレッド」で追記の直列性を構造から得ていた。代償は
+    **1 本の長い作業 (session_spawn の `git worktree add`、育った台帳の tick) が accept ごと
+    止めること**で、`/health` すら答えられなくなる。client はそれを「daemon が居ない」と読んで
+    起こし直し (`client.ensure_daemon`)、起こし直した先で同じ作業がまた詰まる — 復旧手段が
+    人手の `kill` しか残らない。直列性は門で保てるが、**答える口は門の外に出せる**。
+
+    ## なぜ周期処理を serve ループから降ろしたか (gh#967)
+
+    門を作った後も、周期処理だけは `service_actions()` (serve ループと同一スレッド) から
+    回していた。**その間 `accept` が止まる**ので、remote 到達不能な project の `git pull` を
+    掴んだ tick は `/health` まで沈黙させる — 門の外に出した口が、門とは別の理由で塞がる。
+    周期処理を専用スレッドへ移すと、serve ループは `accept` だけを持つ。
+
+    ```
+    accept スレッド ─┬─ /health          → 門を通らない。常に即答 (busy を名乗る)
+                     └─ それ以外          → 門へ入る。入れなければ 503
+    周期処理スレッド ── PeriodicWorker    → 門が空いていれば tick / 投影を回す (待たない)
+    ```
+
+    `daemon_threads` / `block_on_close` を両方倒すのは、**`server_close()` が handler スレッドを
+    join しないため**。片方だけでは join が残り、長い git を掴んだスレッドが居ると停止がそこで
+    固まる = gh#956 が訴えた「戻らない」をこちらで再生産する (`ThreadingMixIn.server_close` は
+    `block_on_close` だけを見る)。
     """
+
+    daemon_threads = True
+    block_on_close = False
 
     def __init__(
         self,
@@ -651,11 +791,12 @@ class UnixHttpServer(socketserver.UnixStreamServer):
         monotonic=time.monotonic,
     ):
         self.api = api
-        # **tick を別スレッドにしない継ぎ目**。`serve_forever` は毎ループ同じスレッドから
-        # `service_actions()` を呼ぶので、ここへ載せれば「書き手は daemon の 1 スレッド」
-        # という不変条件を保ったまま周期処理が回る。`tick(now_monotonic)` は「今 tick を回す
-        # べきなら回す」callable で、**周期の判断は tick 側** — server が周期を持つと、周期の
-        # 違う観測 (tracker 60 秒 / SessionRuntime 10 秒) を足すたびに server を変えることになる
+        # **周期処理の継ぎ目**。回すのは `PeriodicWorker` の専用スレッドで (gh#967)、台帳へは
+        # 門を通って触るので書き手が増える心配は無い。server がこの 2 つを抱えるのは、
+        # serve と周期処理のライフサイクルを 1 箇所で合わせるため。
+        # `tick(now_monotonic)` は「今 tick を回すべきなら回す」callable で、**周期の判断は
+        # tick 側** — server が周期を持つと、周期の違う観測 (tracker 60 秒 / SessionRuntime
+        # 10 秒) を足すたびに server を変えることになる
         self._tick = tick
         # dashboard が読む投影の更新 (`materialized_view.Projection`)。**tick と別の口にする**
         # のは周期が違うから — tick は 60 秒の観測周期を持つが、投影は HTTP 経由の記帳も
@@ -668,10 +809,19 @@ class UnixHttpServer(socketserver.UnixStreamServer):
         request, _ = super().get_request()
         return request, ("uds", 0)
 
-    def service_actions(self):
-        """`serve_forever` が毎ループ呼ぶ。周期処理は `drive_periodic_work` へ渡す。"""
-        super().service_actions()
-        drive_periodic_work(self._periodic_work())
+    def serve_forever(self, poll_interval=0.5):
+        """`accept` を回し続ける。**周期処理は専用スレッドが持つ** (gh#967)。
+
+        worker を止めるのは合図だけで、**join しない** — 長い git を掴んだ worker を待つと、
+        `daemon_threads` / `block_on_close` で避けたはずの「停止が戻らない」をこちらで
+        再生産する。daemon thread なのでプロセスの終了は妨げない。
+        """
+        worker = PeriodicWorker(self.api.gate, self._periodic_work)
+        worker.start()
+        try:
+            super().serve_forever(poll_interval)
+        finally:
+            worker.stop()
 
     def _periodic_work(self):
         """このループで回す (名前, 呼び出し) の列。"""
@@ -680,9 +830,98 @@ class UnixHttpServer(socketserver.UnixStreamServer):
         if self._refresh is not None:
             yield "投影の更新", self._refresh
 
+    def handle_error(self, request, client_address):
+        """handler から抜けた例外の後始末。**client の切断だけを 1 行へ落とす**。"""
+        if report_request_failure(sys.exc_info()[1], client_address=client_address):
+            return
+        super().handle_error(request, client_address)
+
+
+#: client が応答を待たずに降りたときに socket が上げる例外。**「daemon の異常」ではない**
+CLIENT_GONE_ERRORS = (BrokenPipeError, ConnectionResetError)
+
+
+def report_request_failure(exc, *, client_address, log=sys.stderr):
+    """request の失敗が client の切断なら 1 行 log へ落として True。それ以外は False。
+
+    切断は **正常な事象** (呼び出し側が応答待ちを諦めた) なのに、socketserver の既定は 40 行の
+    traceback を積む。daemon の log は詰まりを人が読む唯一の場所なので、正常な事象で埋めると
+    本当の異常が見えなくなる。**握り潰すのではなく格を下げる** — 切断が起きたことは残る
+    (`principle-fail-loudly` の「沈黙の失敗を作らない」)。
+    """
+    if not isinstance(exc, CLIENT_GONE_ERRORS):
+        return False
+    print(
+        f"[dispatch-v2] client が応答を待たずに切断した ({client_address}): "
+        f"{type(exc).__name__}: {exc}",
+        file=log,
+    )
+    return True
+
+
+#: 周期処理が門を掴むときに名乗る名前 (`/health` の `busy` と 503 の本文に出る)
+PERIODIC_WORK_LABEL = "周期処理"
+
+#: 周期処理スレッドが次の周回まで休む間隔 (秒)。**周期を持つのは job 側** (`PacedTick` /
+#: `Schedule`) で、ここが決めるのは「どれくらいの粒度で見に来るか」だけ。最短の job 周期
+#: (SessionRuntime の 10 秒) より十分細かければよく、accept 側の `poll_interval` とは無関係
+PERIODIC_POLL_INTERVAL_SEC = 0.5
+
+
+class PeriodicWorker:
+    """周期処理を **serve ループの外** で回す daemon thread (gh#967)。
+
+    `service_actions()` から回していた頃は、remote 到達不能な project の `git pull` を掴んだ
+    tick が `accept` ごと止め、門を通らないはずの `/health` まで沈黙した。回す場所を分けると、
+    詰まるのは門の内側だけになり、**詰まっていることを外から観測できる状態が保たれる**
+    (`principle-operability-first`)。
+
+    **停止は合図だけで、join しない** — 長い外部コマンドを掴んだままの worker を待つと、
+    停止が戻らなくなる (`UnixHttpServer` が `block_on_close` を倒しているのと同じ理由)。
+    """
+
+    def __init__(self, gate, jobs):
+        self._gate = gate
+        # 毎周回 (名前, 呼び出し) の列を作り直す callable。**列そのものを受けない**のは、
+        # 1 度きりの iterator を使い回すと 2 周目以降が空になるため
+        self._jobs = jobs
+        self._stopping = threading.Event()
+
+    def start(self):
+        # **thread の handle を持たない** — 止めるのは合図だけで join しないので、持っても
+        # 誰も読まない (daemon thread なのでプロセスの終了も妨げない)
+        threading.Thread(target=self._loop, name="dispatch-v2-periodic", daemon=True).start()
+
+    def stop(self):
+        self._stopping.set()
+
+    def _loop(self):
+        # **最初に休んでから回す**。起動直後に投影を回すと、まだ何も記帳されていない
+        # 台帳を写すだけで 1 周ぶん無駄になる (最初の tick を遅らせる保証は
+        # `reconciler.FIRST_TICK_DELAY_SEC` が持つ — こちらは周回の粒度だけを決める)
+        while not self._stopping.wait(PERIODIC_POLL_INTERVAL_SEC):
+            drive_periodic_work_when_free(self._gate, self._jobs())
+
+
+def drive_periodic_work_when_free(gate, jobs, log=sys.stderr):
+    """門が空いていれば周期処理を回す。掴まれていたら**待たずに諦める**。
+
+    待たないのは、周期処理が request の後ろに並んで待つ理由が無いから — 諦めても
+    `PacedTick` の予定時刻は進まないので、次の周回で入り直す。待つ形にすると、request が
+    続く間に周期処理が門の待ち行列を占め、request 側の待ち予算を削る。
+
+    **server から切り出してある**のは、socket を bind せずにこの判断を検査できるようにする
+    ため (`drive_periodic_work` と同じ理由)。
+    """
+    try:
+        with gate.enter(PERIODIC_WORK_LABEL, wait_sec=0):
+            drive_periodic_work(jobs, log=log)
+    except LedgerBusy:
+        return  # 掴まれている間は回さない (次の周回で入り直す)
+
 
 def drive_periodic_work(jobs, log=sys.stderr):
-    """serve ループに相乗りする周期処理を順に回す。**1 つの失敗で他を止めない**。
+    """周期処理スレッドの 1 周回ぶんを順に回す。**1 つの失敗で他を止めない**。
 
     `(名前, 呼び出し)` の列を受けるのは、**server が周期処理の中身を知らないため** — 名前は
     log にしか使わない。tick が落ちても投影は走る (画面が「観測が止まっている」を表示できる) し、
@@ -723,8 +962,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if matched is None or route_method != method:
                 continue
             try:
+                # **body を読むのは門の外**。読み待ちを門の内側でやると、黙った client 1 本が
+                # 台帳を掴んだまま idle timeout まで居座る
                 body = self._read_json_body()
-                payload = getattr(api, name)(matched.groupdict(), parse_qs(parsed.query), body)
+                payload = self._call_route(api, name, matched.groupdict(), parsed, body)
             except Exception as exc:  # noqa: BLE001 — status への翻訳がこの 1 箇所
                 status = status_for(exc)
                 if status >= 500:
@@ -744,6 +985,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # 解釈され、その接続の以降が全部ずれる
         self._read_json_body_bytes()
         self._respond(404, {"error": f"未知の経路: {method} {parsed.path}"})
+
+    def _call_route(self, api, name, params, parsed, body):
+        """route を呼ぶ。**`/health` 以外は台帳の門を通す** (`LedgerGate`)。"""
+        call = functools.partial(getattr(api, name), params, parse_qs(parsed.query), body)
+        if name == UNGATED_ROUTE:
+            return call()
+        with api.gate.enter(name, wait_sec=self.gate_wait_sec):
+            return call()
 
     def _read_json_body_bytes(self):
         """宣言された長さぶんの body を読み切る (読み捨てにも使う)。"""
@@ -782,12 +1031,19 @@ def status_for(exc):
 
 
 def make_server(
-    socket_path, api, idle_timeout=None, tick=None, refresh=None, monotonic=time.monotonic
+    socket_path,
+    api,
+    idle_timeout=None,
+    tick=None,
+    refresh=None,
+    monotonic=time.monotonic,
+    gate_wait_sec=None,
 ):
     """UDS に bind した HTTP server を返す (serve_forever は呼び出し側が回す)。
 
-    `idle_timeout` を server ごとに束ねるのは、待ち時間そのものを検証するテストが既定の
-    10 秒を実時刻で待たずに済むようにするため (class 変数を書き換えると server 間で漏れる)。
+    `idle_timeout` / `gate_wait_sec` を server ごとに束ねるのは、待ち時間そのものを検証する
+    テストが既定の秒数を実時刻で待たずに済むようにするため (class 変数を書き換えると server
+    間で漏れる)。
 
     `tick` / `monotonic` は polling の駆動と時計。**注入できる形にしてあるのは、周期そのものを
     検証するテストが実時刻を待たずに済むため** (`principle-test-double-boundary`)。
@@ -795,7 +1051,10 @@ def make_server(
     handler = type(
         "BoundHandler",
         (Handler,),
-        {"timeout": REQUEST_IDLE_TIMEOUT_SEC if idle_timeout is None else idle_timeout},
+        {
+            "timeout": REQUEST_IDLE_TIMEOUT_SEC if idle_timeout is None else idle_timeout,
+            "gate_wait_sec": GATE_WAIT_BUDGET_SEC if gate_wait_sec is None else gate_wait_sec,
+        },
     )
     return UnixHttpServer(
         socket_path, handler, api, tick=tick, refresh=refresh, monotonic=monotonic

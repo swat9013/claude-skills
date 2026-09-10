@@ -182,11 +182,9 @@ class Scope:
         起動時に継承した実行単位が先に死ぬと以後の spawn が全部落ちる (gh#932)。この server は
         orchestrator セッションの子プロセスなので、その環境は今生きている pane を指す。
 
-        workspace も一緒に名乗るのは、daemon 側が観測窓 (`pane list --workspace`) の内側か
-        どうかを判定できないと、割った worker が観測の外に出たまま生き続けるため。**名乗れ
-        なかったことは必ず log へ出す** — 名乗らない spawn は daemon 自身の (死んでいるかも
-        しれない) 割り元へ縮退するので、黙って落ちると gh#932 の故障に戻ったことが誰にも
-        見えない。
+        workspace も一緒に名乗るのは、daemon が観測窓をそこへ広げられないと、割った worker が
+        観測の外に出たまま生き続けるため (gh#952)。**名乗れなかったことは必ず log へ出す** —
+        名乗らない spawn は daemon 側で起動せずに落ちるので、この log が失敗の理由になる。
         """
         handle = self._environ.get(RUNTIME_HANDLE_ENV)
         workspace = self._environ.get(RUNTIME_WORKSPACE_ENV)
@@ -194,7 +192,7 @@ class Scope:
             return {"handle": handle, "workspace": workspace}
         print(
             f"[dispatch-v2] {RUNTIME_HANDLE_ENV} と {RUNTIME_WORKSPACE_ENV} が揃わないので "
-            "割り元を名乗らない (daemon 自身の割り元へ縮退する)",
+            "割り元を名乗らない (herdr session の外から dispatch している。spawn は失敗する)",
             file=sys.stderr,
         )
         return None
@@ -449,7 +447,7 @@ def session_spawn(
             "actor": actor,
             "repo_root": scope.repo_root(),
             # 割り元は**この server の環境から観測して渡す**。daemon の環境は起動時の化石で、
-            # 継承した pane が死ぬと以後の spawn が全部落ちる (gh#932)
+            # 継承した pane は死んでいる (gh#932) か、呼び出し元と無関係な workspace に居る (gh#952)
             "anchor_handle": anchor.get("handle"),
             "anchor_workspace": anchor.get("workspace"),
         },
@@ -546,6 +544,11 @@ def daemon_restart() -> dict[str, Any]:
     events.jsonl が正本で現況は fold、worker は独立プロセスなので死なない。観測 cache だけが
     捨てられ、次の tick が埋め直す (それまで観測系は「未観測」を返す)。
 
+    **混雑 (503) の解ではない** (gh#956)。「台帳が別の作業に占有されている」と返った tool を
+    起こし直しても、同じ作業が次の呼び出しでまた掴む。掴んでいるものを見るのは `daemon_health`
+    で、この tool は **割り元の入れ替え**と**応答を返さなくなった daemon の降ろし**の 2 つに
+    だけ効く。返り値の `health` は起こし直した**後**のものなので、詰まりの診断には使えない。
+
     返り値の `stopped_pid` は止めた daemon の pid。居なければ `null` で、起こすだけになる。
     """
     return client_mod.restart_daemon(scope.root())
@@ -583,10 +586,36 @@ def dashboard_open() -> dict[str, Any]:
     return browser.open_for_human(_dashboard_facts())
 
 
+@tool()
+def daemon_health() -> dict[str, Any]:
+    """daemon の生存と**今 台帳を掴んでいる作業**を答える (read-only。何も記帳しない)。
+
+    **詰まっているかを詰まっている最中に読む口** (gh#956)。台帳へ触れる tool は門を 1 つずつ
+    通るので、混んでいる間は 503 (「台帳が別の作業に占有されている」) で戻る。この tool だけは
+    門を通らないので、**その 503 の理由を確かめるのに使える**。
+
+    `busy` の読み方: **埋まっていること自体は詰まりの証拠ではない**。daemon は周期処理スレッド
+    から 0.5 秒ごとに門を取るので、健康な状態でも経過秒がほぼ 0 の `周期処理` が頻繁に見える。詰まりを
+    示すのは **route 名と経過秒の組** — 同じ route が何秒も掴み続けているとき。逆に `null` でも
+    「空いている」の証拠にはならない (撮った瞬間の像なので)。
+
+    `shutting_down` が true なら停止の合図を受けて後片付け中。`daemon_restart` を重ねて撃たず、
+    数秒おいてから読み直す。
+
+    **混んでいることは `daemon_restart` の理由にならない** — 起こし直しても同じ作業が次の
+    呼び出しでまた掴む。撃つのは割り元の入れ替えと、応答が返らなくなった daemon の降ろしだけ。
+    """
+    return _health()
+
+
+def _health() -> dict[str, Any]:
+    """daemon の `/health` を 1 往復して読む (居なければ起こす)。"""
+    return client_mod.call(scope.root(), "GET", "/health")
+
+
 def _dashboard_facts() -> dict[str, Any]:
     """daemon の `/health` から dashboard の bind 結果を読む (無い構成でも同じ形で答える)。"""
-    health = client_mod.call(scope.root(), "GET", "/health")
-    facts = health.get("dashboard")
+    facts = _health().get("dashboard")
     if facts is None:
         return {"bound": False, "url": None, "reason": "この daemon は dashboard を持たない"}
     return facts

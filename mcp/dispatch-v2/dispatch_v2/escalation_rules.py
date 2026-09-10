@@ -71,6 +71,7 @@ RULE_CANDIDATE_APPEARED = "candidate_appeared"
 RULE_STORE_UNREACHABLE = "store_unreachable"
 RULE_ORPHAN_RESOURCES = "orphan_resources"
 RULE_DEPLOY_DEGRADED = "deploy_degraded"
+RULE_WORKTREE_VANISHED = "worktree_vanished"
 
 # rule を評価する単位。**subject の種類がそのまま scope** で、reconciler 側の観測の置き場と
 # 1 対 1 に対応する。scope を持たせるのは、rule を足した人が「これをどこで評価するか」を
@@ -126,8 +127,9 @@ StoreFailureSnapshot = namedtuple(
     "StoreFailureSnapshot", "store repo streak error first_failed_at last_failed_at"
 )
 
-#: 台帳外資源の巡回結果 (worktree だけ。session は project を跨ぐので載せない)
-ResourceSnapshot = namedtuple("ResourceSnapshot", "orphan_worktrees")
+#: 資源の巡回結果。`orphan_worktrees` は台帳外の worktree (session は project を跨ぐので
+#: 載せない)、`vanished_worktrees` は非終端 WorkOrder が記録しているのに git の登録に無い worktree
+ResourceSnapshot = namedtuple("ResourceSnapshot", "orphan_worktrees vanished_worktrees")
 
 #: 機械作用 1 巡の結果 (今は deploy だけ)
 EffectSnapshot = namedtuple("EffectSnapshot", "clone_path deploy_outcome deploy_summary")
@@ -441,6 +443,35 @@ def _orphan_resources(snapshot):
     )
 
 
+def _worktree_vanished(snapshot):
+    """#12 非終端 WorkOrder の作業ツリーが git の登録から消えた (ADR 0063)。
+
+    WorkOrder ごとに 1 件 — inbox から WorkOrder へ辿れるよう `wo_id` を持たせる。`present` は
+    残骸が残っているか (残っていれば `session_spawn` が作り直しを拒むので、受け手の次の手が変わる)。
+    """
+    return tuple(
+        Finding(
+            rule_id=RULE_WORKTREE_VANISHED,
+            dedup_key=f"{RULE_WORKTREE_VANISHED}:{one['wo_id']}:{one['path']}",
+            evidence={
+                "path": one["path"],
+                "branch": one["branch"],
+                "present": one["present"],
+                "note": (
+                    "repo の外から消された (dispatch は消していない)。"
+                    + (
+                        "ディレクトリが残骸として残っている — 先に repo 側の手順で空にしてから再 spawn する (ADR 0048)"
+                        if one["present"]
+                        else "再 spawn すれば同じ path へ作り直す"
+                    )
+                ),
+            },
+            wo_id=one["wo_id"],
+        )
+        for one in snapshot.vanished_worktrees
+    )
+
+
 def _deploy_degraded(snapshot):
     """#11 稼働 clone の `git pull --ff-only` が劣化した。
 
@@ -502,6 +533,12 @@ CATALOG = (
     ),
     EscalationRule(
         RULE_DEPLOY_DEGRADED, SCOPE_EFFECT, "pull 失敗 / pull 後 dirty / ff 不可", _deploy_degraded
+    ),
+    EscalationRule(
+        RULE_WORKTREE_VANISHED,
+        SCOPE_RESOURCES,
+        "非終端 WorkOrder ∧ 記録した worktree が git の登録に無い",
+        _worktree_vanished,
     ),
 )
 

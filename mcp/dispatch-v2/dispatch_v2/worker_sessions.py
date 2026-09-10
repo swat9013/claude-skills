@@ -38,6 +38,36 @@ from dispatch_v2 import (
 STARTING_GRACE_SEC = 60
 
 
+class UnsightableSessions:
+    """観測できない handle を tick をまたいで覚え、**その handle につき 1 度だけ** log へ出す係。
+
+    毎 tick 出すと 10 秒ごとに同じ行で log が埋まり (gh#972)、1 度きりにすると壊れたままの
+    handle が二度と見えなくなる — その中間がこの形。観測が成功したら忘れるので、直って再び
+    壊れれば改めて出る。**project ごとに 1 つ持ち、tick を跨いで持ち回る** — 観測 1 巡ごとに
+    作り直すと何も抑止しない。
+
+    log の宛先は組み立て時に受ける。**呼び出しのたびに `sys.stderr` を引く**のは、既定引数に
+    置くと import 時の stream に縛られ、差し替えた側 (daemon の log / テスト) へ届かないため。
+    """
+
+    def __init__(self, log=None):
+        self._reported = set()
+        self._log = log
+
+    def note_failure(self, *, session_id, handle, error):
+        if handle in self._reported:
+            return
+        self._reported.add(handle)
+        print(
+            f"[dispatch-v2] Session {session_id} ({handle}) を観測できないので "
+            f"この Session だけ飛ばす (lifecycle は据え置き): {error}",
+            file=self._log or sys.stderr,
+        )
+
+    def note_success(self, handle):
+        self._reported.discard(handle)
+
+
 class SpawnFailed(RuntimeError):
     """worker セッションを起動できなかった (Session は ended(launch_error) として残る)。"""
 
@@ -126,18 +156,28 @@ def close(book, *, runtime, session_id, actor):
     )
 
 
-def observe(book, *, runtime):
+def observe(book, *, runtime, unsightable=None):
     """非終端 Session を 1 巡観測し、変化だけを記帳する。
 
     返すのは記帳した変化の列 (何も変わらなければ空)。**毎 tick 同じ観測を記帳しない** —
     正本は人が読む plain text なので、変化していない事実で埋めない。
+
+    **1 件の観測失敗はその Session に閉じ込める** (gh#972)。閉じ込めないと、消えた pane 1 つで
+    同じ tick の残り全員の観測ごと落ち、その project の lifecycle 更新が丸ごと止まる
+    (実測 2026-09-08: 作業を終えた 3 worker が 68 分 `starting` のまま更新されなかった)。
+
+    `unsightable` は失敗を tick 跨ぎで覚える `UnsightableSessions` (周期処理は project ごとの
+    1 つを渡す)。1 巡しかしない単発の呼び出しには抑止する相手が無いので、渡さなくてよい。
     """
     now = book.now()
+    unsightable = UnsightableSessions() if unsightable is None else unsightable
     changes = []
     for live in session.live_sessions(book.state):
         if live["handle"] is None:
             continue  # requested のまま = runtime にまだ何も無い (観測対象が無い)
-        change = _observe_one(book, runtime=runtime, live=live, now=now)
+        change = _observe_one_isolated(
+            book, runtime=runtime, live=live, now=now, unsightable=unsightable
+        )
         if change is not None:
             changes.append(change)
     return changes
@@ -156,8 +196,9 @@ def reclaim_report(book, *, run_git, runtime):
         return {
             "clone_path": None,
             "candidates": [],
+            "vanished_worktrees": [],
             **git_worktrees.empty_scan(),
-            **_session_findings(book, runtime=runtime),
+            **session_findings(book, runtime=runtime),
         }
     registered_entries = git_worktrees.registered(run_git, clone_path=clone_path)
     candidates = [
@@ -168,49 +209,84 @@ def reclaim_report(book, *, run_git, runtime):
         )
         for owned in worktree.owned_worktrees(book.state)
     ]
+    vanished = vanished_worktrees(candidates)
     scanned = git_worktrees.scan_orphans(
         clone_path,
         registered_entries=registered_entries,
         owned_paths=worktree.owned_paths(book.state),
+        excluded_paths={one["path"] for one in vanished},  # rule #12 の担当分 (ADR 0063)
     )
     return {
         "clone_path": clone_path,
         "candidates": candidates,
+        "vanished_worktrees": vanished,
         **scanned,
-        **_session_findings(book, runtime=runtime),
+        **session_findings(book, runtime=runtime),
     }
 
 
-def _session_findings(book, *, runtime):
+def vanished_worktrees(candidates):
+    """非終端 WorkOrder が記録しているのに git の登録に無い worktree (rule #12 の観測、ADR 0063)。
+
+    判定は `reclaim_verdict` の blockers を読み直すだけ (非終端 = `workorder_open`、登録に無い =
+    実体が無い ∨ `tree_unregistered`)。terminal な WorkOrder の不在は載せない — `worktree_tidy` が
+    記録を手放す正常な経路で、terminal の残骸は台帳外の走査 (rule #10) が拾う。
+    """
+    return [
+        {
+            "wo_id": one["wo_id"],
+            "path": one["path"],
+            "branch": one["branch"],
+            "present": one["present"],
+        }
+        for one in candidates
+        if worktree.BLOCKER_WORKORDER_OPEN in one["blockers"]
+        and (not one["present"] or worktree.BLOCKER_TREE_UNREGISTERED in one["blockers"])
+    ]
+
+
+def session_findings(book, *, runtime):
+    """runtime に残っている実行単位のうち、報告すべき 2 種 (**閉じない**)。
+
+    **列挙は 1 回だけ**行い、2 つの報告で読み分ける — 同じ tick に `pane list` を 2 度撃つと、
+    観測の回数が報告の本数に比例して増える。窓には台帳の handle 全件を渡すので、台帳が知る
+    実行単位はすべて窓の中に入る。
+    """
+    known = session.handles_in_ledger(book.state)
+    # **台帳の handle を観測窓として渡す** — worker は呼び出し元の workspace に開くので
+    # (gh#952)、daemon 自身の周りだけを列挙すると、割った先に残った残骸を誰も報告できない
+    sightings = runtime.sight_all(scope_handles=known)
     return {
-        "orphan_sessions": orphan_sessions(book, runtime=runtime),
-        "stranded_sessions": stranded_sessions(book, runtime=runtime),
+        "orphan_sessions": _orphan_sessions(sightings, known=known),
+        "stranded_sessions": _stranded_sessions(book, sightings=sightings),
     }
 
 
-def orphan_sessions(book, *, runtime):
+def _orphan_sessions(sightings, *, known):
     """runtime に居るが台帳のどの Session でもない handle を**報告する** (閉じない)。
 
     label で dispatch 由来かを絞らないのは、**絞る規則そのものが誤検知の種**だから
     (別 project の pane を label だけで自分の物と読むのが v1 の実測での事故)。判断は
     orchestrator が読んで行う。
     """
-    known = session.handles_in_ledger(book.state)
     return [
         {"handle": sighting.handle, "label": sighting.label}
-        for sighting in runtime.sight_all()
+        for sighting in sightings
         if sighting.handle not in known
     ]
 
 
-def stranded_sessions(book, *, runtime):
+def _stranded_sessions(book, *, sightings):
     """終わった Session なのに runtime に実行単位が残っているものを**報告する** (閉じない)。
 
     `exited` (agent は居ないが実行単位は在る) と、起動途中で落ちた `launch_error` がここに出る。
     **台帳外ではないので `orphan_sessions` には出ない** — 誰も報告しないと、資源だけが静かに
     溜まる。閉じるのは orchestrator の `session_close` (終端 Session でも実行単位は閉じる)。
+
+    生死は `session_findings` が撃った列挙 1 回から読む。その窓は台帳の handle 全件から作って
+    あるので、台帳が知る実行単位は workspace をまたいでも窓の中に居る (gh#952)。
     """
-    live_handles = {sighting.handle for sighting in runtime.sight_all()}
+    live_handles = {sighting.handle for sighting in sightings}
     return [
         {
             "session_id": one["session_id"],
@@ -297,6 +373,25 @@ def _own_paths(recorded):
     return {recorded["path"]} if recorded else set()
 
 
+def _observe_one_isolated(book, *, runtime, live, now, unsightable):
+    """1 Session の観測。runtime の失敗はこの Session に閉じ込め、次へ進む。
+
+    **捕まえるのは `SessionRuntimeError` だけ** — 台帳側の欠陥まで飲み込むと、記帳が
+    落ちていることに誰も気づかないまま観測が静かに嘘をつく。握り潰しにしないために、
+    どの Session のどの handle で落ちたかを log へ出す (`_guard` は job 単位なので、
+    ここで飲めば tick 全体の失敗としては見えなくなる)。出す回数の抑止は `unsightable` の担当。
+    """
+    try:
+        change = _observe_one(book, runtime=runtime, live=live, now=now)
+    except session_runtime.SessionRuntimeError as exc:
+        unsightable.note_failure(
+            session_id=live["session_id"], handle=live["handle"], error=exc
+        )
+        return None
+    unsightable.note_success(live["handle"])
+    return change
+
+
 def _observe_one(book, *, runtime, live, now):
     sighting = runtime.sight(live["handle"])
     reason = _ended_reason(live, sighting, now=now)
@@ -326,7 +421,7 @@ def _ended_reason(live, sighting, *, now):
     """観測から終わり方を読む。`starting` の猶予の中なら None (まだ終わっていない)。
 
     **agent が現れるまでには数秒〜数十秒かかる** (v1 は adapter 側で 5 回 × 2 秒 poll していた)。
-    v2 の daemon は単一スレッドで serve も兼ねるので adapter を待たせず、観測側で猶予を持つ:
+    v2 の adapter は待つ間ずっと台帳の門を掴むので待たせず、観測側で猶予を持つ:
     `starting` に入ってから `STARTING_GRACE_SEC` を過ぎても agent が現れなければ `exited`。
     猶予を無条件に外すと、起動直後の worker が毎回その場で終了扱いになる。
     """

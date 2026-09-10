@@ -8,8 +8,9 @@
   日本語の note が `\\uXXXX` に潰れると読めない (ADR 0057 の「plain text である利点」)
 
 並行書き込みの排除は本 module の責務ではない — **書き手は daemon 1 プロセスに集約されている**
-(ADR 0057)。daemon が `<root>/daemon.lock` を保持し、HTTP を単一スレッドで回すことで直列性を
-構造で保証する。ここに flock を重ねると「共有を分けずに直列化を足す」側の設計になる。
+(ADR 0057)。daemon が `<root>/daemon.lock` を保持してプロセスを 1 つに絞り、プロセス内の
+直列性は台帳の門 (`http_app.LedgerGate`) が保証する。ここに flock を重ねると「共有を分けずに
+直列化を 2 段重ねる」側の設計になる。
 """
 
 import json

@@ -44,9 +44,9 @@ Spec 源は commit message / PR 本文の issue ref (`#123` / `Closes #45` / `!6
 
 本 skill が立てる subagent は、手順 2 と手順 3 のどちらも `Agent` tool で、**`name` を付けずに**同一 message 内で並列起動する (name 付きは background 型になり、結果が tool_result で返らない)。`subagent_type` は工程で違う — ここで立てる reviewer は `general-purpose` で、`model` は指定せず呼び出し元から継承する。反証者の指名は手順 3 に書いてある。
 
-ここで立てるのは 2 体 (Spec 軸を skip するなら原則軸の 1 体だけ)。原則軸の prompt には [references/rubric.md](references/rubric.md) を Read して**全文をそのまま**埋める (要約・抜粋しない)。rubric がこの review で使う原則の全量なので、reviewer は leaf skill を開かずに済む。
+ここで立てるのは 2 体 (Spec 軸を skip するなら原則軸の 1 体だけ)。原則軸の prompt には [references/rubric.md](references/rubric.md) を Read して**全文をそのまま**埋める (要約・抜粋しない)。rubric がこの review で使う原則の全量なので、reviewer は leaf を開かずに済む。
 
-rubric の各症状は元 leaf の skill 名を 1 つ持つ。同期は手動なので、leaf を改訂したらその skill 名で rubric を grep して症状を見直す。
+rubric の各症状は元 leaf の名前を 1 つ持つ。同期は手動なので、leaf を改訂したらその名前で rubric を grep して症状を見直す。
 
 **原則軸の prompt**:
 

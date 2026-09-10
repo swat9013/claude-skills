@@ -22,9 +22,12 @@ from dispatch_v2 import adapter_cli, ports, refs
 
 TRACKER = "gh"
 
-# 1 回の CLI 起動に許す上限秒。**daemon の HTTP は単一スレッド**で、tick の CLI 呼び出しは
-# その間 tool 応答を塞ぐ。同梱 client の応答待ち (`client.REQUEST_TIMEOUT_SEC` = 20 秒) より
-# 十分下に取らないと、tick が走っているだけで tool 呼び出しが timeout に見える
+# 1 回の CLI 起動に許す上限秒。**tick は台帳の門を掴んで走る** (`http_app.LedgerGate`) ので、
+# tick の CLI 呼び出しはその間 他の tool を門の外で待たせる。同梱 client の応答待ち
+# (`client.REQUEST_TIMEOUT_SEC` = 20 秒) より十分下に取らないと、tick が走っているだけで
+# tool 呼び出しが 503 になる。**この 15 秒が外部コマンド全体の基準値**で、git metadata
+# (`project.GIT_METADATA_TIMEOUT_SEC`) と SessionRuntime
+# (`runtime_herdr.SUBPROCESS_TIMEOUT_SEC`) もここへ揃えてある
 SUBPROCESS_TIMEOUT_SEC = 15
 
 ISSUE_FIELDS = "number,state"

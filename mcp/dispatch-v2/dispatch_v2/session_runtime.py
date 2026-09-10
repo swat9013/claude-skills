@@ -28,8 +28,9 @@ RuntimeSighting = namedtuple("RuntimeSighting", "handle label agent_present acti
 # 環境ではなく呼び出し側が持つ** — daemon はマシンに 1 プロセスで長命なので、起動時に継承した
 # 実行単位が先に死ぬと以後の launch が全部落ちる (gh#932)。呼び出し側は orchestrator セッション
 # の子プロセスなので、その観測値は常に今生きている実行単位を指す。
-# `workspace` を一緒に運ぶのは、adapter が観測窓 (workspace) の内側かどうかを判定できないと、
-# 割った worker が観測の外へ出たまま生き続けるため
+# `workspace` を一緒に運ぶのは、**割った worker がどこに並ぶかを呼び出し側が名乗るため** —
+# adapter は割った先として覚え、観測窓に加える。handle から読めば足りるように見えるが、その
+# 綴りは runtime 固有で、割り元が使えなかったときに残る残骸を探す窓もここから来る (gh#952)
 RuntimeAnchor = namedtuple("RuntimeAnchor", "handle workspace")
 
 # 起動する agent。model / prompt を解釈しないのは v1 と同じ (policy-free)
@@ -76,8 +77,10 @@ class SessionRuntime:
         """command を走らせる実行単位を作り、その runtime handle を返す。
 
         `anchor` は呼び出し側が観測した `RuntimeAnchor`。**観測していないときだけ `None`**
-        (adapter は自分が知る割り元へ縮退する) で、省略はできない — 既定値を持たせると、
-        呼び出し側が渡し忘れた経路が「観測していない」と区別できなくなる。
+        で、省略はできない — 既定値を持たせると、呼び出し側が渡し忘れた経路が「観測して
+        いない」と区別できなくなる。`None` を渡された adapter は**起動せずに落とす**
+        (縮退先を持たない): 新しい実行単位が呼び出し元の隣に並ばないと、人はそれを探せない
+        (gh#952)。
         """
         raise NotImplementedError
 
@@ -108,8 +111,15 @@ class SessionRuntime:
         """handle 1 件の観測。runtime に無ければ None。"""
         raise NotImplementedError
 
-    def sight_all(self):
-        """runtime に今在る handle の列挙 (台帳外 session の検出にも使う)。"""
+    def sight_all(self, *, scope_handles):
+        """観測窓の中に今在る handle の列挙 (台帳外 session の検出にも使う)。
+
+        `scope_handles` は台帳が既に知っている handle。**既定値を持たせない** — 省略できると、
+        渡し忘れた呼び出しが gh#952 以前の狭い窓へ黙って落ちる。**runtime 全体を列挙しない**
+        のは、別 project の実行単位や人間自身の実行単位を自分の追跡対象として拾わないため。
+        窓の綴り (workspace 等) は runtime 固有なので adapter が持ち、呼び出し側は「自分が
+        知っている handle の周り」とだけ言う。
+        """
         raise NotImplementedError
 
     def classify_activity(self, activity_raw):

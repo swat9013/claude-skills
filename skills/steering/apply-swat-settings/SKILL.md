@@ -108,6 +108,7 @@ baseline の各 entry を、適用先の現状と突き合わせて 3 分類に�
 | `excludedCommands` に `git merge:*` | sandbox 内の `git merge` が `Operation not permitted` で落ち、**HEAD 据え置き + working tree だけ書き換わった中途半端な状態**になる | 適用先が `hooks/` / `.claude/hooks` / `.claude/skills` / `.claude/agents` を in-tree で管理していると、sandbox 組み込みの自己改変保護 (設定では解除できない) が merge の write を拒む。**repo の形に依存する** — これらを持たない project では症状が出ないので足さない。`git pull` (= fetch + merge) を既に除外しているなら一貫性の範囲で、権限の新規拡大にはならない |
 | `sandbox.enableWeakerNetworkIsolation: true` | `gh` (Go binary) が sandbox 内で TLS 検証に失敗する | セキュリティ低下とのトレードオフ。まず `gh api user` を sandbox 内で走らせて要否を確認する |
 | `network.allowedDomains` の追加 | sandbox 内の fetch / install が domain 拒否で失敗する | 適用先の実依存 (npm / rubygems / 社内 registry 等) で決まる。baseline をそのまま増やさない |
+| `network.allowUnixSockets` に `/private/tmp` | sandbox 内のテスト / ツールが unix socket の `bind` / `connect` で `Operation not permitted` (`EPERM`) になる | `filesystem.allowWrite` では開かない — bind / connect は `network-bind` / `network-outbound` という file write とは別の権限クラス。**ディレクトリ単位**で並べ、その subpath 配下だけが通る (`/tmp` は `/private/tmp` へ解決されるので 1 本でよい)。**適用先が socket を張るテスト / 常駐 daemon を持つときだけ足す**。`allowAllUnixSockets: true` は全 socket 開放で、公式 docs が `/var/run/docker.sock` 経由の host 奪取を警告しているので選ばない。広いディレクトリ (`/private/tmp` 等) を許すとその配下の**他人の socket も到達可能**になるため、名指しできるならより狭い方を選ぶ。**足す path は 1 列目に書く** — 本 gate が宣言として読むのは 1 列目だけで、本欄の path は反例として扱われる |
 
 ## path 解決: symlink 環境と marketplace 環境の 2 本立て
 

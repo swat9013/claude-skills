@@ -6,18 +6,21 @@ cache を平らな表へ写しただけのもの。消して作り直せるの�
 
 ## なぜ SQLite を挟むのか — thread の境界そのもの
 
-dashboard HTTP は daemon に同居する (設計 決定 6) が、daemon の serve ループは **単一
-スレッドで、そこで polling tick も回る** (ADR 0056)。dashboard を同じスレッドに載せると、
-browser の polling と keep-alive が inbox を pull する HTTP と席を奪い合い、長い tick が
-そのまま画面の停止になる。
+dashboard HTTP は daemon に同居する (設計 決定 6) が、daemon では polling tick も回る
+(ADR 0056)。dashboard を同じスレッドに載せると、browser の polling と keep-alive が inbox を
+pull する HTTP と席を奪い合い、長い tick がそのまま画面の停止になる。
 
-そこで **書き手 (daemon の main thread) と読み手 (dashboard thread) の唯一の接点をこの
+そこで **書き手 (daemon の周期処理スレッド) と読み手 (dashboard thread) の唯一の接点をこの
 file の SQLite に置く**。
 
 ```
-main thread   : events.jsonl 追記 → fold → ここへ投影 (書き。本 module)
-dashboard 側  : mode=ro で開いて読むだけ (`view_read` module)
+周期処理スレッド : events.jsonl 追記 → fold → ここへ投影 (書き。本 module)
+dashboard 側     : mode=ro で開いて読むだけ (`view_read` module)
 ```
+
+**書き手が 1 スレッドであることは `http_app.PeriodicWorker` からしか投影を回さないことで
+保つ**。request は接続ごとのスレッドで走るが、そこから投影へは触らない — 触ると `sqlite3` の
+thread 親和性 (`check_same_thread`) を破る。
 
 読み手は正本にも memory 上の state にも触らないので、共有可変オブジェクトが 1 つも生まれない
 (`principle-isolate-shared-writes`: まず共有そのものを解消する)。tick が長引いても dashboard は
@@ -211,45 +214,75 @@ def _connect(path):
     return connection
 
 
-class MaterializedView:
-    """投影の書き手。**daemon の main thread だけが持つ** (書き手は 1 つという不変条件)。"""
+def _open_writer(path):
+    """書き手の接続を張る: 版が違えば作り直し、前回の投影を捨てて空から始める。
 
-    def __init__(self, connection, path):
-        self._connection = connection
+    **版が違えば table ごと落とす**。DDL は `IF NOT EXISTS` なので、列を足しただけの版で
+    古い file に当たると table は古い形のまま残り、INSERT が落ちて**その project の投影が
+    永久に凍る** (投影の失敗は daemon を止めないので、画面が古いまま気付かれない)。
+    """
+    connection = _connect(path)
+    connection.executescript(META_SCHEMA)
+    if _stored_schema_version(connection) != SCHEMA_VERSION:
+        _drop_everything(connection)
+        connection.executescript(META_SCHEMA)
+    connection.executescript(SCHEMA)
+    with connection:
+        for table in LEDGER_TABLES + OBSERVATION_TABLES + DIAGNOSTIC_TABLES:
+            connection.execute(f"DELETE FROM {table}")
+        # **観測側の版も一緒に捨てる**。`ObservationCache.revision` は daemon の起動ごとに
+        # 0 から数え直すので、前回の版が meta に残っていると再起動後の観測が「同じ版だから
+        # 書かなくてよい」と判定され、画面が「まだ観測が 1 度も成功していない」を出し続ける
+        connection.execute(
+            "DELETE FROM meta WHERE key LIKE ?", (f"{_OBSERVATION_REVISION_PREFIX}%",)
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            (SCHEMA_VERSION,),
+        )
+    return connection
+
+
+class MaterializedView:
+    """投影の書き手。**最初に書いたスレッドだけが持つ** (書き手は 1 つという不変条件)。
+
+    接続を組み立ての場で張らず最初の書き込みまで遅らせるのは、**sqlite の接続が張った
+    スレッドでしか使えない** (`check_same_thread`) から。daemon は main thread で組み立て、
+    投影を回すのは周期処理スレッド (`http_app.PeriodicWorker`) なので、組み立ての場で張ると
+    最初の投影が必ず `ProgrammingError` で落ちる — しかも投影の失敗は project ごとに畳まれる
+    ので、画面が起動時のまま凍ったことに誰も気付けない (gh#967)。
+    """
+
+    def __init__(self, path):
         self.path = Path(path)
+        # 最初の書き込みで張る接続。**張ったスレッドが書き手**になる
+        self._opened = None
+
+    @property
+    def _connection(self):
+        """書き手の接続。**最初に触ったスレッドで張る** (`_open_writer` は何度撃っても同じ)。"""
+        if self._opened is None:
+            self._opened = _open_writer(self.path)
+        return self._opened
 
     @classmethod
     def open(cls, path):
         """view を開く: 版が違えば作り直し、前回の投影を捨てて空から始める。
 
-        **版が違えば table ごと落とす**。DDL は `IF NOT EXISTS` なので、列を足しただけの版で
-        古い file に当たると table は古い形のまま残り、INSERT が落ちて**その project の投影が
-        永久に凍る** (投影の失敗は daemon を止めないので、画面が古いまま気付かれない)。
+        **張った接続はここで閉じる**。組み立ては daemon の main thread で走るので、接続を
+        持ち越すと最初の投影が別スレッドから触ることになる (`ProgrammingError`)。版の検査と
+        作り直しだけを起動時に済ませ、書くための接続は書き手が張り直す。
         """
         path = Path(path)
-        connection = _connect(path)
-        connection.executescript(META_SCHEMA)
-        if _stored_schema_version(connection) != SCHEMA_VERSION:
-            _drop_everything(connection)
-            connection.executescript(META_SCHEMA)
-        connection.executescript(SCHEMA)
-        with connection:
-            for table in LEDGER_TABLES + OBSERVATION_TABLES + DIAGNOSTIC_TABLES:
-                connection.execute(f"DELETE FROM {table}")
-            # **観測側の版も一緒に捨てる**。`ObservationCache.revision` は daemon の起動ごとに
-            # 0 から数え直すので、前回の版が meta に残っていると再起動後の観測が「同じ版だから
-            # 書かなくてよい」と判定され、画面が「まだ観測が 1 度も成功していない」を出し続ける
-            connection.execute(
-                "DELETE FROM meta WHERE key LIKE ?", (f"{_OBSERVATION_REVISION_PREFIX}%",)
-            )
-            connection.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-                (SCHEMA_VERSION,),
-            )
-        return cls(connection, path)
+        _open_writer(path).close()
+        return cls(path)
 
     def close(self):
-        self._connection.close()
+        if self._opened is None:
+            return
+        self._opened.close()
+        self._opened = None
+
 
     def reopen_if_missing(self):
         """view file が消えていたら開き直す。開き直したなら True。
@@ -264,19 +297,14 @@ class MaterializedView:
         """
         if self.path.exists():
             return False
-        self._connection.close()
+        self.close()
         # 本体だけ消えて WAL / shm が残っていると、新しい空の DB へ古い page が復元されうる。
         # 投影は捨ててよいものなので、道連れにして完全に空から始める
         for sidecar in (f"{self.path}-wal", f"{self.path}-shm"):
             Path(sidecar).unlink(missing_ok=True)
-        self._connection = _connect(self.path)
-        self._connection.executescript(META_SCHEMA)
-        self._connection.executescript(SCHEMA)
-        with self._connection:
-            self._connection.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-                (SCHEMA_VERSION,),
-            )
+        # **張り直しは `_open_writer` 1 本に通す**。ここで schema を組み直すと、版の検査や
+        # 観測版の掃除がこちらの経路にだけ無い状態が生まれる (実際に生まれていた)
+        self._opened = _open_writer(self.path)
         return True
 
     def refresh_ledger(self, project_key, *, book, projected_at):
@@ -565,9 +593,9 @@ def _observation_rows(project_key, cache):
 
 
 class Projection:
-    """全 project を投影し直す callable。**daemon の serve ループが毎周回呼ぶ**。
+    """全 project を投影し直す callable。**daemon の周期処理スレッドが毎周回呼ぶ**。
 
-    tick (60 秒周期) ではなく serve ループに載せるのは、**HTTP 経由の記帳も画面へ届かせる**
+    tick (60 秒周期) ではなく毎周回に載せるのは、**HTTP 経由の記帳も画面へ届かせる**
     ため — `wo_create` で立った WorkOrder が次の tick まで画面に出ないと、dashboard は「今
     何が起きているか」を答えられない。台帳も観測 cache も版 (`revision`) が動いていなければ
     書かないので、毎周回呼んでも実費は版の比較だけで済む。
@@ -621,7 +649,7 @@ class Projection:
         )
 
     def _complain(self, project_key, message):
-        """同じ失敗を繰り返し出さない (serve ループは 1 秒に 2 度回る)。
+        """同じ失敗を繰り返し出さない (周期処理は 1 秒に 2 度回る)。
 
         `project_key` が `None` なのは投影 file そのものについての報告 (project を選べない)。
         """

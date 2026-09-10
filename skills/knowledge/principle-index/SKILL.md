@@ -1,31 +1,31 @@
 ---
 name: principle-index
 description: 原則 leaf 全件の適用条件を 1 行ずつ並べた索引。今の作業に当たる leaf を Read で読む。Use when「どの原則を読むべきか探す」「原則の一覧を見る」.
-user-invocable: false
+user-invocable: true
 ---
 
 # 原則 leaf の索引
 
 適用条件が今の作業に当たる leaf を Read で読む。当たる leaf が複数あれば全部読む。
 
-leaf は本索引と同じ親ディレクトリに `<name>/SKILL.md` として置いてある。
+leaf は本 file と同じディレクトリの `references/leaves/<name>.md` に置いてある (`<name>` は下の一覧が挙げる名前をそのまま使う)。skill 登録のない素の markdown なので、経路は Read だけ。
 
 <!-- 編集者向け: 以下の一覧は leaf の frontmatter からの生成物。直すのは leaf 側の description で、手書きは scripts/gate/verify-principle-index-sync.py が落とす -->
 
 ## leaf 一覧
 
 - **principle-ai-delegation-boundary** — AI エージェントへ自律実行を委譲する範囲を決めるとき、許可と禁止を設計するとき、人間へ返す境界を決めるときに適用する。禁止は副作用の有無で切り、委譲は AFK 境界で切る。
-- **principle-artifact-register** — README・正本・蒸留版・spec / plan / PR 説明文・エージェント向け指示書といった文書を書くときに適用する。成果物の役割ごとに規範が逆になる。
+- **principle-artifact-register** — README・正本・蒸留版・spec / plan / PR 説明文・エージェント向け指示書といった文書を書くとき、記述を別文書へ移して正本を立て直すときに適用する。成果物の役割ごとに規範が逆になり、読者と正本の決め方はどの成果物にも共通で掛かる。
 - **principle-automate-when-it-hurts** — 反復作業を自動化するか決めるとき、規約の遵守をどう守らせるか決めるとき、LLM 推論を script へ追い出すか判断するときに適用する。自動化は痛みの実測後、遵守は機械で保証する。
 - **principle-balance-coupling** — モジュール / サービス境界の結合を評価するとき、境界を分割するか統合するか判断するときに適用する。integration strength / distance / volatility の 3 次元。
-- **principle-build-vs-buy** — 自前実装と既製品が拮抗したとき、言語・フレームワーク・ライブラリを選定するときに適用する。既製品を既定に置き、選定軸をテスト容易性・可読性・構築の簡単さで切る。
+- **principle-build-vs-buy** — 自前実装と既製品が拮抗したとき、言語・フレームワーク・ライブラリを選定するとき、既製品を fork して維持するか・確立した仕組みを自前へ置き換えるか決めるときに適用する。既製品を既定に置き、選定軸をテスト容易性・可読性・構築の簡単さと上流への追従コストで切る。
 - **principle-collective-ownership** — コードの所有範囲・レビューの目的・設計判断の記録先を決めるときに適用する。レビューは設計改善と知識共有の場、WHY は ADR に残す。
 - **principle-comment-intent** — コメントや docstring を書くか迷うとき、変更の意図をどこに残すか決めるときに適用する。意図の 4 側面 (仕様 / 実現方法 / 変更の動機 / 非自明な選択の理由) の表現先を決める。
 - **principle-context-budget** — 大きな出力・長いファイル・委譲や参照の設計で context を消費するときに適用する。context は再生しない有限資源として配分する。
 - **principle-coverage-as-floor** — カバレッジやミューテーションスコアを運用するとき、数値目標や閾値を決めるときに適用する。カバレッジは負の指標かつ回帰下限。
 - **principle-debt-quadrant** — 品質と速度が競合したとき、技術的負債を作るか・いつ返すか決めるときに適用する。Technical Debt Quadrant による許容判定。
 - **principle-delegate-opaquely** — 他の skill / module / service へ処理を委譲する側を書くとき、委譲先の前提・失敗・コストを呼び出し側でどう扱うか決めるときに適用する。呼び出し側が持つのは呼び出し口と自分自身の保証だけ。
-- **principle-deletability** — 拡張しやすさと捨てやすさが競合したとき、機能・仕組みを撤去するか決めるとき、撤去した後に何を残すか決めるときに適用する。撤去の起点は実績、撤去後に残すのは戻れる記録。
+- **principle-deletability** — 拡張しやすさと捨てやすさが競合したとき、機能・仕組みを撤去するか決めるとき、撤去した後に何を残すか決めるとき、導入する項目を絞るときに適用する。撤去の起点は使用実績と保守コスト、撤去後に残すのは戻れる記録。
 - **principle-design-derivation-order** — アーキテクチャや構造を新しく決めるとき、不可逆な決定を今下すか遅らせるか迷ったときに適用する。制約 → アーキテクチャ特性 → 構造の導出順序。
 - **principle-fail-loudly** — エラー処理・例外・フォールバック・縮退の挙動を書くときに適用する。失敗を即座に可視化する原則。
 - **principle-fix-root-causes** — バグを直すとき・デバッグするとき、回避策で症状だけ消したくなったときに適用する。修正の到達点を根本原因側へ引き直す。
