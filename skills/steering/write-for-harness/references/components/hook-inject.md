@@ -2,14 +2,14 @@
 
 ## いつこの doc を Read するか
 
-hook script が Claude へ届ける注入文 (SessionStart の初期 context / UserPromptSubmit の追記 / PreToolUse の warning) を書く・見直すときに Read する。同じ script でも event / matcher / exit code / fail-posture といった機構側の作りは [hook](../../../../knowledge/claude-config-review/references/hook.md) が正本。
+hook script が Claude へ届ける注入文 (SessionStart の初期 context / UserPromptSubmit の追記 / PreToolUse の warning) を書く・見直すときに Read する。同じ script でも event / matcher / exit code / fail-posture といった機構側の作りは [hook](../../../../procedure/claude-config-review/references/hook.md) が正本。
 
 ## 責務
 
 注入文は hook 機構が運ぶ Inferential な指示文。読み手は Claude で、届き方 (いつ・何回) は hook の event が決める。
 
 - **目的**: 自動的に効かせたい規範・文脈を、人手の prompt を待たずに注入する。
-- **対象外**: 注入を運ぶ機構そのもの (それは [hook](../../../../knowledge/claude-config-review/references/hook.md) の責務)、全セッションで必要な規範 (それは [claude-md](./claude-md.md) の責務)、特定ファイル編集時だけ要る細則 (それは [rules](./rules.md) の責務)。
+- **対象外**: 注入を運ぶ機構そのもの (それは [hook](../../../../procedure/claude-config-review/references/hook.md) の責務)、全セッションで必要な規範 (それは [claude-md](./claude-md.md) の責務)、特定ファイル編集時だけ要る細則 (それは [rules](./rules.md) の責務)。
 
 ## 仕様
 
@@ -41,5 +41,5 @@ hook script が Claude へ届ける注入文 (SessionStart の初期 context / U
 ## 参照
 
 - 共通: [architecture](../architecture.md) (注入は C/Guide。deny は C/Sensor) / [writing](../writing.md) (文面規則の正本) / [models](../models.md) (注入量と context 制約)
-- 関連: [hook](../../../../knowledge/claude-config-review/references/hook.md) (注入を運ぶ script 側の event / matcher / fail-posture)
-- 公式: Claude Code hooks ドキュメント (URL は [sources](../../../../knowledge/claude-config-review/references/sources.md) 経由で確認)
+- 関連: [hook](../../../../procedure/claude-config-review/references/hook.md) (注入を運ぶ script 側の event / matcher / fail-posture)
+- 公式: Claude Code hooks ドキュメント (URL は [sources](../../../../procedure/claude-config-review/references/sources.md) 経由で確認)

@@ -25,7 +25,7 @@ write-for-harness の俯瞰 (構造) reviewer として dispatch されたとき
 分割してよい軸は**課題領域の独立性**のみ。次のいずれかを満たすときだけ分割を提案する:
 
 - **観測範囲・入力が異なる**: 2 つの用途が別の分母・別の入力を観測しており、同居させると分母の取り違え (一方の文脈でしか成立しない規範をもう一方へ持ち込む事故) が起きる
-- **正本の分担を宣言できる**: 「A は X の正本、B は Y の正本」と双方の本文に境界を明文化でき、利用者がどちらを引くか迷わない
+- **正本の分担を宣言できる**: 「A は X の正本、B は Y の正本」と境界を明文化でき、利用者がどちらを引くか迷わない。宣言は利用者が最初に開く側 (呼び出す側) の本文にあれば足りる — 呼ばれる側からの逆参照は要求しない (skill 間の参照可否は [skill](./components/skill.md) の自己完結性節に従い、手順の実行に不要な参照は足さない)
 
 分割には固定費がある。提案時は必ず対価を勘定に入れる:
 
@@ -56,4 +56,4 @@ write-for-harness の俯瞰 (構造) reviewer として dispatch されたとき
 ## 参照
 
 - 共通: [architecture](./architecture.md) (4 slot 表と選択フロー — 配置判断の枠) / [claude-md](./components/claude-md.md) (常時ロード層の載せる基準と段階開示 — 層間振り分けの枠) / [models](./models.md) (context 肥大と分割の判断材料)
-- 文面品質の領域境界: [skill](./components/skill.md) / [rules](./components/rules.md) / [hook-inject](./components/hook-inject.md) / [settings](../../../knowledge/claude-config-review/references/settings.md) / [hook](../../../knowledge/claude-config-review/references/hook.md) (ファイル内の観点はこれら component 別 reference の領域)
+- 文面品質の領域境界: [skill](./components/skill.md) / [rules](./components/rules.md) / [hook-inject](./components/hook-inject.md) / [settings](../../../procedure/claude-config-review/references/settings.md) / [hook](../../../procedure/claude-config-review/references/hook.md) (ファイル内の観点はこれら component 別 reference の領域)

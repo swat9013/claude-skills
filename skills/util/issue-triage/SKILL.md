@@ -28,12 +28,13 @@ open issue を全件読み取りで調査し、issue ごとの推奨 (label / �
 ## 推奨案の組み立てと承認
 
 5. issue ごとに推奨を 1 つ決め、根拠を 1 行添える。推奨は label 変更 / close / コメントのみ / 深掘り待ち label / 変更なし のいずれか。選択肢を 2〜4 個に絞れない論点を抱えた issue は、選択肢を捏造せず深掘り待ちを推奨にする
-6. AskUserQuestion で全 issue 分の承認を取る (1 回 4 問まで)。各設問に推奨と根拠を載せ、user が Other で深掘りを求めた issue は深掘り待ちへ倒す。tracker への書き込み (label / close / コメント) は承認された分だけ行う — 全変更が承認制なのは、機械が勝手に label を動かさないという他セッションからの信頼を守るため
+6. 推奨どおりに反映すると着手可 label が付いている issue — 新たに付ける issue と、既に付いていて据え置く issue (open CL を持つものを含む) の両方 — に限り、`swat-skills:ready-for-agent-review` を Skill tool で issue 番号と issue 置き場を渡して invoke し、返った提案を手順 7 の承認材料にする (着手可にしない issue には掛けない — 本文を正として実装されるのは着手可の issue だけなので)。提案に指摘が残った issue は、着手可のまま / 修正案をコメントして着手可 / 深掘り待ち のどれにするかを設問の選択肢に含める。その issue に open CL があれば、CL の差し戻し (差し戻しコメント / close) も選択肢に含める — CL は issue の欠陥をそのまま実装している。本文の書き換え案はコメントに差分として載せる。skill が提案を返さずに停止したら、その issue には着手可を推奨せず、停止理由を設問の前の本文に出す
+7. AskUserQuestion で全 issue 分の承認を取る (1 回 4 問まで)。各設問に推奨と根拠を載せ、user が Other で深掘りを求めた issue は深掘り待ちへ倒す。手順 6 の提案は全文を設問の前の本文に出し、設問にはその要点だけを書く (設問の欄に全文は収まらない)。tracker への書き込み (label / close / コメント) は承認された分だけ行う — 全変更が承認制なのは、機械が勝手に label を動かさないという他セッションからの信頼を守るため
 
 ## 反映と報告
 
-7. 承認された操作を反映する: `gh issue edit <N> --add-label/--remove-label` / `gh issue close <N> --comment` / `gh issue comment <N>`。決定と根拠は issue コメントに残す — label だけでは、なぜその分類になったかが次に読む人へ残らない。issue 本文は編集しない
-8. 報告して終える。含めるもの: 反映した操作と根拠 / 承認されず据え置いた issue / 深掘り待ち (今回付けた分と既存の残数) / user に残る作業。深掘り待ちの消化はこの skill の外 — user が任意のセッションで grill 系 skill を呼び、固まった内容の issue への反映 (コメント追記・着手可 label 化・深掘り待ち label の除去) をそのセッションに指示する
+8. 承認された操作を反映する: `gh issue edit <N> --add-label/--remove-label` / `gh issue close <N> --comment` / `gh issue comment <N>`。決定と根拠は issue コメントに残す — label だけでは、なぜその分類になったかが次に読む人へ残らない
+9. 報告して終える。含めるもの: 反映した操作と根拠 / 承認されず据え置いた issue / 深掘り待ち (今回付けた分と既存の残数) / user に残る作業。深掘り待ちの消化はこの skill の外 — user が任意のセッションで grill 系 skill を呼び、固まった内容の issue への反映 (コメント追記・着手可 label 化・深掘り待ち label の除去) をそのセッションに指示する
 
 ## 実行環境
 

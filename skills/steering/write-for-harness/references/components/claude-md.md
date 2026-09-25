@@ -9,7 +9,7 @@
 CLAUDE.md は Claude Code がセッション開始時に常時読み込む指示ファイル。
 
 - **目的**: モデルが従うべき不変の規範 / プロジェクト固有制約 / よく忘れる注意点を、毎セッション自動的に注入する。
-- **対象外**: 1 回限りの指示 (それは prompt で十分)、自動実行 (それは hook の責務 → [hook](../../../../knowledge/claude-config-review/references/hook.md))、特定タスク手順 (それは skill の責務 → [skill](./skill.md))、特定ファイル編集時のみ必要な細則 (それは rules の責務 → [rules](./rules.md))、機械的に検査可能な制約 (それは linter / settings の責務 → [settings](../../../../knowledge/claude-config-review/references/settings.md))。
+- **対象外**: 1 回限りの指示 (それは prompt で十分)、自動実行 (それは hook の責務 → [hook](../../../../procedure/claude-config-review/references/hook.md))、特定タスク手順 (それは skill の責務 → [skill](./skill.md))、特定ファイル編集時のみ必要な細則 (それは rules の責務 → [rules](./rules.md))、機械的に検査可能な制約 (それは linter / settings の責務 → [settings](../../../../procedure/claude-config-review/references/settings.md))。
 
 ## 仕様
 
@@ -67,7 +67,7 @@ CLAUDE.md を新設・編集する前に確認する。**機械検査で済む�
 - [ ] **recurring failure の特定**: 新規ルールを追加する前に、対応する反復失敗事例を memory / incident 記録 / PR レビュー履歴のいずれかで 1 件以上特定する。特定できなければ aspirational ルール → 追加しない
 - [ ] **責務分離 (global vs project)**: グローバルにプロジェクト固有制約を入れていないか / プロジェクトに環境横断規範を書いていないか
 - [ ] **責務分離 (CLAUDE.md vs rules)**: 発火条件付きで絞れる規約は rules に移したか → [rules](./rules.md)。全セッションで必要な汎用規範のみ CLAUDE.md に残す
-- [ ] **責務分離 (規範 vs 自動化)**: hook / settings / linter で決定論的に守らせられる項目を「気をつけろ」と書いていないか。書くなら自動化を実装する方が優先 ([hook](../../../../knowledge/claude-config-review/references/hook.md) / [settings](../../../../knowledge/claude-config-review/references/settings.md))
+- [ ] **責務分離 (規範 vs 自動化)**: hook / settings / linter で決定論的に守らせられる項目を「気をつけろ」と書いていないか。書くなら自動化を実装する方が優先 ([hook](../../../../procedure/claude-config-review/references/hook.md) / [settings](../../../../procedure/claude-config-review/references/settings.md))
 - [ ] **既存自動化との重複回避 (逆向きチェック)**: 追加しようとする規範が既に hook (PreToolUse / PostToolUse) / settings の `permissions` / 既存 rules で機械的に defend されていないか `grep -r` で確認したか。探す先はプロジェクトの hook 配置 (plugin なら `hooks/hooks.json` + script ディレクトリ、repo-local なら `.claude/`) と global (`~/.claude/`) の両方。defend 済みなら追加しない — feedforward 重複は確率的な再現と context bloat にしかならない → [models](../models.md)
 - [ ] **モデル先頭バイアスへの配置**: 重要規範を先頭側に寄せたか → [models](../models.md)
 - [ ] **載せる基準 (無いと判断が変わるか)**: 各項目を 1 つずつ「これが無いとモデルの判断が変わるか」で判定したか。変わらない項目は本文から外し、索引 1 行 + Read 先の doc へ逃がしたか → 前節「載せる基準と段階開示」
@@ -87,6 +87,6 @@ CLAUDE.md を新設・編集する前に確認する。**機械検査で済む�
 
 ## 参照
 
-- 共通: [models](../models.md) (context window とロード量 / 先頭バイアス) / [sources](../../../../knowledge/claude-config-review/references/sources.md) (公式仕様の引き方)
-- 関連: [rules](./rules.md) (CLAUDE.md から分割される細則ファイル) / [hook](../../../../knowledge/claude-config-review/references/hook.md) (自動化への委譲先) / [settings](../../../../knowledge/claude-config-review/references/settings.md) (permission / hook 登録)
-- 公式: Claude Code memory ドキュメント (URL は [sources](../../../../knowledge/claude-config-review/references/sources.md) 経由で確認)
+- 共通: [models](../models.md) (context window とロード量 / 先頭バイアス) / [sources](../../../../procedure/claude-config-review/references/sources.md) (公式仕様の引き方)
+- 関連: [rules](./rules.md) (CLAUDE.md から分割される細則ファイル) / [hook](../../../../procedure/claude-config-review/references/hook.md) (自動化への委譲先) / [settings](../../../../procedure/claude-config-review/references/settings.md) (permission / hook 登録)
+- 公式: Claude Code memory ドキュメント (URL は [sources](../../../../procedure/claude-config-review/references/sources.md) 経由で確認)

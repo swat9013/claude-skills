@@ -258,3 +258,21 @@ CREATE TABLE IF NOT EXISTS user_prompt (
     cli_version         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (file_id, line_no)
 ) WITHOUT ROWID;
+
+-- v5 (#1046, `slice_sessions`) から追加。既存 table は変更しない。
+
+-- projection: assistant record の text block を 1 block = 1 行で持つ。session の
+-- 最終 text (worker / orchestrator が最後に何を報告したか) を query 層が引くため。
+-- **切り詰めずに全文で持つ** — 最終報告の末尾 (CL の URL・停止理由等) が述語の
+-- 評価対象になりうるので、先頭抜粋では判定の材料が欠ける。空 text の block は
+-- row を作らない (「最終 text」が空文字に化けないように)。
+CREATE TABLE IF NOT EXISTS assistant_text (
+    file_id  INTEGER NOT NULL,
+    line_no  INTEGER NOT NULL,
+    block_no INTEGER NOT NULL,
+    text     TEXT NOT NULL,
+    PRIMARY KEY (file_id, line_no, block_no)
+) WITHOUT ROWID;
+
+-- `slice_sessions` は session id 名指しで spine を引く (他 mart は窓で切るので不要だった)。
+CREATE INDEX IF NOT EXISTS record_session_idx ON record (session_id);

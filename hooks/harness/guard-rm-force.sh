@@ -3,7 +3,7 @@
 #
 # Why: 削除に `-f` を付けると Claude Code の auto mode classifier が承認プロンプトへ
 # 回すことがある一方、force なしの `rm` は sandbox 内で auto-allow される
-# (settings/README.md の autoAllowBashIfSandboxed / ADR 0024)。`-f` は「対象が
+# (docs/settings-knowledge.md の autoAllowBashIfSandboxed / ADR 0024)。`-f` は「対象が
 # 無くてもエラーにしない」以上の意味を持たないので、ファイルは `rm <file>`、
 # フォルダは `rm -r <dir>` の綴りへ寄せる。deny reason はモデルにフィードバック
 # されるため、代替の綴りをそこで示す。

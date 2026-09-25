@@ -135,7 +135,7 @@ Edit / Write は使わない。Read のみで分析を完結させる。
 - 判断規則: ${CLAUDE_SKILL_DIR}/references/structure.md
 - 共通: ${CLAUDE_SKILL_DIR}/references/architecture.md
 - 共通: ${CLAUDE_SKILL_DIR}/references/models.md
-- 共通: ${CLAUDE_SKILL_DIR}/../../knowledge/claude-config-review/references/sources.md
+- 共通: ${CLAUDE_SKILL_DIR}/../../procedure/claude-config-review/references/sources.md
 
 レビュー対象 (今回書いた file、絶対 path):
 - <PATH_1>
@@ -182,4 +182,3 @@ findings のうち採用したものを対象ファイルへ反映し、**反映
 ## 根拠
 
 - 出典一覧 (`sources.md`) は `claude-config-review` の `references/` が 1 正本。本 skill は複製せず参照する
-- 分割軸の決定理由は [ADR 0050](../../../docs/adr/0050-harness-skill-inferential-computational.md)

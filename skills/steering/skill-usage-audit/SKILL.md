@@ -2,12 +2,14 @@
 name: skill-usage-audit
 disable-model-invocation: true
 argument-hint: "<skill-name> [transcript数]"
-description: 指定 skill の実呼出 transcript を一次証拠に、SKILL.md の目的・成功条件・制約と実挙動の乖離を検証し、記述起因の欠陥だけを最小差分で改善する監査ループ。
+description: 指定 skill の実呼出 transcript を一次証拠に、SKILL.md 記述と実挙動の乖離および工程の消費構造 (時間 / token) を監査し、記述起因の欠陥だけを最小差分で改善して最適化候補を報告する監査ループ。
 ---
 
 # skill-usage-audit
 
 指定 skill の「書かれた仕様」と「実行時の挙動」の乖離を、実呼出 transcript を一次証拠として検証する監査ループ。逸脱の原因を分類し、**skill 記述起因のものだけ**を SKILL.md の改善として反映する。
+
+乖離と並んで**工程の消費構造** (時間 / token / subagent 数) も測り、仕様どおりだが高コストな工程を最適化候補として報告する。
 
 ## args
 
@@ -22,7 +24,7 @@ description: 指定 skill の実呼出 transcript を一次証拠に、SKILL.md 
 args に plugin prefix (`swat-skills:` 等) が付いていれば除去し、**配布 skill と repo-local skill の両方**を glob で解決する — `skills/*/<skill-name>/SKILL.md` と `.claude/skills/<skill-name>/SKILL.md` (後者は plugin 配布外の project-local 配置)。解決した repo 相対 path を以降 `<skill-path>` として手順 4 の版差分コマンドにもそのまま渡す (category を決め打ちで組み立て直さない — 実在しない path を `git log` に渡すと空ログになり、版差分確認が silent に skip される)。見つからない場合と、以下のいずれかに該当する場合は、監査対象外である旨を報告して終了する:
 
 - **vendor 配置の skill** (上流 repo から取り込んだもの。上流 diff 最小化のため SKILL.md を編集しない)。swat-skills では `skills/third/` 配下
-- **SKILL.md 単独編集が片肺更新になる skill** — 「正本 → SKILL.md へ蒸留」のような 2 段更新規約を持つもの。swat-skills では判断規則集系 knowledge skill (`engineering-judgment` / `coding-principles` / `test-strategy` / `pr-quality`) が該当し、内容の改善は `inventory-project-values` の領分
+- **SKILL.md 単独編集が片肺更新になる skill** — 「正本 → SKILL.md へ蒸留」のような 2 段更新規約を持つもの。swat-skills では判断規則集系 knowledge skill (`pr-quality`) が該当し、内容の改善は `inventory-project-values` の領分
 
 解決した SKILL.md を Read し、以下を checklist 化して user に提示する (提示は報告のみで、承認待ちはしない。完了条件 1 はこの提示を指す):
 
@@ -54,10 +56,16 @@ transcript 1 件 = subagent 1 体で並列に委譲する。subagent は Bash / 
 4. 成功条件 (完了条件) の充足
 5. 手順 1 の監査基準 checklist に無い、新たに観測した落とし穴
 6. 逸脱リスト (severity: high=結果を壊す / medium=仕様不履行だが結果は妥当 / low=軽微) + SKILL.md 改善提案
+7. 工程ごとの消費: step / 工程ごとの所要・起動した subagent 数・token 概算
+8. 手戻り: 同じ作業のやり直し・同じ file の再読・空振りに終わった invoke・待ち合わせだけで進まなかった turn を、証拠つきで列挙する
+
+**項目 7・8 は逸脱の有無と独立に埋めさせる。** 仕様どおりに走った transcript では消費構造が唯一の改善材料になるので、ここを空で通すと「逸脱ゼロ = 改善なし」で監査が毎回終わる。
+
+定量値の拾い方もプロンプトに書く: 所要は record の `timestamp` の差、subagent 数は subagent 起動の tool_use (`Task` / `Agent`) の数。token は assistant record の `message.usage` から**工程内の `output_tokens` + `input_tokens` + `cache_creation_input_tokens`** を足し、`cache_read_input_tokens` は別掲にする (cache read は同じ context を turn ごとに再計上するので、足し込むと工程の大小が context の長さで決まってしまう)。**値が取れない工程は「計測不能」と書かせる** (欠測を 0 と書くと、消費が無かった工程と区別できなくなる)。監査対象 transcript 1 件の工程を出す機械計測は無いので、項目 7・8 は subagent が transcript から直接拾う。
 
 解析ヒントも渡す: JSONL の構造 (`{type, message: {content}}`)、大 file は grep でアンカー特定 → `sed -n` で周辺読み、圧縮 transcript では tool_use command 本文が欠落するため tool_result から挙動を判定し、逐語引用できない項目は「逐語検証不能」と明記して報告する旨。
 
-**報告の提出方法もプロンプトに書く**: 「上記 6 項目を SendMessage で `<呼出元の name>` 宛に送る」。name 付き subagent は報告本文を送らないまま idle 化しやすく、事前に書かないと催促の往復が発生する。
+**報告の提出方法もプロンプトに書く**: 「上記 8 項目を SendMessage で `<呼出元の name>` 宛に送る」。name 付き subagent は報告本文を送らないまま idle 化しやすく、事前に書かないと催促の往復が発生する。
 
 それでも報告が届かず idle 化したら、SendMessage で提出を要求する (idle 通知は完了報告ではない)。宛先を含む具体形まで書かないと再度 idle 化する事例があるため、催促文にも SendMessage の使用と宛先を明記する。
 
@@ -81,6 +89,19 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 各 transcript の実行日時 (手順 3 報告の項目 1) と突合して実行時点の版を特定し、旧版準拠の挙動を現行仕様違反と誤判定しない。旧版本文が要るときは `git -C ... show <hash>:<path>` で取得する。log が空 (未 commit の新設 skill 等) なら版差分確認は skip し、現行版のみで評価する。現行版で是正済みの逸脱は「是正の実証」として記録するに留める。
 
+#### 最適化候補
+
+逸脱の 3 分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。各報告の項目 7・8 を突合し、次の形に当たる工程を候補にする:
+
+- 指摘数・対象数に比例して subagent が増える委譲
+- 差分に絞れる工程での全量再走査
+- 目的に対して過大な effort / model / レビュー回数
+- 最も遅い 1 体の待ち合わせが全体の所要を決める並列
+
+候補には消費の実測値 (所要 / subagent 数 / token 概算) を添える — 実測の無い候補は次の改善ループで順位を付けられない。候補が出なかったときは、消費構造のどこを見てそう判断したかを書く。
+
+**最適化候補は手順 5 の改善対象に入れない。** 工程の作り替えは対象 skill の再設計にあたるので、報告に載せて別ループへ送る。
+
 ### 5. 改善の適用
 
 - (a) あり、または (b) のうち記述強化で抑止できるものあり → `swat-skills:write-for-harness` を invoke (5-1) → **証拠に紐づく最小差分**で `<repo-root>` の SKILL.md を編集 → 対象 repo の gate 検証。変更の届け方は対象 repo の運用に従う。**成果物は対象 SKILL.md の差分のみ** — executor 側の挙動改善 (rules 化・hook 化) と対象 skill の再設計は、この監査報告を入力とする別ループへ送る
@@ -102,10 +123,11 @@ SKILL.md 指示文は Inferential harness なので、**文面規範の Read と
 
 ## 報告フォーマット (完了条件)
 
-以下 4 点を user に提示したら完了:
+以下 5 点を user に提示したら完了:
 
 1. 監査基準 (目的 / 成功条件 / 制約) の整理
-2. transcript ごとの判定サマリ表 (環境・判定・主要逸脱)
+2. transcript ごとの判定サマリ表 (環境・判定・主要逸脱・消費 (所要 / subagent 数 / token 概算))
 3. 逸脱リスト (severity・原因分類つき)
 4. 適用した改善の差分 (改善なしの場合はその根拠)
+5. 最適化候補 (仕様どおりだが高コストな工程。実測値つき。候補が無ければその判断根拠)
 

@@ -8,3 +8,4 @@ description: 運用性 (可観測性・デプロイ容易性) を設計すると
 - **You Build It, You Run It** (Vogels, ACM Queue 2006)。運用性 (可観測性・デプロイ容易性) を初期設計に組み込む
 - **投資順序は Monitoring が先** (known-unknowns の閾値検知)、**Observability が次** (unknown-unknowns の探索的診断)
 - **Error budget は挑戦を許容する予算** (Google SRE Book)。予算が残っているなら、それを使う攻めの判断を提案してよい
+- log の書式・書き先・保持の判断規則は `principle-log-design` が持つ

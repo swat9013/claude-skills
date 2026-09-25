@@ -11,7 +11,7 @@ COMMAND=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.command // empty')
 # git のグローバルオプション (`git -C <dir>` / `git -c <k>=<v>` / `--git-dir=` 等) は
 # subcommand の**前**に置ける。この形は 2 つの層を同時に素通りする:
 #   - permission rule: 照合はコマンド先頭からの prefix なので `Bash(git push --force:*)`
-#     のような deny に `git -C x push --force` は当たらない (settings/README.md の
+#     のような deny に `git -C x push --force` は当たらない (docs/settings-knowledge.md の
 #     「permission rule の照合はコマンドの綴りに依存する」と同じ構造の穴)
 #   - 本 hook: 行頭アンカー判定 (`^git branch` / `^git push` 等) が前置で外れる
 # そこで判定用に前置を剥がした写し (SUBJECT) を作る。**原文 (COMMAND) は書き換えない** —
@@ -30,24 +30,6 @@ strip_git_global_opts() {
   printf '%s\n' "$_s"
 }
 SUBJECT=$(strip_git_global_opts "$COMMAND")
-
-# `git push` が出力を実際に渡すパイプだけを見るため、原文をその 1 つの pipeline まで削る
-# (`| tail` 判定が使う。#897)。段ごとに落とすものが違うので 1 段ずつ並べる。
-# 限界: 入れ子の引用・substitution は解けず、素通り側へ倒れる (strip_git_global_opts の
-# 「限界」と同じ性質。fail-closed にすると誤 deny の方が増える)。
-strip_to_push_pipeline() {
-  # 論理行へ戻す — 行継続 (`\` 終端) と pipeline の途中改行 (`|` 終端) は同じ 1 コマンド
-  _p=$(printf '%s\n' "$1" | sed -e :a -e '/\\$/N' -e 's/\\\n//' -e ta | sed -e :b -e '/\|$/N' -e 's/\|\n/| /' -e tb)
-  # push の行だけ残す。改行も list 区切りなので、他の行のコマンドは push の出力を受け取らない
-  # (`git push x` + 改行 + `git log | tail` の後段を push のパイプと読まないため)
-  _p=$(printf '%s\n' "$_p" | sed -E -n -e '/^[[:space:]]*git[[:space:]]+push([^[:alnum:]_-]|$)/{p;q;}')
-  # 綴りに `|` を持つがパイプではないもの (`$(git branch … | head -1)` / `'a|tail'`) を落とす。
-  # 逆に引用の中の `;` は list 区切りではないので、次の段へ渡す前にここで消す
-  # shellcheck disable=SC2016  # 展開させない: `$(` は sed へ渡す検出対象の綴りそのもの
-  _p=$(printf '%s\n' "$_p" | sed -E -e 's/\$\([^)]*\)//g' -e 's/`[^`]*`//g' -e 's/"[^"]*"//g' -e "s/'[^']*'//g")
-  # 最初の `&&` / `||` / `;` から後ろは別コマンドで、そのパイプは push のものではない
-  printf '%s\n' "$_p" | sed -E 's/[[:space:]]*(&&|\|\||;).*$//'
-}
 
 deny() {
   jq -nc --arg r "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
@@ -72,14 +54,17 @@ passthrough() {
 # (gate を外すと下の非アンカー判定が全 Bash にかかって誤爆するので、判定ごと移した)。
 
 # 破壊的 git 操作
+# 理由文で stash を勧めない: stash の stack は worktree・並列 session 間で共有され、
+# `git stash -u && git stash drop` で他者の未 commit 編集ごと消える事故が実際に起きた (refuter / i853)。
+RESTORE_GUIDE="自分の変更を退避するなら一時 WIP commit を作る。自分が作っていない未 commit 変更は触らず、ユーザーに確認する"
 if printf '%s\n' "$SUBJECT" | grep -qE 'git reset.*--hard|git clean.*(--force|-f)'; then
-  deny "破壊的git操作は禁止。git stashで退避してから操作してください"
+  deny "破壊的git操作は禁止。${RESTORE_GUIDE}"
 fi
 if printf '%s\n' "$SUBJECT" | grep -qE 'git checkout -- '; then
-  deny "git checkout -- は禁止。git stashで退避してから操作してください"
+  deny "git checkout -- は禁止。${RESTORE_GUIDE}"
 fi
 if printf '%s\n' "$SUBJECT" | grep -qE '^[[:space:]]*git restore( |$)' && ! printf '%s\n' "$SUBJECT" | grep -qE 'git restore --staged'; then
-  deny "git restore（ワーキングツリー変更の破棄）は禁止。git stashで退避してください"
+  deny "git restore（ワーキングツリー変更の破棄）は禁止。${RESTORE_GUIDE}"
 fi
 
 # Force delete branch: -D, --delete --force, --force --delete (順序逆転を含む)
@@ -107,7 +92,7 @@ fi
 
 # force push deny は SUBJECT で判定する — `git -C x push --force` を届かせるため。
 # `--force-with-lease` は token 境界の都合で permission 層の deny を通過しており、lease
-# 保護があるため意図通りとして許容している (settings/README.md)。hook 側も同じ扱いにする。
+# 保護があるため意図通りとして許容している (docs/settings-knowledge.md)。hook 側も同じ扱いにする。
 # 「これは git push か」の判定は本 file に 3 形あり、綴りが割れると片方だけ穴が空く。
 # 下の床判定と同じ token 境界へ揃える — リテラル 1 空白のままだと `git  push --force` が
 # 素通りし、逆に `git pushx --force` を force push として掴む。
@@ -127,7 +112,8 @@ fi
 # 2 セッション同時 406s)。exit code は timeout に食われて成功と区別が付かないので、実行前に返す。
 # 床の判定も原文で行う — 前置つき (`git -C <他 repo> push`) は本 repo の pre-push を走らせる
 # とは限らず、床を課すと他 repo への push を誤って塞ぐ。同じ理由で `git commit -m x && git push`
-# のような複合形も床の外にある (行頭アンカーが外れる。#897 系の既知の穴と同じ構造)。
+# のような複合形も床の外にある (行頭アンカーが外れる)。この穴を塞ぐには非アンカー判定が要り、
+# 全 Bash への誤爆と引き換えになるので広げない (docs/adr/0067 の「塞ぐと称していた穴」)。
 # 床は Bash tool timeout の上限と同値なので、suite の所要がこれを超えたら timeout の指定では
 # 逃げられない — その先は suite 側を削る対処になる (#898)。本判定は対症であることを前提に置く。
 # 判定は token 境界まで見る。`^git push` だけだと `git pushx` のような別コマンドまで巻き込み、
@@ -136,29 +122,9 @@ fi
 # push なので床の内側に残す。除くのは識別子が続く形 (`git pushx` / `git push-foo`) だけ。
 PUSH_TIMEOUT_FLOOR_MS=600000
 if printf '%s\n' "$COMMAND" | grep -qE '^[[:space:]]*git[[:space:]]+push([^[:alnum:]_-]|$)'; then
-  # 診断を飲むパイプ (`| tail` / `| head`) を先に落とす。SIGTERM で殺されると tail / head は
-  # バッファを抱えたまま 1 行も出さず、pre-push がどこまで進んだかが transcript から消える
-  # (#897 の実測: push timeout 12 件すべてで result_text が 43 文字の exit 143 通知だけになった)。
-  # 判定順は「不可逆 (force push) > 診断の消失 (本判定) > 所要 (下の床)」。床より前に置くのは、
-  # timeout 未指定の `git push … | tail` に床の文言を返すと「timeout を足す」書き換えへ誘導され、
-  # パイプを外す代替形が載らないまま診断が消える形が残るため。
-  #
-  # 対象を tail / head の 2 コマンドに絞るのは、代替形を 1 つに定められる範囲がここだからである。
-  # push の出力は成功時 5 行程度なので「パイプを外す」が常に正しい助言になる。同じくバッファする
-  # `| grep` / `| wc` へ広げると、正しい代替形を持てない deny になる (代替形の無い deny は往復を
-  # 増やすだけで、本 hook の目的の逆を行く。先例 guard-cd-relative-glob-read.py の emit_deny)。
-  # 本判定は #899 の床と同じく対症で、根本は pre-push の所要そのもの (#898)。suite が縮んで
-  # push が timeout しなくなれば、診断が消える経路ごと不要になる。
-  #
-  # 判定は原文 (COMMAND) を push の pipeline まで削ってから当てる (削る順は関数側にある)。
-  PUSH_PIPELINE=$(strip_to_push_pipeline "$COMMAND")
-  # `|&` は bash の stderr 込みパイプ、`([^[:space:]]*/)?` は path 修飾 (`| /usr/bin/tail`)。
-  # 見るのはコマンド名の綴りだけで、`| xargs tail` / `| env tail` のような間接起動は外にある —
-  # 実測で観測された形が `| tail -N` 直結だけであり、間接形まで追うと引用の解けない sh の
-  # 範囲では誤 deny が増える (先に潰すべきは実在する形)。
-  if printf '%s\n' "$PUSH_PIPELINE" | grep -qE '\|&?[[:space:]]*([^[:space:]]*/)?(tail|head)([^[:alnum:]_-]|$)'; then
-    deny "git push を \`| tail\` / \`| head\` へ通さないでください。timeout で SIGTERM が来ると tail / head はバッファを抱えたまま 1 行も出力せず、pre-push がどこまで進んだかが transcript に残りません。パイプを外し、Bash tool の timeout に ${PUSH_TIMEOUT_FLOOR_MS} を指定して \`git push origin <branch> 2>&1\` を実行してください (push の出力は成功時 5 行程度で、切り詰める必要がありません) [guard-git.sh]"
-  fi
+  # `| tail` / `| head` を落とす判定はここに在ったが退役した (#897 → 本 PR)。守る対象だった
+  # 「120s SIGTERM で tail がバッファごと診断を飲む」経路は下の床が先に塞いでおり、床導入
+  # (2026-09-03) 以降の窓で timeout 死は 0 件だった。詳細は docs/adr/0067。
   # jq 側で数値へ寄せる: float (`600000.0`) は整数へ落とし、数値でない値・未指定は空にする。
   # 巨大な値は指数表記 (`1e+23`) になり、下の桁検査で弾かれる (shell の整数範囲を超えた
   # `[ -lt ]` がエラー終了して allow へ抜ける fail-open を塞ぐ)。

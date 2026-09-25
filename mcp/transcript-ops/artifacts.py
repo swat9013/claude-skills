@@ -3,7 +3,7 @@
 全 tool は `/tmp` 配下へ mart / slice を書き、返すのは path だけ。出力には
 **手入力 prompt の抜粋・個人 path・slash command の引数**が載るため、共有 /tmp に
 world-readable で置かない。その規約を 1 箇所に置き、全 presentation 経路
-(mart 4 本 + `find_invocations`) がここを通る。
+(`marts/` の各 mart + `commands/` の各 tool) がここを通る。
 
 置き場が server root なのは、mart 層 (`marts/`) にも on-disk 形式知識層
 (`store/` `adapter/`) にも属さない presentation 共通の関心事だから。

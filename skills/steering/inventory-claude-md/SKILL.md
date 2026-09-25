@@ -41,7 +41,7 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-claude-md.py --repo-root .
 
 - `--repo-root` 省略時 cwd
 - stdout に observation JSON path (`/tmp/inventory-claude-md/observation-<timestamp>.json`) が出る
-- **script は bucket を出さない**。決定的観測 3 項目だけを出す — 本 domain には「count 0 / 完全一致」のような機械判定可能な述語が無く、[ADR 0032](https://github.com/swat9013/swat-skills/blob/main/docs/adr/0032-policy-free-refinement-deterministic-rules.md) の決定的ルール層の対象外だから (rule 層を持つのは permissions / invocations / engineering-values の 3 系統のみ)
+- **script は bucket を出さない**。決定的観測 3 項目だけを出す — 本 domain には「count 0 / 完全一致」のような機械判定可能な述語が無く、機械判定できる述語から bucket を確定させる層 (決定的ルール層) の対象外だから (rule 層を持つのは permissions / invocations / engineering-values の 3 系統のみ)
 
 出力に失敗したら (repo に CLAUDE.md が無い等) `sources.claude_md.root.status = "missing"` が入る。**root と local (`sources.claude_md.local.status`) の両方が `missing` のときだけ**「観測不能」を報告して終了する。片方でも `present` なら棚卸し対象があるので続行する (`CLAUDE.local.md` だけが存在する repo は成立する)。
 

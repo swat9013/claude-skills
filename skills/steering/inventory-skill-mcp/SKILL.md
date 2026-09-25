@@ -60,7 +60,7 @@ mart の読み方の注記と **rule カタログ**は mart の `contract` が�
 
 **channels 内訳と coverage の使い方** (思想系 skill の判定を歪めないための補正):
 
-- 「session 開始で 1 度 load → 以降 session 全体で暗黙適用」型の skill (`coding-principles` / `engineering-judgment` / `test-strategy` / `pr-quality` 等) は count 単独では実適用回数を過小評価する。`units[skill][].channels.command + .read > 0` の unit は「1 session 1 load 型」の可能性が高いと解釈する
+- 「session 開始で 1 度 load → 以降 session 全体で暗黙適用」型の skill (`pr-quality` / `principle-index` 等) は count 単独では実適用回数を過小評価する。`units[skill][].channels.command + .read > 0` の unit は「1 session 1 load 型」の可能性が高いと解釈する
 - coverage を評価するときは `sessions[]` を絞り込む: コード編集の思想系なら `has_code_edit == true` を分母、その中で loaded_skills に対象 skill を含む session を分子とする。設計議論系なら `has_plan_mode == true` の session を分母とする
 - **「編集前に呼んだか」を問うときは `first_skill_invoke_ts < first_code_edit_ts` の session だけを分子に取る** (session 中いつでも呼べば分子に入る coverage とは別の指標)。`first_skill_invoke_ts` は session 内の最初の skill invoke なので、`loaded_skills` が 2 件以上ある session では対象 skill 自身の順序が確定しない — その session は `query` の ad-hoc SQL で確かめるか、確定不能として分子から外したことを併記する
 - **どの skill を「思想系」とするかは LLM 判断**。tool は語彙を持たない (skill 名の一覧を tool に持たせると新設 skill を取りこぼす)

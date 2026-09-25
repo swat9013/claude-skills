@@ -11,9 +11,9 @@ steering の inventory 系が使う transcript 観測を一元化し、**on-disk
 `store/` + `adapter/` だけ**にする (format isolation)。mart schema (観測契約) は
 tool 単位に保つ。
 
-構成: 観測契約を持つ 5 tool (`scan_permissions` / `scan_prompts` /
-`select_candidates` / `scan_invocations` / `scan_overhead`) は store への query
-(`marts/`)、`find_invocations` (直読み残置) と `query` (read-only ad-hoc) は
+構成: 観測契約を持つ tool (`scan_permissions` / `scan_prompts` /
+`select_candidates` / `scan_invocations` / `scan_overhead` / `slice_sessions`) は
+store への query (`marts/`)、`find_invocations` (直読み残置) と `query` (read-only ad-hoc) は
 `commands/`。
 
 **server は bucket を確定しない** — 決定的ルール (`marts/*/rules.py`) は評価するが、
@@ -62,6 +62,7 @@ from marts.invocations import present as invocations_mart  # noqa: E402
 from marts.overhead import present as overhead_mart  # noqa: E402
 from marts.permissions import present as permissions_mart  # noqa: E402
 from marts.prompts import present as prompts_mart  # noqa: E402
+from marts.sessions import present as sessions_slice  # noqa: E402
 
 SERVER_NAME = "transcript-ops"
 SERVER_VERSION = "0.1.0"
@@ -85,6 +86,7 @@ server = MCPServer(name=SERVER_NAME, version=SERVER_VERSION, instructions=INSTRU
 # 新しい domain error class を足したらここにも足す — 漏れると message が黙って消える
 ANTICIPATED_ERRORS = (
     prompts_mart.RepoScopeUnresolved,
+    sessions_slice.SessionIdsRejected,
     query_mod.QueryRejected,
     SyncLockTimeout,
 )
@@ -330,6 +332,32 @@ def find_invocations(
     return find_invocations_mod.run(
         skill=skill,
         limit=limit,
+        transcripts_dir=transcripts_dir,
+        output_dir=output_dir,
+        now=now,
+    )
+
+
+@tool()
+def slice_sessions(
+    session_ids: list[str],
+    transcripts_dir: str = str(sessions_slice.DEFAULT_TRANSCRIPTS_DIR),
+    output_dir: str = str(sessions_slice.DEFAULT_OUTPUT_DIR),
+    now: str | None = None,
+) -> dict[str, Any]:
+    """名指しした session の tool_use 時系列 / deny / 最終 text を slice に書き、path を返す。
+
+    Args:
+        session_ids: 対象 session id の列。見つからない id は error にせず
+            `meta.missing_session_ids` に出る
+        transcripts_dir: transcript lake。既定 ~/.claude/projects
+        output_dir: 出力先。既定 /tmp/dispatcher-debrief
+        now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
+
+    読み方の注記は **slice の `meta.notes` が正本**。
+    """
+    return sessions_slice.run(
+        session_ids=session_ids,
         transcripts_dir=transcripts_dir,
         output_dir=output_dir,
         now=now,

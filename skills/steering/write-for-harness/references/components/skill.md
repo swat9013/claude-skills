@@ -12,7 +12,7 @@ skill は Claude Code が特定タスクに対して引き出すべき手順・�
 - **proactive (I/Guide)**: `description` の trigger 語彙から自動起動し、事前に手順をロードする用途。
 - **evaluative (I/Sensor)**: `disable-model-invocation: true` + 手動呼び出し or hook 連動で、行動後に semantic 評価を返す用途。slot 判断の根拠は [architecture](../architecture.md) を参照。
 - **並列実行を伴う skill の実装基盤**: skill 内で複数の skill を並列起動する設計 (例: `observe-and-reflect`) は Agent Teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) を前提とする。Task tool subagent は Skill ツールを invoke できず、`claude -p` は 2026-06-15 以降 subscription の separate monthly credit を消費する。Skill を介さない並列処理 (大量 grep 集計 / ファイル I/O fan-out 等) は引き続き Task tool subagent を使う。判断軸の根拠は 2026-05-27 `observe-and-reflect` PoC。
-- **対象外**: 1 回限りのタスク (skill 化のオーバーヘッドが回収できない)、自動実行 (それは hook の責務 → [hook](../../../../knowledge/claude-config-review/references/hook.md))。
+- **対象外**: 1 回限りのタスク (skill 化のオーバーヘッドが回収できない)、自動実行 (それは hook の責務 → [hook](../../../../procedure/claude-config-review/references/hook.md))。
 
 ## 想定環境
 
@@ -30,8 +30,6 @@ skill 本文は以下 4 点を前提に書く。前提そのものを本文へ�
 配布 skill (`skills/`) は変更の届け方 (作業ツリーを分ける / branch を切る / commit する / PR を作る) を**指示しない**。書くのは「変更の届け方は実行 project の運用に従う」の 1 行と、skill 固有の保証 (人間承認なし write ゼロ / 反映後の diff 提示) だけ。対象外: worktree や PR を**主題**とする skill (worktree-setup / orchestrator 等)、git の**事実**の記述 (「commit 済みの worktree では diff が空」等)、対象 repo の規約へ委譲する文。
 
 `.claude/skills/` (本 repo 専用) は対象外 — 規則の根拠 (他 project で invoke される) が及ばない。
-
-決定の根拠と却下した代替案は [ADR 0052](https://github.com/swat9013/swat-skills/blob/main/docs/adr/0052-distributable-skill-delivery-deferral.md) (`docs/` は配布されないので絶対 URL で指す)。
 
 ## 仕様
 
@@ -113,5 +111,5 @@ skill は編集されないまま周囲が動くので、外部への参照は�
 
 ## 参照
 
-- 共通: [architecture](../architecture.md) (proactive=I/Guide / evaluative=I/Sensor の slot 配置根拠) / [models](../models.md) (モデル別 prompt 設計指針) / [sources](../../../../knowledge/claude-config-review/references/sources.md) (公式仕様の引き方)
-- 公式: Claude Code skills ドキュメント (URL は [sources](../../../../knowledge/claude-config-review/references/sources.md) 経由で確認)
+- 共通: [architecture](../architecture.md) (proactive=I/Guide / evaluative=I/Sensor の slot 配置根拠) / [models](../models.md) (モデル別 prompt 設計指針) / [sources](../../../../procedure/claude-config-review/references/sources.md) (公式仕様の引き方)
+- 公式: Claude Code skills ドキュメント (URL は [sources](../../../../procedure/claude-config-review/references/sources.md) 経由で確認)

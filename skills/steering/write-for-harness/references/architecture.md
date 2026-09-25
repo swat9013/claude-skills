@@ -97,12 +97,12 @@ steering loop の sensor は components の機構を借用して実装する:
 以下のいずれかが発生したら本文書を更新する。
 
 - ハーネスのコンポーネント数 (現 5) が増減する
-- Fowler の harness / sensors の枠組みが更新される (鮮度確認は [sources](../../../knowledge/claude-config-review/references/sources.md) のエスカレーション順)
+- Fowler の harness / sensors の枠組みが更新される (鮮度確認は [sources](../../../procedure/claude-config-review/references/sources.md) のエスカレーション順)
 - 新しい slot 候補 (例: scheduled sensor / out-of-band guide) が発見される
 - self-maintenance の実装機構が変わり、steering loop の説明が陳腐化する
 
 ## 参照
 
 - Inferential の component doc: [skill](./components/skill.md) / [claude-md](./components/claude-md.md) / [rules](./components/rules.md) / [hook-inject](./components/hook-inject.md)
-- Computational の component doc (`claude-config-review` 側): [settings](../../../knowledge/claude-config-review/references/settings.md) / [hook](../../../knowledge/claude-config-review/references/hook.md)
-- 共通: [models](./models.md) (モデル特性) / [sources](../../../knowledge/claude-config-review/references/sources.md) (公式情報源と鮮度確認) / [references](./references.md) (思想的バックグラウンド: Fowler の harness engineering / sensors)
+- Computational の component doc (`claude-config-review` 側): [settings](../../../procedure/claude-config-review/references/settings.md) / [hook](../../../procedure/claude-config-review/references/hook.md)
+- 共通: [models](./models.md) (モデル特性) / [sources](../../../procedure/claude-config-review/references/sources.md) (公式情報源と鮮度確認) / [references](./references.md) (思想的バックグラウンド: Fowler の harness engineering / sensors)

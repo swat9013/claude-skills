@@ -19,10 +19,10 @@
 
 ## review-candidate
 
-### 2. swat-skills:apm-skill-add
+### 2. <plugin-a>:<skill-z>
 - count 3 / share 1.2% / rank 22 / percentile 0.72 / outcomes {success: 2, error: 1}
 - 証拠: (session 069b... 2026-07-15 ...)
-- 推測: apm 経由の vendoring は特定局面でしか使わないため、trigger 語彙の妥当性を...
+- 推測: vendoring のような特定局面でしか使わない skill のため、trigger 語彙の妥当性を...
 
 ## informational — near_misses
 
@@ -34,5 +34,5 @@
 | # | bucket | 対象 | 単位 | セッション内提案 |
 |---|---|---|---|---|
 | 1 | delete-candidate | <plugin-a>:<skill-x> | skill | 提案済み (承認 → 適用) |
-| 2 | review-candidate | swat-skills:apm-skill-add | skill | - (低確度) |
+| 2 | review-candidate | <plugin-a>:<skill-z> | skill | - (低確度) |
 ```

@@ -26,7 +26,7 @@ from pathlib import Path
 # schema.sql を変更したら上げる。上げると file 名が変わり、次回 sync が full
 # rebuild になる (実測 20 秒台)。上げ忘れても `schema_digest` が拾って同じ
 # rebuild へ倒すので、version は「旧 store を残したまま切り替えたい」ときの手段。
-STORE_VERSION = 4
+STORE_VERSION = 5
 
 DEFAULT_CACHE_DIR = Path("~/.cache/claude-transcript-ops").expanduser()
 
@@ -56,7 +56,7 @@ SCHEMA_DIGEST_KEY = "schema_digest"
 PROJECTION_TABLES = (
     "tool_use", "hook_firing", "user_prompt", "slash_invocation", "user_turn",
     "assistant_turn", "presented_name", "static_payload", "memory_injection",
-    "compact_boundary",
+    "compact_boundary", "assistant_text",
 )
 
 

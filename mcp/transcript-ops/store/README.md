@@ -50,6 +50,7 @@ store file 名は `store-v<N>-<lake digest>.sqlite3`。**1 lake = 1 store** —
 | `record` (spine) | lake の 1 行 | 全 record type が 1 行入る (I4)。`ts_epoch` が窓判定の機構 |
 | `tool_use` | assistant の tool_use block | tool 実行 + **ペア済みの結果** |
 | `hook_firing` | hook 系 attachment | fire 実績 |
+| `assistant_text` | assistant の text block | session の最終 text (全文。`slice_sessions`) |
 
 - **窓は `record.ts_epoch` で切る。`NULL` (ts 欠損) をどちらへ倒すかは各 mart の
   WHERE 句が書く** (ADR 0013 の線を SQL 側で維持)。実測では tool_use を載せる

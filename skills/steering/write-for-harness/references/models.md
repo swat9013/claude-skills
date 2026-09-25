@@ -15,11 +15,11 @@ Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化�
 | Sonnet 5 | `claude-sonnet-5` | バランス (速度 × 推論 × コスト) | 通常の実装 / レビュー / 中程度の推論 |
 | Haiku 4.5 | `claude-haiku-4-5-20251001` | 高速 / 低コスト | 機械的判定 / 軽い分類 / 高頻度呼び出し |
 
-**単価の段差** (選定判断に効くのは絶対額でなく比): **Fable ≒ Opus × 2** (2026-07 時点の公式 pricing)。以下は 1 段下がるごとにおおむね 2〜4 倍安くなる。絶対額は改定されるので本表に書かない ([sources](../../../knowledge/claude-config-review/references/sources.md) 経由で確認する)。
+**単価の段差** (選定判断に効くのは絶対額でなく比): **Fable ≒ Opus × 2** (2026-07 時点の公式 pricing)。以下は 1 段下がるごとにおおむね 2〜4 倍安くなる。絶対額は改定されるので本表に書かない ([sources](../../../procedure/claude-config-review/references/sources.md) 経由で確認する)。
 
 **context window / max output は Fable と Opus で同等** (1M / 128k)。両者の差は「扱える長さの上限」ではなく、能力と単価にある — 長い入力を読ませたいだけなら Fable に上げる理由にならない。
 
-モデル ID は変更されうる。最新 ID は `claude-code-guide` subagent で確認する ([sources](../../../knowledge/claude-config-review/references/sources.md))。本節と以降の特性・使い分けは 2026-07-30 に公式一次情報 (anthropic.com のモデル発表 / platform.claude.com の choosing-a-model・pricing・effort・prompting ガイド) で確認した。
+モデル ID は変更されうる。最新 ID は `claude-code-guide` subagent で確認する ([sources](../../../procedure/claude-config-review/references/sources.md))。本節と以降の特性・使い分けは 2026-07-30 に公式一次情報 (anthropic.com のモデル発表 / platform.claude.com の choosing-a-model・pricing・effort・prompting ガイド) で確認した。
 
 ## モデル別の向き先と避ける帯
 
@@ -121,7 +121,7 @@ token 数の増加に伴い signal-to-noise 比が下がり、関連情報が他
 - **haiku に多段推論を強要**: 「step by step で考えて」「複数案を比較して」を haiku に流すと、応答が冗長になり推論精度も上がらない。
 - **上位モデルに rote な lint チェックだけさせる**: コスト過剰。haiku か sonnet で十分な作業に opus / fable を使わない。
 - **「上位ほど良い」で fable を既定にする**: fable は opus の約 2 倍単価で、差が出るのは長時間・高曖昧性の帯に限られる。上位側の既定は opus に置き、fable は帯を名指しできるときだけ選ぶ。
-- **モデル ID をハードコードして放置**: skill の `model:` に書いた ID が deprecated になっても気付かない。定期的に `claude-code-guide` で確認する ([sources](../../../knowledge/claude-config-review/references/sources.md))。
+- **モデル ID をハードコードして放置**: skill の `model:` に書いた ID が deprecated になっても気付かない。定期的に `claude-code-guide` で確認する ([sources](../../../procedure/claude-config-review/references/sources.md))。
 - **プロンプトと指定モデルのミスマッチ**: opus 用に書いた多段推論プロンプトを haiku モデルで動かしても効かない。逆に opus 向けの推論誘導を fable にそのまま流すと refusal を踏む。本文と `model:` は常にペアで設計する (文面側の規則は [writing](./writing.md))。
 
 ## 更新トリガー
@@ -135,7 +135,7 @@ token 数の増加に伴い signal-to-noise 比が下がり、関連情報が他
 - 公式 prompt engineering ガイドの大きな更新 (文面の正本は [writing.md](./writing.md) 側なので、本書と対で見直す)
 - Long-context 挙動 (Lost in the Middle / context dilution 等) に関する主要研究 / ベンダー doc の更新
 
-確認方法: `claude-code-guide` subagent → 不足あれば `web-research` ([sources](../../../knowledge/claude-config-review/references/sources.md))。
+確認方法: `claude-code-guide` subagent → 不足あれば `web-research` ([sources](../../../procedure/claude-config-review/references/sources.md))。
 
 ## 参照
 

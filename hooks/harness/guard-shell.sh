@@ -47,6 +47,53 @@ printf '%s\n' "$INPUT" | jq -e . >/dev/null 2>&1 ||
 COMMAND=$(printf '%s\n' "$INPUT" | jq -r 'if (.tool_input | type) != "object" then error("tool_input is not an object") else (.tool_input.command // empty) end' 2>/dev/null) ||
   deny_unreadable 'tool_input が object でない'
 
+# here-document の本体を落とした写し。**deny 判定にだけ使う** — 剥がした写しで allow / rewrite を
+# 判断すると、本体に紛れた綴りで許可の射程が広がる (guard-git.sh の SUBJECT / COMMAND と同じ
+# 分け方。同 file の「剥がした写しは deny を届かせるためだけに使い、許可の射程は広げない」)。
+#
+# Why: 本体は shell がデータとして読むだけで実行しないのに、下の deny 判定は行ごとに当たるため
+# `cat > x.sh <<'EOF'` + `#!/bin/sh` のような綴りが「コマンド位置の sh 起動」として掴まれていた
+# (2026-09-12 の guard 棚卸し: 観測窓 30 日の実発火 93 件のうち 27 件が本体・引用内の綴り)。
+# 開始行そのものは残す — `cd docs && cat <<EOF` のように実コマンドが同居する形を取り逃さない。
+# 終端が現れない入力は末尾まで落とす (実 shell も残りを本体として扱う)。規則は
+# guard-cd-relative-glob-read.py / guard-excluded-command-position.py の
+# strip_here_documents() と同じで、実装言語だけが違う。
+strip_here_documents() {
+  awk '
+    function shift_pending(   i) {
+      for (i = 1; i < n; i++) { delim[i] = delim[i + 1]; tabs[i] = tabs[i + 1] }
+      n--
+    }
+    BEGIN { n = 0 }
+    {
+      if (n > 0) {
+        body = $0
+        if (tabs[1] == 1) sub(/^\t+/, "", body)
+        if (body == delim[1]) shift_pending()
+        next
+      }
+      print
+      rest = $0
+      while ((p = index(rest, "<<")) > 0) {
+        spec = substr(rest, p + 2)
+        rest = spec
+        if (substr(spec, 1, 1) == "<") continue   # `<<<` は here-string (本体を持たない)
+        tab = 0
+        if (substr(spec, 1, 1) == "-") { tab = 1; spec = substr(spec, 2) }
+        sub(/^[ \t]+/, "", spec)
+        q = substr(spec, 1, 1)
+        if (q == "\"" || q == "'"'"'") spec = substr(spec, 2)
+        if (match(spec, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+          n++
+          delim[n] = substr(spec, 1, RLENGTH)
+          tabs[n] = tab
+        }
+      }
+    }
+  '
+}
+COMMAND_OUTSIDE_HEREDOC=$(printf '%s\n' "$COMMAND" | strip_here_documents)
+
 # bash/sh/zsh -n <file> は構文チェックのみ (実行しない) で安全。allow 済の syntax-check.sh
 # wrapper へ変換して pre-sanction 枠へ誘導する (permission=意図表明 / hook=変換)。settings.deny の
 # Bash(bash|sh|zsh:*) は hook の allow より優先されるため、deny にマッチしない wrapper 経由で
@@ -140,7 +187,10 @@ fi
 # matcher が Bash(sh:*) へ過剰マッチして本 hook に届く) は誤検知しない。trailing は語境界
 # (`bashx`/`shell` を除外)。非該当は passthrough (判断を出さない観測痕跡だけを出す) し、
 # 通常の permission 評価 + 後続 guard に委ねる。
-if printf '%s\n' "$COMMAND" | grep -qE '(^|[;&|({`])[[:space:]]*([^[:space:];&|()]*/)?(bash|sh|zsh)([^[:alnum:]_.-]|$)'; then
+#
+# 判定は here-document 本体を落とした写しに当てる (上の strip_here_documents)。本体の綴りは
+# 実行されないので、掴むと誤 deny になるだけで防御にならない。
+if printf '%s\n' "$COMMAND_OUTSIDE_HEREDOC" | grep -qE '(^|[;&|({`])[[:space:]]*([^[:space:];&|()]*/)?(bash|sh|zsh)([^[:alnum:]_.-]|$)'; then
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"bash/sh/zshの直接実行は禁止。スクリプトの実行は直接パス起動（./script.sh または /abs/path/script.sh）を使用。構文チェックは bash -n <file> / zsh -n <file>。"}}\n'
   exit 0
 fi

@@ -4,7 +4,7 @@
 
 harness の規範 doc (本 skill の `references/` と `claude-config-review` の `references/`) が思想的バックグラウンドとして参照している外部記事 / 論文 / engineering blog を一覧化する。各 doc は本文に概念名のみ残し、典拠の URL は本書に集約する (= 各 doc を I/Guide として軽く保つ。実行に必要な情報以外を入れない)。
 
-公式 spec の鮮度確認は [sources](../../../knowledge/claude-config-review/references/sources.md) を参照 (責務分離: 本書は「設計思想の参照」、sources.md は「実装仕様の鮮度確認 + エスカレーション戦略」)。
+公式 spec の鮮度確認は [sources](../../../procedure/claude-config-review/references/sources.md) を参照 (責務分離: 本書は「設計思想の参照」、sources.md は「実装仕様の鮮度確認 + エスカレーション戦略」)。
 
 ## 一覧
 
@@ -40,7 +40,7 @@ agent harness が自己の障害を観測 → 診断 → 修復 → regression �
 
 - 規範 doc の編集中にユーザーから参考資料 (記事 URL / 論文 / engineering blog) を渡された場合、本書の該当セクション (または新規セクション) に追記する
 - 各 doc 本文には概念名のみ残し、URL 出典は本書に集約する。各 doc の末尾「## 参照」節に本書への 1 行出口リンクを置く
-- 公式 spec の鮮度確認情報 (docs.anthropic.com / code.claude.com / github.com/anthropics) は本書ではなく [sources](../../../knowledge/claude-config-review/references/sources.md) に追記する
+- 公式 spec の鮮度確認情報 (docs.anthropic.com / code.claude.com / github.com/anthropics) は本書ではなく [sources](../../../procedure/claude-config-review/references/sources.md) に追記する
 - 一覧が肥大化したら章立てで分割する (例: `## Academic` / `## Anthropic official` / `## 3rd-party blog`)。各セクションで「参照元 doc」を必ず併記して catalog 性を保つ
 
 ## 更新トリガー
@@ -53,4 +53,4 @@ agent harness が自己の障害を観測 → 診断 → 修復 → regression �
 ## 参照
 
 - [write-for-harness SKILL.md](../SKILL.md): reference 群の索引と読む順 (手順 3)
-- [sources](../../../knowledge/claude-config-review/references/sources.md): 公式 spec の鮮度確認 (本書とは責務が異なる)
+- [sources](../../../procedure/claude-config-review/references/sources.md): 公式 spec の鮮度確認 (本書とは責務が異なる)

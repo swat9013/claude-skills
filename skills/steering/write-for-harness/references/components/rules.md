@@ -9,7 +9,7 @@
 rules ファイルは CLAUDE.md から分割される、発火条件付きの細則。
 
 - **目的**: 特定領域の詳細規約を `paths:` で絞ってロードし、無関係セッションで high-signal を薄めない。
-- **対象外**: 一般指針 (それは CLAUDE.md 直下の責務 → [claude-md](./claude-md.md))、自動実行 (それは hook の責務 → [hook](../../../../knowledge/claude-config-review/references/hook.md))。
+- **対象外**: 一般指針 (それは CLAUDE.md 直下の責務 → [claude-md](./claude-md.md))、自動実行 (それは hook の責務 → [hook](../../../../procedure/claude-config-review/references/hook.md))。
 
 ## 仕様
 
@@ -18,7 +18,7 @@ rules ファイルは CLAUDE.md から分割される、発火条件付きの細
   - × `paths:` 欠落 → 全セッションで毎回ロードされ CLAUDE.md と等価
 - 1 ファイル 1 関心が原則 (例: `chezmoi-managed-files.md` は chezmoi source 編集規約に限定)。
 
-公式 spec は [sources](../../../../knowledge/claude-config-review/references/sources.md) の memory / Subagents 節 (`paths:` frontmatter 仕様) から辿る。
+公式 spec は [sources](../../../../procedure/claude-config-review/references/sources.md) の memory / Subagents 節 (`paths:` frontmatter 仕様) から辿る。
 
 ## チェックリスト
 
@@ -46,6 +46,6 @@ rules 固有のアンチパターンに絞る。aspirational / 解決済み問�
 
 ## 参照
 
-- 共通: [models](../models.md) (rules の長さがモデルの context 利用に与える影響) / [sources](../../../../knowledge/claude-config-review/references/sources.md) (公式仕様の引き方)
+- 共通: [models](../models.md) (rules の長さがモデルの context 利用に与える影響) / [sources](../../../../procedure/claude-config-review/references/sources.md) (公式仕様の引き方)
 - 関連: [claude-md](./claude-md.md) (rules を索引する CLAUDE.md 本体のレビュー観点)
-- 公式: Claude Code memory ドキュメント (URL は [sources](../../../../knowledge/claude-config-review/references/sources.md) 経由で確認)
+- 公式: Claude Code memory ドキュメント (URL は [sources](../../../../procedure/claude-config-review/references/sources.md) 経由で確認)

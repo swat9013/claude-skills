@@ -5,6 +5,7 @@
     "url": "https://github.com/swat9013"
   },
   "description": "Claude Code で使う skill 集",
+  "allowCrossMarketplaceDependenciesOn": ["claude-plugins-official"],
   "plugins": [
     {
       "name": "swat-skills",

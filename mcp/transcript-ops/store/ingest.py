@@ -298,6 +298,11 @@ def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         [(file_id, *c) for c in rows.compact_boundaries],
     )
+    conn.executemany(
+        "INSERT INTO assistant_text (file_id, line_no, block_no, text) "
+        "VALUES (?, ?, ?, ?)",
+        [(file_id, *a) for a in rows.assistant_texts],
+    )
     return len(rows.records), rows.broken_lines
 
 
@@ -342,6 +347,7 @@ class _ParsedFile:
     static_payloads: list[tuple] = dataclasses.field(default_factory=list)
     memory_injections: list[tuple] = dataclasses.field(default_factory=list)
     compact_boundaries: list[tuple] = dataclasses.field(default_factory=list)
+    assistant_texts: list[tuple] = dataclasses.field(default_factory=list)
     broken_lines: int = 0
 
 
@@ -384,6 +390,7 @@ def _parse_lines(lines: list[str]) -> _ParsedFile:
         if record_type == "assistant":
             _collect_tool_uses(rec, line_no, parsed, pending)
             _collect_assistant_turn(rec, line_no, parsed)
+            _collect_assistant_texts(rec, line_no, parsed)
         elif record_type == "user":
             _resolve_tool_results(rec, parsed, pending)
             _collect_user_events(rec, line_no, parsed)
@@ -487,6 +494,19 @@ def _collect_assistant_turn(rec: dict, line_no: int, parsed: _ParsedFile) -> Non
         usage.get("cache_creation_input_tokens", 0),
         usage.get("cache_read_input_tokens", 0),
     ))
+
+
+def _collect_assistant_texts(rec: dict, line_no: int, parsed: _ParsedFile) -> None:
+    """assistant turn の text block を全文で 1 block = 1 行にする (空 text は除く)。"""
+    content = (rec.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return
+    for block_no, block in enumerate(content):
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            parsed.assistant_texts.append((line_no, block_no, text))
 
 
 def _collect_user_events(rec: dict, line_no: int, parsed: _ParsedFile) -> None:
