@@ -10,7 +10,7 @@ user-invocable: true
 
 正しさの欠陥探し (crash / データ破損 / 到達可能性) は担当しない。どの review へ回すかは呼び出し元が決める。
 
-出力は PR 説明文へそのまま貼れる markdown で終える。Act on の修正と再 review の回数は呼び出し元が決める (本 skill は 1 回分のレビューを返す)。
+出力は PR へのコメントにそのまま貼れる markdown で終える。Act on の修正と再 review の回数は呼び出し元が決める (本 skill は 1 回分のレビューを返す)。
 
 ## 1. 対象と Spec 源を確定する
 
@@ -42,7 +42,9 @@ Spec 源は commit message / PR 本文の issue ref (`#123` / `Closes #45` / `!6
 
 ## 2. 軸ごとに reviewer を並列で起動する
 
-本 skill が立てる subagent は、手順 2 と手順 3 のどちらも `Agent` tool で、**`name` を付けずに**同一 message 内で並列起動する (name 付きは background 型になり、結果が tool_result で返らない)。`subagent_type` は工程で違う — ここで立てる reviewer は `general-purpose` で、`model` は指定せず呼び出し元から継承する。反証者の指名は手順 3 に書いてある。
+本 skill が立てる subagent は、手順 2 と手順 3 のどちらも `Agent` tool で、**`name` を付けずに**同一 message 内で並列起動する (name 付きは background 型になり、結果が tool_result で返らない)。`subagent_type` は工程で違う — ここで立てる reviewer は `swat-skills:reviewer` を指名する。reviewer の model と effort は agent 定義が持つので、ここでは `model` を渡さない。反証者の指名は手順 3 に書いてある。
+
+この名前が解決しないときは `general-purpose` で代替せず、レビューを始めずに停止する — 代替すると reviewer が呼び出し元の model と effort へ黙って戻り、指名した深さでレビューしたように見える。返すのは停止理由 (error が挙げた available agents) と次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから再実行する) の 2 つ。
 
 ここで立てるのは 2 体 (Spec 軸を skip するなら原則軸の 1 体だけ)。原則軸の prompt には [references/rubric.md](references/rubric.md) を Read して**全文をそのまま**埋める (要約・抜粋しない)。rubric がこの review で使う原則の全量なので、reviewer は leaf を開かずに済む。
 

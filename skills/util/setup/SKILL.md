@@ -19,6 +19,7 @@ cwd の project を対象に、swat-skills を使うためのセットアップ�
 | cwd project の `.claude/settings.local.json` | settings step の**既定の書き先** (個人スコープ、gitignored) |
 | cwd project の `.claude/settings.json` | 共有したい旨の回答があったときのみ書き先にする |
 | cwd project の `CONTRIBUTING.md` / `CLAUDE.local.md` | **無い場合のみ**生成する (ある場合は内容を監査しない) |
+| cwd project の pre-commit 設定 (`.pre-commit-config.yaml` / lefthook 設定 / `.husky/pre-commit` / `core.hooksPath` 配下の `pre-commit`) | gitleaks の呼び出しを足すだけ。既存の hook 記述は保持する |
 | `~/.claude/settings.json` (global) | **読むだけ**。上位 scope の deny / ask が project の allow を殺していないかの衝突検知に使う |
 | cwd 以外の repo | 常に対象外。読みも書きもしない |
 | swat-skills repo 自身 | cwd が swat-skills 本体なら手順 0 で停止する (配布元は導入対象でない) |
@@ -44,15 +45,16 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
 | settings | 手順 4-4 の群がすべて入っていて、手順 4 の突合で変更提案がゼロ。入っていない群があれば手順 4 で尋ね直す (見送った群は手順 8 で対象外として載せる) | 手順 4 |
 | CONTRIBUTING.md | ファイルが存在する | 手順 5 |
 | CLAUDE.local.md | `CLAUDE.local.md` (または `CLAUDE.md`) に隔離環境の記載がある。**この項目だけは機械検査で確定しない** — 隔離の有無は手順 6 の対話で確定する | 手順 6 |
-| dispatcher | `~/.claude/dispatcher/<project>/dispatcher-project.toml` が存在する。**導入するか否かは機械検査で確定しない** — 手順 7 の対話で確定し、導入しないなら充足・不足のどちらでもなく対象外 | 手順 7 |
+| secret 検査 | 手順 7 で検出する hook manager の設定に `gitleaks` の呼び出しがある。**入れるか否かは機械検査で確定しない** — 手順 7 の対話で確定し、入れないなら対象外 | 手順 7 |
 
-### 2. tracker 設定 (外部 plugin へ委譲)
+### 2. tracker 設定 (外部 plugin の手順を実行)
 
-委譲先 `/setup-matt-pocock-skills` は外部 plugin (mattpocock/skills) の skill で、user-invoked 専用のため Skill tool では起動できない。
+委譲先 `setup-matt-pocock-skills` は外部 plugin (mattpocock/skills) の skill で、`disable-model-invocation: true` のため Skill tool では起動できない。そこで本文を Read し、setup の中でその手順を実行する — この制約が塞ぐのは Skill tool による起動だけで、ユーザーが起動した setup の中で本文の手順を辿ることは塞がない。ユーザーへ実行を提案するだけで止めると、提案が流されたまま tracker 設定が欠ける。
 
 1. **導入検知**: この step が不足のときだけ、`Skill(mattpocock-skills:writing-for-agents)` の invoke 成否で plugin の導入を検知する (同 plugin の model-invocable な skill。invoke が成功すれば導入済み)
 2. **未導入なら**: この step だけ停止し、`/plugin install mattpocock-skills@claude-plugins-official` を案内して残りの step を続行する。停止した step は手順 8 の未完了一覧に必ず載せる
-3. **導入済みなら**: ユーザーに `/setup-matt-pocock-skills` の実行を提案する。セッション内で実行されなければ未完了として報告に載せる
+3. **導入済みなら**: `~/.claude/plugins/installed_plugins.json` の `plugins` のうち key が `mattpocock-skills@` で始まる entry の `installPath` を得て、その配下の `setup-matt-pocock-skills/SKILL.md` を探して Read し、本文の手順どおりに実行する。本文中の相対 link (tracker 別の template 等) は同 SKILL.md のディレクトリを起点に Read する。本文の完了まで進めたら手順 3 へ進む
+4. **本文が見つからないとき** (plugin 側の配置変更): この step を未完了として手順 8 に載せ、ユーザーに `/mattpocock-skills:setup-matt-pocock-skills` の実行を案内する
 
 ### 3. worktree 設定 (既存 skill へ委譲)
 
@@ -94,17 +96,28 @@ agent (worker) 向けの開発フロー宣言として、repo を調査 + 対話
 - 既定の書き先は `CLAUDE.local.md`。**repo が全環境で sandbox と明言された場合のみ** `CLAUDE.md` への記載を提案する
 - `CLAUDE.local.md` が gitignore されていない repo では、誤 commit のリスクを案内してから書く
 
-### 7. dispatcher 初期設定 (既存 skill へ委譲)
+### 7. secret 検査 (gitleaks の pre-commit)
 
-`~/.claude/dispatcher/<project>/dispatcher-project.toml` (`<project>` の既定は cwd の repo 名) が無ければ、cwd の repo で dispatcher (issue から CL までの自律オーケストレーション) を回すかを **AskUserQuestion で尋ねる** — dispatcher は opt-in で、入れない repo の方が多い。確認は質問であって提案ではないので、手順 4-4 の群の確認と同じく idempotency の「提案ゼロ」とは別勘定にする。回さないなら完了報告に「対象外」で載せて終える。
+swat-skills の hook は一括 stage (`git add -A` 等) を止めない。秘匿情報の巻き込みは commit 時に staged の内容を検査して止めるので、repo の pre-commit へ gitleaks を足す。手順 1 で充足ならこの step は何もしない。
 
-config が既にある (= 導入済み) か、回すと答えたなら、ユーザーに `/swat-skills:dispatcher-setup` の実行を提案する (user-invoked 専用のため Skill tool では起動できない)。セッション内で実行されなければ未完了として報告に載せる。
+不足なら、secret 検査を入れるかを **AskUserQuestion で尋ねる** — 入れない判断の repo もあり、確認は質問であって提案ではないので、手順 4-4 と同じく idempotency の「提案ゼロ」とは別勘定にする。入れないなら完了報告に「対象外」で載せて終える。入れるなら以下へ進む。
 
-dispatcher の常駐環境 (宣言 config / claim label / crontab はいずれも cwd の外) の充足は同 skill が正本で、setup はその入口だけを持つ。sandbox block を入れた repo では `filesystem.allowWrite` の `~/.claude/dispatcher` がその環境の前提になるので、同 skill から戻されたらこの step ではなく手順 4 で足す。
+1. **hook manager の検出**: 上から順に見て、最初に当たったものへ足す。既存の manager に並べて別の manager を持ち込むと、hook が二重に走るか片方が上書きされる。`core.hooksPath` を先頭に見るのは、設定されていると git が `.git/hooks` を見ず、`pre-commit install` で入れた hook が走らないため
+
+   | 検出 | 足す形 |
+   |---|---|
+   | `git config core.hooksPath` が repo 内の追跡されたディレクトリを指す (husky が設定する `.husky/_` は husky 行へ回す) | そのディレクトリの `pre-commit` script に `gitleaks git --pre-commit --staged --redact` を追加 (失敗で exit 1) |
+   | `.pre-commit-config.yaml` | `repos` に `https://github.com/gitleaks/gitleaks` の hook `id: gitleaks` を追加。`rev` は `gh release view --repo gitleaks/gitleaks --json tagName` で得た最新 tag。取得できなければ tag をユーザーに尋ねる (推測した tag は書かない) |
+   | `lefthook.yml` / `lefthook.yaml` / `.lefthook.yml` | `pre-commit.commands` に同じコマンドを追加 |
+   | `.husky/pre-commit` | 同じコマンドを 1 行追加 |
+   | いずれも無い | `.pre-commit-config.yaml` を新規作成し、上の `.pre-commit-config.yaml` 行と同じ形で gitleaks だけを置く |
+
+2. **前提の確認**: 検出した形が要るコマンドを `command -v` で確かめる — pre-commit framework の形は `pre-commit`、lefthook の形は `lefthook`、gitleaks を直接呼ぶ形 (hooksPath / lefthook / husky) は加えて `gitleaks`。無いものは導入するかをユーザーに尋ねる
+3. **承認と書き込み**: 承認された分だけ書き、hook の有効化コマンド (`pre-commit install` / `lefthook install`。husky と `core.hooksPath` は既に有効) の実行をユーザーに提案する。有効化は clone ごとに要る。書いた file は共有されるので、変更理由を repo の運用に沿って記録するよう伝える (届け方は実行 project の運用に従う)
 
 ### 8. 完了報告
 
-全項目を表で報告する: 項目 / 結果 (**充足** = 検査を素通り / **適用** = 提案が承認され書き込んだ / **提案のみ** = 承認待ちや見送り / **未完了** = 停止・保留 / **対象外** = 手順 4-4 で見送った settings の群と、手順 7 で導入しないと決めた dispatcher) / 次アクション。外部 plugin 未導入で停止した step、セッション内で実行されなかった委譲先も未完了として必ず載せる。
+全項目を表で報告する: 項目 / 結果 (**充足** = 検査を素通り / **適用** = 提案が承認され書き込んだ / **提案のみ** = 承認待ちや見送り / **未完了** = 停止・保留 / **対象外** = 手順 4-4 で見送った settings の群と、手順 7 で入れないと決めた secret 検査) / 次アクション。外部 plugin 未導入で停止した step、セッション内で実行されなかった委譲先も未完了として必ず載せる。
 
 ## 最小集合 (手順 4-4 で群ごとに入れるかを尋ねる)
 
@@ -124,7 +137,7 @@ Claude Code 内蔵 sandbox の設定。macOS / Linux / WSL2 で動く。
 |---|---|---|
 | sandbox 本体 | `enabled: true` / `failIfUnavailable: true` / `autoAllowBashIfSandboxed: true` / `allowUnsandboxedCommands: false` | 起動不能時に unsandboxed へ黙って fallback させない。`dangerouslyDisableSandbox` による脱出を全面禁止 |
 | sandbox 脱出 (普遍) | `excludedCommands` に `gh:*` / `glab:*` / `herdr:*` と、subprocess で gh・herdr を起動する skill script の tilde path | **sandbox の設計由来**の制約。`gh` / `glab` は credential (`~/.config/gh` 等) が sandbox の credential 保護で読めず起動失敗、`herdr` は socket connect が遮断される。**除外したコマンドには sandbox の制約が一切かからない**ので、守りは permission 層だけになる — 破壊的な subcommand を含むものは deny と対で扱う |
-| filesystem 書込 | `allowWrite` に `~/.claude/metrics` / `~/.cache/uv` / `~/.claude/dispatcher` | 順に permission 記録・uv 実行の cache・dispatcher の宣言 config と log の置き場。いずれも cwd 外なので既定では書けない |
+| filesystem 書込 | `allowWrite` に `~/.claude/metrics` / `~/.cache/uv` | 順に permission 記録・uv 実行の cache。いずれも cwd 外なので既定では書けない |
 | network | `allowedDomains` に `github.com` / `api.github.com` / `*.githubusercontent.com` / `codeload.github.com` / `api.anthropic.com` / `statsig.anthropic.com` | ここまでが実依存の最小。言語 ecosystem の domain (`pypi.org` / registry 系) は**適用先の依存に合わせてアレンジ提案で足す** |
 
 ## 環境依存チューニング

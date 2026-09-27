@@ -1,22 +1,19 @@
 #!/bin/sh
-# インラインコード組み立て実行を遮断する PreToolUse guard。
-# bash -c / sh -c / zsh -c / perl -e / ruby -e / node -e を対象とする。
-# LLM が任意コードを生成・実行する経路を塞ぐ（Computational First / プロンプトインジェクション対策）。
+# shell の inline 実行 (bash -c / sh -c / zsh -c) を遮断する PreToolUse guard。
+# file 名の `python` は、python / perl / ruby / node の inline も見ていた頃の名残。
 #
-# python の inline (`-c` / stdin の `-`) は guard-bulk-stage.sh が担う。
-# 同じ系統を 2 hook が deny すると、どちらの message が届くかが仕様化されていないため、
-# 代替形つきの message を持つ側へ一本化した (env 代入つきの綴り `env FOO=1 python3 -c` も
-# 向こうの head 判定が読み飛ばして捕捉する)。
+# Why: permission rule は `bash -c "…"` の中身を検査しない。`-c` の文字列に包めば
+# permissions.deny の entry (`git push --force` 等) を迂回できるので、本 deny は
+# **抜け道を塞ぐ側**にある (ADR 0077)。
 #
-# スコープ外（Feedback で捕捉しない領域）:
-# - `print('hypothesis')` など「仮説メモを Python ソースに埋め込む」用法は構文的に区別不能なため対象外。
-#   これは Feedforward（指示文側で「思考メモは自然文で書く」と規定する）で抑止する。
-# - 通常の `python3 script.py` や `uv run script.py` は対象外（スクリプト実行は許可）。
-
+# python / perl / ruby / node の inline (`-c` / `-e` / stdin の `-`) は deny しない (ADR 0077)。
+# script file に書いて実行すれば同じ能力で通る — 抜け道がある deny は往復を生むだけで、
+# 塞ごうとした任意コード実行の経路を塞いでいなかった。
+#
 # 本 hook は fail-closed: payload を読めなかったとき (jq が無い / JSON として不正 / 期待した
 # 形でない) は判断保留 = 素通しにせず deny する (#250 決定 3 / #596)。読み取り失敗を素通しに
 # すると `COMMAND` が空文字になり、下の全判定が不成立のまま passthrough して
-# `bash -c` / `perl -e` 系のインラインコード実行が無検査で通る。
+# `bash -c` 系のインライン実行が無検査で通る。
 #
 # 受容コスト: 本 hook は hooks.json に `if` gate を持たず **全 Bash 呼び出しで発火する**ため、
 # jq が PATH から消えた瞬間に Bash が全面停止する。harness の他の guard より停止範囲が広い
@@ -96,12 +93,6 @@ COMMAND=$(printf '%s\n' "$COMMAND" | awk '
 # bash -c / sh -c / zsh -c
 if printf '%s\n' "$COMMAND" | grep -qE '(^|[; &|])(bash|sh|zsh) +-c( |$)'; then
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"bash -c / sh -c / zsh -c のインライン実行は禁止。スクリプトファイル化するか、個別の Bash ツール呼び出しに分解してください"}}\n'
-  exit 0
-fi
-
-# perl -e / ruby -e / node -e
-if printf '%s\n' "$COMMAND" | grep -qE '(^|[; &|])(perl|ruby|node) +-e( |$)'; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"perl/ruby/node の -e によるインライン実行は禁止。スクリプトファイル化してください"}}\n'
   exit 0
 fi
 

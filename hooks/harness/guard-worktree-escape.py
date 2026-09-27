@@ -6,6 +6,15 @@ worktree ではなく main repository root で解決する既知バグがある
 (anthropics/claude-code#29083 / #31546 / #44557)。subagent 側では hook 入力の
 cwd 自体が汚染されうるため、cwd だけでは逸脱を判別できない。
 
+退役の判断材料 (2026-09-25 時点、v2.1.282):
+  - 上流のバグは未修正 (上記 3 件は重複 close。重複先の #36182 / #11239 は OPEN)
+  - 本体の worktree 隔離 guard が 2.1.222 以降「worktree-isolated session」の main checkout への
+    Edit / Bash を止めており、本 hook の deny は約 3.9 万回の起動で 0 件
+  - 未確認なのは、`EnterWorktree` / `claude --worktree` / `isolation: "worktree"` を使わずに
+    手で `git worktree add` した worktree で作業する session (外部ツール claude-dispatcher の worker は
+    clone で起動し、セッション内で `git worktree add` した worktree へ移って作業する) を
+    本体 guard が isolated と扱うか。扱うと確認できたら本 hook は退役できる
+
 そこで信頼できる唯一の情報源であるメインセッションの cwd を session_id キーの
 状態ファイルに記録し (session_id は親と subagent で共通)、tool 呼び出し時に照合する:
 

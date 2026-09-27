@@ -44,8 +44,6 @@
     "./skills/design/ui-design",
     "./skills/design/sud-design",
     "./skills/util/worktree-setup",
-    "./skills/util/dispatcher",
-    "./skills/util/dispatcher-setup",
     "./skills/util/inventory-launcher",
     "./skills/util/issue-triage",
     "./skills/util/ready-for-agent-review",

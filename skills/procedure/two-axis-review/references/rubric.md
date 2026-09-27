@@ -8,13 +8,14 @@
 
 ## 構造
 
-- **同じ責務のロジックが複数の hunk / file に同じ形で現れる** — 集約先があるか。異なる理由で変わる似たコードなら重複のまま残すのが正解。`principle-structure-simplicity`
+- **同じ知識 (同じ理由で変わるロジック) が複数の hunk / file に同じ形で現れる** — 集約先があるか。異なる理由で変わる似たコードなら重複のまま残すのが正解。`principle-structure-simplicity`
 - **1 つの file / module が無関係な複数の理由で編集されている** (Divergent Change) — 責務ごとに分かれる形か。`principle-structure-simplicity`
 - **同じ型に対する switch / if カスケードが複数箇所で繰り返される** — 1 つの写像か多態に寄せられるか。`principle-structure-simplicity`
 - **関数内で抽象レベルが混在する** (方針の記述と細部の操作が同じ関数に同居) — SLAP に照らして層を割れるか。`principle-structure-simplicity`
 - **委譲するだけの関数 / クラスが足されている** (Middle Man) — 呼び出し側が実物を直接呼べるか。`principle-structure-simplicity`
-- **1 つの論理変更が多数の file の散在した編集を強いている** (Shotgun Surgery) — 一緒に変わるものが 1 箇所に集まっていない兆候。`principle-localize-change-impact`
-- **呼び出し元が 1 箇所しかない抽象・パラメータ・hook が新設されている** — 早すぎる抽象化と過剰分割はこの原則の違反側。`principle-localize-change-impact`
+- **1 つの論理変更が多数の file の散在した編集を強いている** (Shotgun Surgery) — 一緒に変わるものが 1 箇所に集まっていない兆候。`principle-state-coupling-complexity-code`
+- **呼び出し元が 1 箇所しかない抽象・パラメータ・hook が新設されている** — 早すぎる抽象化と過剰分割はこの原則の違反側。`principle-state-coupling-complexity-code`
+- **可変状態 (field・フラグ・キャッシュ・インメモリの queue) が足されている** — 差分が小さくても状態が増える形。同じ振る舞いをステートレスに書けるか、足した状態を読む経路ごとに型を分けるか専用のコンポーネントへ任せて、手元の状態を減らせるか。`principle-state-coupling-complexity-code`
 - **メソッドが自分のデータより他オブジェクトのデータを多く触る** (Feature Envy) — 触っているデータの側へ移せるか。`principle-balance-coupling`
 - **`a.b().c().d()` 形の連鎖で他オブジェクトの内部構造に依存している** (Message Chains) — 変更頻度の高い側との結合を強めていないか。`principle-balance-coupling`
 - **継承した / 実装した契約の大半を無視・上書きしている** (Refused Bequest) — 継承より合成で表せるか。`principle-balance-coupling`

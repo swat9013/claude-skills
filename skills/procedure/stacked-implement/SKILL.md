@@ -9,7 +9,7 @@ description: 名指しした実装 issue 集合を依存順に直列実装し、
 
 名指しされた実装 issue 集合を、このセッション自身が依存順に 1 件ずつ実装する。issue 1 件につき CL (PR / MR) 1 本。依存 chain の後続は前段 branch から分岐し、CL の target を前段 branch にしたスタックとして積む。全 issue の CL 到達が完了条件で、merge と issue close は user の領分。
 
-並列化はしない — 実装工程の review step は Skill tool の invoke を要し、subagent からは invoke できないため、全工程をこのセッションで直列に通す。worker セッションの起動・配車 (dispatcher) は行わない。
+並列化はしない — 実装工程の review step は Skill tool の invoke を要し、subagent からは invoke できないため、全工程をこのセッションで直列に通す。worker セッションの起動・配車 (claude-dispatcher 等) は行わない。
 
 ## args
 
@@ -39,10 +39,10 @@ description: 名指しした実装 issue 集合を依存順に直列実装し、
 4. **issue ごとの実装ループ。** 依存順 (chain は前段 → 後続) に 1 件ずつ:
    1. **branch を切る。** 独立な issue は既定ブランチから、chain の後続は前段 issue の branch から (`git checkout -b <branch> <前段 branch>`) 分岐する (既定ブランチの最新化は playbook の step が行う)
    2. **実装工程を通す。** `swat-skills:playbook-implementation` を Skill tool で invoke し、届いた step を逐語で todolist へ写して通す (飛ばす step には `skip: <理由>` を残す)。**issue ごとに invoke し直して todolist を作り直す** — 前 issue の list を使い回すと skip 判定が前の issue の文脈のまま残る。読み替えは 3 つで、それ以外の step は逐語のまま通す:
-      - (全 issue) playbook 末尾の PR 作成は手順 4-3 が行う — playbook 側は PR 説明文の組み立てまでで止める (base 未指定の PR が先に立つと chain の stack が壊れる)
+      - (全 issue) playbook 末尾の PR 作成は手順 4-3 が行う — playbook 側は PR 説明文の組み立てとレビュー出力の保存までで止める (base 未指定の PR が先に立つと chain の stack が壊れる)
       - (chain の後続) 「土台を最新にする」(既定ブランチを取り込む) step は「前段 branch から分岐済み」で満たしたことにし、既定ブランチは取り込まない (前段の成果が土台)
       - (chain の後続) 欠陥探しと 2 軸レビューの差分対象は「既定ブランチとの merge-base」を「前段 branch との merge-base」に読み替える (前段の差分は前段の CL でレビュー済みで、混ぜると指摘の文脈がずれる)
-   3. **CL を作る。** commit → push → 独立な issue は `gh pr create` / `glab mr create` (target は既定ブランチ)、chain の後続は `gh pr create --base <前段 branch>` / `glab mr create --target-branch <前段 branch>`。本文に closing reference (`Closes #<N>`) と、playbook が要求する Act on / Dismissed の記録を載せる。target が既定ブランチでない CL は merge しても issue が自動 close されないことがあるが、紐づけの表明として書く
+   3. **CL を作る。** commit → push → 独立な issue は `gh pr create` / `glab mr create` (target は既定ブランチ)、chain の後続は `gh pr create --base <前段 branch>` / `glab mr create --target-branch <前段 branch>`。本文に closing reference (`Closes #<N>`) を載せ、CL を作った直後に、その issue の playbook が保存したレビュー出力を playbook の指定どおりコメントで投稿する。target が既定ブランチでない CL は merge しても issue が自動 close されないことがあるが、紐づけの表明として書く
    4. **CL 番号と URL を報告してから次の issue へ進む** (goal の評価器がこの報告で条件を判定する)
    5. 実装が人手 (user しか出せない入力・作業ツリー外の実体) で詰まった issue は、理由を報告して**その issue だけ見送り、chain の後続も道連れで見送って**次の独立 issue へ進む — 全体を止めない
 

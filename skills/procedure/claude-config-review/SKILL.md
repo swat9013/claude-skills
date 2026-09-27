@@ -52,9 +52,10 @@ hook パターンの補足:
 2. 各 path を type に分類 (hook / settings / skipped)
 3. skipped は warn ログを残し続行
 4. 残り bucket それぞれを Agent tool で **並列** dispatch (同一 message 内で複数 tool use)
-   - `subagent_type: general-purpose` (read-only 制約は prompt で担保)
-   - **`name` を付けずに起動する** — name 付きは background (mailbox) 型になり、最終報告が tool_result で返らず idle 通知しか届かない (merge できないまま orphan agent が残る)。無名 dispatch なら結果を tool_result で同期回収できる。それでも結果が得られない場合は、main agent が reference を読んで代行レビューし、その旨を最終出力に明記する
-   - prompt は下記「subagent prompt template」。1 bucket = 1 subagent (bucket 内ファイルは同 subagent が連続レビュー)。`model` は指定しない (セッション継承)
+   - `subagent_type: swat-skills:reviewer` で指名し、`model` は渡さない (model と effort は agent 定義が持つ)
+     - 名前が解決しないときは `general-purpose` で代替せず、代行レビューもせずに停止する — どちらも reviewer が呼び出し元の model と effort へ黙って戻り、指名した深さでレビューしたように見える。返すのは停止理由 (error が挙げた available agents) と次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから再実行する) の 2 つ
+   - **`name` を付けずに起動する** — name 付きは background (mailbox) 型になり、最終報告が tool_result で返らず idle 通知しか届かない (merge できないまま orphan agent が残る)。無名 dispatch なら結果を tool_result で同期回収できる。reviewer が起動したのに結果が得られない場合は、main agent が reference を読んで代行レビューし、その旨を最終出力に明記する
+   - prompt は下記「subagent prompt template」。1 bucket = 1 subagent (bucket 内ファイルは同 subagent が連続レビュー)
 5. 全 subagent 完了後、main agent が結果 JSON を merge → 最終 JSON を 1 つの fenced code block (```json) で stdout に書く。merge 時は各 subagent 返答の top-level `type` を、その subagent の各 finding に `type` フィールドとして付与してから `findings` 配列に concat する。最終 JSON は対話文脈でも必ず出力し、findings 配列を JSON block 内に置く (markdown 表で代替しない)。人間向け要約は、JSON block の後に分離して書く。
 
 ### subagent prompt template

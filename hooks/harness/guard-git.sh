@@ -48,10 +48,8 @@ passthrough() {
 
 # 先頭の空白を許容するため `^[[:space:]]*git` を共通プレフィクスにする。
 
-# `git add` の一括指定は guard-bulk-stage.sh が担う。本 hook は hooks.json 側の
-# `if: "Bash(git:*)"` gate で先頭 token が git のときしか起動せず、判定も行頭アンカーだった
-# ため `echo x && git add -A` / `git status --short && git add -A` を取り逃していた
-# (gate を外すと下の非アンカー判定が全 Bash にかかって誤爆するので、判定ごと移した)。
+# `git add` の一括指定は deny しない。秘匿情報の巻き込みは repo ごとの gitleaks
+# (pre-commit) で防ぐ (ADR 0077)。
 
 # 破壊的 git 操作
 # 理由文で stash を勧めない: stash の stack は worktree・並列 session 間で共有され、
@@ -107,38 +105,14 @@ fi
 # しまう。剥がした写しは deny を届かせるためだけに使い、許可の射程は広げない。
 # main/master への直接 push 判定は持たない (GitHub/GitLab の branch protection に委譲 → docs/adr/0019)。
 #
-# 許可の条件に **Bash tool timeout の明示**を課す。`.githooks/pre-push` が全 pytest を走らせ、
-# 既定の 120s では終わらず SIGTERM (exit 143) で push が死ぬ (#899 の実測: 単独 131s /
-# 2 セッション同時 406s)。exit code は timeout に食われて成功と区別が付かないので、実行前に返す。
-# 床の判定も原文で行う — 前置つき (`git -C <他 repo> push`) は本 repo の pre-push を走らせる
-# とは限らず、床を課すと他 repo への push を誤って塞ぐ。同じ理由で `git commit -m x && git push`
-# のような複合形も床の外にある (行頭アンカーが外れる)。この穴を塞ぐには非アンカー判定が要り、
-# 全 Bash への誤爆と引き換えになるので広げない (docs/adr/0067 の「塞ぐと称していた穴」)。
-# 床は Bash tool timeout の上限と同値なので、suite の所要がこれを超えたら timeout の指定では
-# 逃げられない — その先は suite 側を削る対処になる (#898)。本判定は対症であることを前提に置く。
-# 判定は token 境界まで見る。`^git push` だけだと `git pushx` のような別コマンドまで巻き込み、
-# 床を課した後は素通りではなく deny になる (差分前は無条件 allow だったので実害が無かった)。
+# Bash tool timeout の床 (pre-push が重い repo 向けの deny) は本 hook に置かない。根拠が
+# swat-skills の `.githooks/pre-push` 固有なので、同 repo の .claude/settings.json に登録した
+# guard-push-timeout.sh が持つ (docs/adr/0078)。plugin に置くと他 repo の push まで塞ぐ。
+# 判定は token 境界まで見る。`^git push` だけだと `git pushx` のような別コマンドまで allow する。
 # 境界は空白に限らない — `git push;echo x` / `git push&&foo` / `git push>log` は先頭が本物の
-# push なので床の内側に残す。除くのは識別子が続く形 (`git pushx` / `git push-foo`) だけ。
-PUSH_TIMEOUT_FLOOR_MS=600000
+# push なので allow の内側に残す。除くのは識別子が続く形 (`git pushx` / `git push-foo`) だけ。
 if printf '%s\n' "$COMMAND" | grep -qE '^[[:space:]]*git[[:space:]]+push([^[:alnum:]_-]|$)'; then
-  # `| tail` / `| head` を落とす判定はここに在ったが退役した (#897 → 本 PR)。守る対象だった
-  # 「120s SIGTERM で tail がバッファごと診断を飲む」経路は下の床が先に塞いでおり、床導入
-  # (2026-09-03) 以降の窓で timeout 死は 0 件だった。詳細は docs/adr/0067。
-  # jq 側で数値へ寄せる: float (`600000.0`) は整数へ落とし、数値でない値・未指定は空にする。
-  # 巨大な値は指数表記 (`1e+23`) になり、下の桁検査で弾かれる (shell の整数範囲を超えた
-  # `[ -lt ]` がエラー終了して allow へ抜ける fail-open を塞ぐ)。
-  TIMEOUT_MS=$(printf '%s\n' "$INPUT" | jq -r 'try (.tool_input.timeout | floor) catch empty')
-  # 未指定・null・非数はすべて fail-closed で deny する (docs/adr/0046 /
-  # principle-fail-loudly)。読めない値を床通過とみなすと guard が黙って無効になる。
-  case $TIMEOUT_MS in
-    '' | *[!0-9]*)
-      deny "git push は Bash tool の timeout に ${PUSH_TIMEOUT_FLOOR_MS} (10 分。Bash tool の上限値) を指定して実行してください。pre-push が全 pytest を回すため、既定の 120s では SIGTERM (exit 143) で push が死にます"
-      ;;
-  esac
-  if [ "$TIMEOUT_MS" -lt "$PUSH_TIMEOUT_FLOOR_MS" ]; then
-    deny "git push の timeout ${TIMEOUT_MS} ms では pre-push の全 pytest が終わりません。${PUSH_TIMEOUT_FLOOR_MS} (10 分。Bash tool の上限値) を指定して実行してください"
-  fi
+  # `| tail` / `| head` を落とす判定はここに在ったが退役した (#897)。詳細は docs/adr/0067。
   printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
   exit 0
 fi

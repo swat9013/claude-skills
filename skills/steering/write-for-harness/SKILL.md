@@ -73,10 +73,11 @@ component の責務 reference を Read する。
 
 ### 4. 検証 subagent と構造 reviewer を並列で起動する
 
-`Agent` tool で `subagent_type: general-purpose` を 2 つ、**`name` を付けずに**同一 message 内で起動する (name 付きは background 型になり、結果が tool_result で返らない)。
+`Agent` tool で次の 2 つを、**`name` を付けずに**同一 message 内で起動する (name 付きは background 型になり、結果が tool_result で返らない)。
 
-- **検証 subagent**: 書いた file の文面を component 別 reference に照らす。`model` は指定せずセッション継承にする
-- **構造 reviewer**: 書いた内容の**配置**が正しいかを harness 全体の中で見る。**対象が 1 ファイルでも常に 1 つ起動する**。`model: opus` を明示する (配置・統廃合の判断は harness 全体を俯瞰する多段推論のため)
+- **検証 subagent**: 書いた file の文面を component 別 reference に照らす。`subagent_type: general-purpose` で、`model` は指定せずセッション継承にする
+- **構造 reviewer**: 書いた内容の**配置**が正しいかを harness 全体の中で見る。**対象が 1 ファイルでも常に 1 つ起動する**。`subagent_type: swat-skills:reviewer` で指名し、`model` は渡さない (配置・統廃合の判断は harness 全体を俯瞰する多段推論なので、opus / effort high を agent 定義が固定している)
+  - 名前が解決しないときは `general-purpose` で代替しない — 代替すると構造 reviewer が呼び出し元の model と effort へ黙って戻り、指名した深さで見たように見える。検証 subagent は同じ message で既に走っており、その指摘は配置の判断と独立しているので、捨てずに検証 subagent の結果だけで手順 5 へ進む。手順 5 で `structural_proposals` を報告する位置に、代わりに `構造レビュー未実施: <error が挙げた available agents>` と次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから構造レビューをやり直す) を書く
 
 構造 reviewer の入力になる「harness 全体一覧 (path + type)」は、起動前に main agent が決定論的コマンドで作る:
 
@@ -177,7 +178,7 @@ Edit / Write は使わない。Read のみで分析を完結させる。
 
 ### 5. 指摘を反映して終える
 
-findings のうち採用したものを対象ファイルへ反映し、**反映後に diff を提示する** (呼び出し元が人間でも skill でも、反映を人間の目に載せる唯一の面がここになる)。採用しなかったものは理由付きで報告する。`structural_proposals` は findings へ混ぜず別立てで報告する (severity と impact / migration_cost は別の評価軸で、採否の目安は `references/structure.md` の「impact / migration_cost の 2 軸」)。**検証は 1 ラウンドで終える** — 反映後に subagent を起動し直す再検証ループは回さない。
+findings のうち採用したものを対象ファイルへ反映し、**反映後に diff を提示する** (呼び出し元が人間でも skill でも、反映を人間の目に載せる唯一の面がここになる)。採用しなかったものは理由付きで報告する。`structural_proposals` は findings へ混ぜず別立てで報告する (構造 reviewer が起動できなかった回は、手順 4 の `構造レビュー未実施:` 行をこの位置に置く) (severity と impact / migration_cost は別の評価軸で、採否の目安は `references/structure.md` の「impact / migration_cost の 2 軸」)。**検証は 1 ラウンドで終える** — 反映後に subagent を起動し直す再検証ループは回さない。
 
 ## 根拠
 

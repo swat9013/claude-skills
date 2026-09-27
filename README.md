@@ -91,8 +91,6 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 | `setup` | コマンド | plugin 利用者の repo に swat-skills の初期セットアップ項目 (settings 適用を含む) の 充足を検査し、不足だけを理由付きで提案する doctor。 |
 | `dialogue` | コマンド | 安易な解決に走らない・sycophancy 禁止の対話モード。 |
 | `worktree-setup` | コマンド | 対象リポジトリに Claude Code の worktree 並列セッション環境 (settings の worktree キー / .worktreeinclude / 初期化 hook) をセットアップする。 |
-| `dispatcher` | コマンド | issue → CL の自律オーケストレーションを project に導入する手順と、観測 script が書いた指示ファイルを受けて着手を判断する orchestrator の手順。 |
-| `dispatcher-setup` | コマンド | 対象 repo で dispatcher を回すための常駐環境 (宣言 config / claim label / gh 認証 / crontab) の 充足を検査し、副作用の無い試運転を撃ち、不足だけを理由付きで提案して承認分を適用する doctor。 |
 | `inventory-launcher` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-project-values) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動する launcher。 |
 | `issue-triage` | コマンド | open issue を読み取りで調査し、label・コメント・close の推奨案を人間の承認を通して tracker へ反映する対話 triage。 |
 | `ready-for-agent-review` | コマンド / 自動 | issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・AI 委任範囲の未閉鎖・規範同士の衝突を反証済みの修正提案として返す (tracker へは書き込まない). |
@@ -107,6 +105,7 @@ Task tool 経由で skill やメインの Claude から委譲される、専用�
 | --- | --- |
 | `web-research` | WebSearch / WebFetch だけを持つ読み込み専用の Web 調査 subagent。 |
 | `refuter` | レビュー指摘・欠陥候補を 1 件受け取り、実コードの読解で反証が成立するかを判定する読み取り専用 subagent。 |
+| `reviewer` | レビュー skill の reviewer 工程を担う subagent。 |
 <!-- /generated:agents -->
 
 ## 同梱している hook
@@ -120,11 +119,9 @@ hook は install した環境でそのまま動くが、以下を前提にして
 - **protected branch の防御は hook では持たない**。main/master への直接 push の禁止は GitHub / GitLab の branch protection 側で設定する前提 (hook はローカルにしか効かないため)
 - **`guard-worktree-escape.py` は `~/.claude/state/worktree-guard/` に session ごとの作業 root を書く** (7 日で自動削除)。書けない環境では guard が無効化されるだけで、tool 実行は妨げない
 
-## dispatcher を使う場合の前提
+## claude-dispatcher から使う
 
-`dispatcher` skill (issue を選んで headless の Claude Code セッションへ配車し、CL まで自走させる仕組み) だけは、install しただけでは動かない。**cron から観測 script を周期起動する**、**適用先 project の settings に permission / sandbox の追記が要る**、**issue 置き場の宣言 config を環境ごとに置く**、の 3 点が前提になる。
-
-導入と運用の手順は [`skills/util/dispatcher/README.md`](skills/util/dispatcher/README.md) に書いてある。dispatcher 以外の skill にはこの前提は掛からない。
+issue を選んで headless の Claude Code セッションへ配車し、CL まで自走させる CLI [claude-dispatcher](https://github.com/swat9013/claude-dispatcher) は、この plugin を前提にしている。worker が実行時に plugin の playbook (`skills/procedure/playbook-*`)・原則索引・レビュー skill / agent を使う。導入と運用の手順は claude-dispatcher の README に書いてある。
 
 ## 更新
 

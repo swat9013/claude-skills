@@ -22,13 +22,15 @@ description: >-
 - `<name>` は設計対象の名前 (kebab-case)。既存ディレクトリと重複したら、それが同じ対象の旧設計か別対象かをユーザーに確かめる — 同じ対象なら「5. 既存設計を更新する」の側
 - 同じ対象の `sud-design` 成果物 (`usecases.md` / `domain.puml`) が既にあれば Read して入力にする。**無くても進める** — ユースケースは本 skill が画面インベントリの段で聞き出す
 
+置き場が決まったら、「2.」「5.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、適用条件が今回の設計に当たる leaf を全部 Read する。以降の手順が `principle-*` を名指ししたら、索引が示す path から Read する — leaf は invoke せず読む。本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
+
 ## 2. 設計セッションを進める
 
-各段は、下記の確定項目が埋まるまで質問を続けてから次の段へ進む。質問はまとめて出し、ユーザーの回答が要らない事実 (既存コード・既存 doc・stack の実態) は自分で調べて埋める。決定するのはユーザー、事実を集めるのは自分。
+各段は、下記の確定項目が埋まるまで質問を続けてから次の段へ進む。質問はまとめて出し、ユーザーの回答が要らない事実 (既存コード・既存 doc・stack の実態) は自分で調べて埋める。決定するのはユーザー、事実を集めるのは自分。段の順序は固定。確定項目に条件の羅列が出たら直交する規則へ畳めないか、手段 (実装形式・既製品) を画面の要求より先に決めていないかを `principle-design-derivation-order` で見る。
 
 **画面インベントリ** — 確定項目:
 
-- 画面の一覧と、画面ごとの目的 (誰が何をしに来るか)。`usecases.md` があるならユースケースと画面の対応
+- 画面の一覧と、画面ごとの目的 (誰が何をしに来るか)。`usecases.md` があるならユースケースと画面の対応。画面名は `principle-ubiquitous-naming` に従って付ける
 - 画面ごとに扱う情報要素 (表示するもの・入力するもの)
 - 画面に見えて画面でないもの (modal / drawer / toast) の区別。これらは遷移の宛先になるかで決まる
 
@@ -45,7 +47,7 @@ description: >-
 
 **component 分解 + state 網羅** — 確定項目:
 
-- component の一覧と、どの画面のどの領域に現れるか。**どの画面からも参照されない component は理由を確かめる** (根拠が無ければ落とす)
+- component の一覧と、どの画面のどの領域に現れるか。**どの画面からも参照されない component は理由を確かめる** (根拠が無ければ落とす — `principle-deletability` の「導入は価値の立つ項目だけに絞る」)。component 名は `principle-ubiquitous-naming` に従って付ける。似た component を共通化して 1 つにするか画面ごとに分けるかは `principle-structure-simplicity` と `principle-state-coupling-complexity-code` で案を比べ、結果を一覧に反映する (後者の「状態」は component が保持する可変データを指し、下表の表示 state ではない)
 - component ごとの必須 state (下表)。表に無い component は必要な state を列挙する
 - component が受け取る情報 (props 相当) の概要。実装の型は書かない
 
@@ -64,7 +66,7 @@ description: >-
 - palette / type scale / spacing / radius の選定と**その理由** (画面インベントリで出た要求に紐づける)
 - 対象 stack で実装する形式 (CSS custom properties / Tailwind `@theme` / shadcn の semantic tokens)
 
-**既定値** — ユーザーが名指ししない限りこれを提案し、確定した理由を `tokens.md` に書く:
+**既定値** — ユーザーが名指ししない限りこれを提案し、確定した理由を `tokens.md` に書く。既定の既製品を外して palette や icon を自前で定義する案が出たら、`principle-build-vs-buy` で比べてから決める:
 
 | 項目 | 既定 | 備考 |
 |---|---|---|
@@ -119,7 +121,7 @@ README / screens.md / navigation.puml / components.md / tokens.md の 5 成果�
 
 設計済みの対象に構造変更 (画面の増減・遷移・component・state・トークンの変更) が入るときは、**設計ドキュメントを先に直してから実装する**。実装が先に着地すると、設計 doc は実装の後追い要約に落ちて正本でなくなる。
 
-- どの変更がどの file の正本かは README の索引表で引く
+- どの変更がどの file の正本かは README の索引表で引く。同じ内容を複数 file へ書き足さず、正本 1 つに書いて他からは参照する — `principle-artifact-register`
 - `navigation.puml` を直したら再描画と網羅検査を回す (手順は「3.」と同じ)
 - 過去の決定を覆すときは decision/ の旧 file を書き換えず、新しい決定 file を起こして旧 file を Superseded にする
 
