@@ -250,8 +250,8 @@ def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
     )
     conn.executemany(
         "INSERT INTO hook_firing (file_id, line_no, hook_name, hook_event, "
-        "attachment_type, command, exit_code, duration_ms, timed_out) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "attachment_type, command, exit_code, duration_ms, timed_out, tool_use_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [(file_id, *h) for h in rows.hook_firings],
     )
     conn.executemany(
@@ -402,6 +402,7 @@ def _parse_lines(lines: list[str]) -> _ParsedFile:
                     line_no, firing.hook_name, firing.hook_event,
                     firing.attachment_type, firing.command, firing.exit_code,
                     firing.duration_ms, 1 if firing.timed_out else 0,
+                    firing.tool_use_id,
                 ))
             _collect_attachment_projections(rec, line_no, parsed)
         elif record_type == "system":
@@ -677,7 +678,8 @@ def _stamp(moment: dt.datetime) -> str:
 
 
 def open_synced(transcripts_dir: Path, cache_dir: str | Path | None = None,
-                now: dt.datetime | None = None
+                now: dt.datetime | None = None,
+                lock_timeout_sec: float | None = None,
                 ) -> tuple[sqlite3.Connection, SyncReport]:
     """store を開いて差分 sync を前置し、接続と sync 結果を返す。
 
@@ -689,8 +691,11 @@ def open_synced(transcripts_dir: Path, cache_dir: str | Path | None = None,
     `database is locked` で落ちるため (writer 同士は WAL でも排他)。後続は先行の
     完了を待ってから差分 sync に入る。schema drift 検出時の drop & rebuild
     (`store.connect`) も同じ lock の内側で直列化される。
+
+    `lock_timeout_sec` は lock の待ち上限の注入点 (省略時は `lock.DEFAULT_TIMEOUT_SEC`)。
     """
-    with lock.sync_lock(store_mod.store_path(transcripts_dir, cache_dir)):
+    with lock.sync_lock(store_mod.store_path(transcripts_dir, cache_dir),
+                        timeout_sec=lock_timeout_sec):
         conn = store_mod.connect(transcripts_dir, cache_dir)
         report = sync(conn, Path(transcripts_dir), now=now)
     return conn, report

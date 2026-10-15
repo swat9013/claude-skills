@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS hook_firing (
     exit_code       INTEGER,
     duration_ms     INTEGER,
     timed_out       INTEGER NOT NULL DEFAULT 0,
+    -- #1434: hook を起動した tool 呼び出しの id (`toolUseID`)。1 回の tool 呼び出しで
+    -- 並列に走る hook 群を束ね、hook 段 (GLOSSARY.md) を求める。tool 呼び出しに紐づかない
+    -- event (SessionStart 等) は空文字
+    tool_use_id     TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (file_id, line_no)
 ) WITHOUT ROWID;
 

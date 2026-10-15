@@ -7,11 +7,14 @@ isolation)。形式知識が消費側にコピーされると、同じ record �
 (invocations は unknown、permissions は success) になり、2 mart が矛盾した
 ([#476](https://github.com/swat9013/swat-skills/issues/476))。
 
-本 module が持つのは transcript-walk 系 5 定義 + **repo 識別子の解決** +
+本 module が持つのは jsonl 行の読み取りと共通の小道具 (`_iter_jsonl` / `truncate` /
+`resolve_now` / `USER_REJECT_PATTERNS` / `session_id_of` / `extract_user_text`) +
+**repo 識別子の解決** +
 **tool 実行の outcome 判定** + **slash 呼出しの判定** + **user / assistant 以外の
 record type の正規化** (attachment / system / usage / hook)。permissions の 7 分類は
 base 語彙 (success / error / user-reject / unknown) の refinement として commands 側に
-置き、成否そのものの分岐を再導出させない。
+置き、成否そのものの分岐を再導出させない。lake の folder の走査は持たない
+(store 経由の観測は `store/ingest.py` の `iter_lake_files` が歩く)。
 
 slash 判定 (`parse_slash_invocation` / `is_slash_expansion_record`) を丸ごとここに
 置くのは、outcome と同じ事故が起きていたため。述語が adapter と commands に割れて
@@ -23,7 +26,11 @@ slash 判定 (`parse_slash_invocation` / `is_slash_expansion_record`) を丸ご�
 repo 解決 (`resolve_repo_at`) をここに置くのは、mart を書く `scan_prompts` と
 mart を repo で絞る `select_candidates` が**同一の repo 表現**を出す必要があるため
 (表現がずれると絞り込みが黙って 0 件になる)。一致をテストの assertion ではなく
-呼び先の単一性で構造的に保証する。祖先遡り (消えた worktree の救済) は
+呼び先の単一性で構造的に保証する。解決できない理由まで要る呼び先 (`select_candidates`
+の repo 既定解決) は `resolve_repo_at_with_cause` を使うが、**返す repo 表現は
+`resolve_repo_at` と同じでなければならない** — `resolve_repo_at` は
+`resolve_repo_at_with_cause` の結果から理由を捨てるだけの薄い形にしてあり、解決手順を
+2 つに分けない (分けると入口ごとに表現がずれる)。祖先遡り (消えた worktree の救済) は
 `scan_prompts` 側の観測契約なので昇格させない。
 
 **観測契約 (どの record をどう解釈するか) は tool 側に残す**: extract 層
@@ -95,15 +102,9 @@ def truncate(s: str | None, limit: int) -> str:
     return s[:limit]
 
 
-def git_output(cwd: Path, argv: list[str]) -> str:
-    """`git -C <cwd> <argv>` の stdout。失敗・timeout・git 不在は空文字に潰す。"""
-    return git_output_with_cause(cwd, argv)[0]
-
-
-# 解決不能の理由。`git_output` は両方とも空文字に潰すため、旧来の呼び先
-# (`resolve_repo_at`) では「git が動かせない」と「git は動いたが repo でない」を
-# 区別できなかった (#496 からの繰り越しバグ)。区別が要る呼び先だけ
-# `resolve_repo_at_with_cause` を使う。
+# 解決不能の理由。`resolve_repo_at` は理由を捨てるので「git が動かせない」と
+# 「git は動いたが repo でない」を区別できない (#496 からの繰り越しバグ)。区別が
+# 要る呼び先だけ `resolve_repo_at_with_cause` を使う。
 GIT_UNAVAILABLE = "git_unavailable"
 NOT_A_REPO = "not_a_repo"
 
@@ -163,6 +164,19 @@ def resolve_repo_at_with_cause(dir_path: Path) -> tuple[str | None, str | None]:
         return str(common_path.resolve().parent), None
     except OSError:
         return None, NOT_A_REPO
+
+
+def resolve_repo_of_existing_cwd(cwd: str) -> str | None:
+    """record の cwd から repo を解決する。**cwd が実在するときだけ**解決し、それ以外は None。
+
+    消えた worktree の祖先遡りはしない — それは `scan_prompts` 固有の観測契約で
+    (`marts/prompts/present.resolve_repo`)、共有層へ昇格させない
+    ([ADR 0013](https://github.com/swat9013/swat-skills/blob/main/docs/adr/0013-intra-subsystem-implementation-sharing.md))。
+    """
+    if not cwd:
+        return None
+    path = Path(cwd)
+    return resolve_repo_at(path) if path.is_dir() else None
 
 
 # --- outcome 判定 ------------------------------------------------------------
@@ -400,6 +414,8 @@ class HookFiring:
     duration_ms: int | None
     timed_out: bool
     session_id: str
+    # hook を起動した tool 呼び出しの id。tool に紐づかない event では空文字
+    tool_use_id: str
     timestamp: str
     cwd: str
 
@@ -437,25 +453,10 @@ def hook_firing_of(rec: dict) -> HookFiring | None:
         duration_ms=duration if isinstance(duration, int) else None,
         timed_out=body.get("timedOut") is True,
         session_id=session_id_of(rec),
+        tool_use_id=str(body.get("toolUseID") or ""),
         timestamp=str(rec.get("timestamp") or ""),
         cwd=str(rec.get("cwd") or ""),
     )
-
-
-def stop_hook_durations_of(rec: dict) -> list[int]:
-    """`system.stop_hook_summary` の hookInfos から durationMs を返す。
-
-    実測で hookInfos が持つのは `{command, durationMs}` の 2 key だけで、
-    **hookName も exitCode も無い** — Stop hook の所要時間は観測できるが、どの
-    hook 設定に紐づくかは attachment 側 (`hook_success`) からしか分からない。
-    """
-    if rec.get("type") != "system" or rec.get("subtype") != "stop_hook_summary":
-        return []
-    out: list[int] = []
-    for info in rec.get("hookInfos") or []:
-        if isinstance(info, dict) and isinstance(info.get("durationMs"), int):
-            out.append(info["durationMs"])
-    return out
 
 
 def extract_user_text(content: Any) -> str:
@@ -633,29 +634,3 @@ def _iter_jsonl(fp) -> Iterable[dict]:
             continue
         if isinstance(rec, dict):
             yield rec
-
-
-def walk_transcripts(
-    transcripts_dir: Path,
-    cutoff: dt.datetime,
-) -> Iterable[tuple[str, Path]]:
-    """transcript file を (project_dir_name, path) で yield。
-
-    lake の dir 名エンコードが lossy なため directory 単位のスコープ絞りは
-    行わない。scope は event.cwd で filter する (_filter_events_for_project)。
-    mtime による cutoff filter のみ適用。
-    """
-    if not transcripts_dir.is_dir():
-        return
-    cutoff_ts = cutoff.timestamp()
-    for project_dir in sorted(transcripts_dir.iterdir()):
-        if not project_dir.is_dir():
-            continue
-        for jsonl in sorted(project_dir.glob("*.jsonl")):
-            try:
-                mtime = jsonl.stat().st_mtime
-            except OSError:
-                continue
-            if mtime < cutoff_ts:
-                continue
-            yield project_dir.name, jsonl

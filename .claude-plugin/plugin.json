@@ -7,12 +7,6 @@
   "homepage": "https://github.com/swat9013/claude-skills",
   "repository": "https://github.com/swat9013/claude-skills",
   "license": "MIT",
-  "dependencies": [
-    {
-      "name": "mattpocock-skills",
-      "marketplace": "claude-plugins-official"
-    }
-  ],
   "skills": [
     "./skills/util/setup",
     "./skills/steering/inventory-claude-md",
@@ -21,7 +15,9 @@
     "./skills/steering/inventory-skill-mcp",
     "./skills/steering/skill-usage-audit",
     "./skills/steering/write-for-harness",
+    "./skills/steering/compact-skill",
     "./skills/procedure/claude-config-review",
+    "./skills/knowledge/claude-config-reference",
     "./skills/knowledge/dev-env-best-practices",
     "./skills/util/dialogue",
     "./skills/procedure/fitness-function-audit",
@@ -35,18 +31,33 @@
     "./skills/procedure/playbook-skill-creation",
     "./skills/procedure/playbook-test-optimization",
     "./skills/procedure/playbook-test-perf-tuning",
-    "./skills/knowledge/pr-quality",
     "./skills/knowledge/principle-index",
     "./skills/knowledge/python-single-file-script",
     "./skills/knowledge/shell-script",
-    "./skills/procedure/two-axis-review",
+    "./skills/procedure/review-stage",
     "./skills/procedure/frontend-review",
     "./skills/design/ui-design",
     "./skills/design/sud-design",
+    "./skills/design/grill-with-docs",
     "./skills/util/worktree-setup",
     "./skills/util/inventory-launcher",
+    "./skills/util/issue-restructure",
+    "./skills/util/backlog-triage",
     "./skills/util/issue-triage",
     "./skills/util/ready-for-agent-review",
-    "./skills/procedure/stacked-implement"
+    "./skills/procedure/stacked-implement",
+    "./skills/third/domain-modeling",
+    "./skills/third/grilling",
+    "./skills/third/pr",
+    "./skills/third/handoff",
+    "./skills/third/prototype",
+    "./skills/third/research",
+    "./skills/third/setup-matt-pocock-skills",
+    "./skills/third/to-tickets",
+    "./skills/third/wayfinder",
+    "./skills/third/writing-for-agents",
+    "./skills/third/retro",
+    "./skills/third/improve-codebase-architecture",
+    "./skills/third/codebase-design"
   ]
 }

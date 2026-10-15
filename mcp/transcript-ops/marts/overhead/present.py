@@ -46,6 +46,7 @@ from adapter.transcript import (
     TOKEN_ESTIMATOR,
     resolve_now,
     resolve_repo_at,
+    resolve_repo_of_existing_cwd,
 )
 from artifacts import prepare_output_dir
 from marts import load_statements
@@ -321,9 +322,9 @@ def build_compaction_section(observation: OverheadObservation,
 def select_sessions(observation: OverheadObservation, repo: str | None) -> set[str]:
     """観測対象 session。`repo` 指定時は cwd の repo が一致するものだけ。
 
-    repo 解決は cwd が実在するときだけ行う (消えた worktree の祖先遡りは
-    `scan_prompts` 固有の観測契約なので持ち込まない)。解決できない session は
-    repo 絞り込み時には落ちるので、件数を meta に出して silent にしない。
+    解決できない session は repo 絞り込み時には落ちるので、件数を meta に出して
+    silent にしない。cwd → repo は `resolve_repo_of_existing_cwd` で解き、distinct cwd
+    ごとに 1 回だけ呼ぶ。
     """
     all_sessions = set(observation.session_cost) | set(observation.compaction)
     if repo is None:
@@ -333,9 +334,7 @@ def select_sessions(observation: OverheadObservation, repo: str | None) -> set[s
     for session_id in all_sessions:
         cwd = observation.session_cwd.get(session_id, "")
         if cwd not in resolved:
-            path = Path(cwd) if cwd else None
-            resolved[cwd] = (resolve_repo_at(path)
-                             if path is not None and path.is_dir() else None)
+            resolved[cwd] = resolve_repo_of_existing_cwd(cwd)
         if resolved[cwd] == repo:
             selected.add(session_id)
     return selected

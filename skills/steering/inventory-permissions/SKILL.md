@@ -115,7 +115,8 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 
 - `fire_count` が `null` (未観測) の hook は **informational**。permission entry の revoke と違い、hook は「発火条件を満たす操作が窓内に無かっただけ」が常にありうる (null は「発火なし」と「発火したが観測に残らなかった」を区別しない) — 窓内の作業内容 (cwd 分布・tool 実績) と突き合わせて**機会が実在したか**を確かめてから所見を書く
 - `key_collision: true` の unit は fire 回数を**共有値**として扱い、所見にその旨を明記する。単独実績として断定できるのは「fire していない」ことだけ
-- 遅い hook は `duration_ms` の `p95` / `max` / `total` で見る。全 hook の `total` は 1 セッションあたりの待ち時間そのものなので、体感の遅さを裏づける証拠として使える
+- **どの hook が時間を食っているか**は hook 単位の `duration_ms` の `p95` / `max` / `total` で比べる。`total` はその hook が観測窓全体で使った時間の合計で、利用者が待った時間ではない (並列に走る hook の時間が重なる)
+- **利用者が tool 呼び出し 1 回ごとに PreToolUse hook で待った時間**は `pre_tool_use_per_call` で見る。row のうち `all.calls` が最大のもの (通常は Bash) について、`non_global` と `all` の `p50` / `p90` / `max` をレポートの informational に出す。`non_global` は対象 repo / plugin の hook だけの待ちで、棚卸しの所見が手を入れられる範囲を表す。`all` との差は user settings の hook の分
 - **hook の反映先は本 skill の write 対象外**。settings の `hooks` 登録も plugin の `hooks.json` も entry 案までで、実装・配線は別作業として要件文で渡す
 
 ### 3. 高確度候補の抽出とセッション内提案
@@ -155,7 +156,7 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
     - 証拠 (`sample_matched` / `samples` / `follow_ups` を mart から転記)
     - 提案 (1-2 行、証拠に紐づく)
     - 適用手順 (単位別分岐、下表参照)
-3. **informational**: 今回未分類 (母数不足 / 証拠不十分) の一覧、`near_misses` (落選理由つき)、`open_predicates` を満たさないと判断した候補、matcher confidence 別集計
+3. **informational**: 今回未分類 (母数不足 / 証拠不十分) の一覧、`near_misses` (落選理由つき)、`open_predicates` を満たさないと判断した候補、matcher confidence 別集計、tool 呼び出しあたりの PreToolUse hook の所要 (手順 2「hook 観測の読み方」の `pre_tool_use_per_call` の値)
 4. **summary 表**: 番号 × bucket × 対象。「3 と 7 だけ採用」と言える形。**高確度候補 (手順 3) も本表に載せ**、「セッション内提案済み (承認 / 見送り / 保留)」の結果を付記する — レポートは監査証跡として単体で完結させる
 
 **適用手順の単位別分岐** (レポートに埋め込む):
@@ -212,6 +213,11 @@ matcher confidence: exact 105 / approx 14
 
 - Bash(**/*.env) : revoke_candidate の matcher_exact を外した (approx)
 - Bash(gh:*) : revoke_candidate の no_sandbox_pair を外した (excludedCommands と連動)
+
+## informational — PreToolUse hook の所要 / tool 呼び出し (Bash, 12,480 calls)
+
+- non_global: p50 210ms / p90 480ms / max 6,100ms
+- all: p50 230ms / p90 520ms / max 6,100ms
 
 ## summary
 

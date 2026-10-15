@@ -206,6 +206,14 @@ HOOK_OBSERVABILITY = {
         "「fire していない」は主張できるが「n 回動いた」は主張できない",
         "command を持たない attachment (hook_additional_context / hook_system_message) は"
         "hookName でしか引けず、matcher が `*` の設定には帰属しない (observed_unlisted に残る)",
+        "pre_tool_use_per_call は 1 回の tool 呼び出し (toolUseID) ごとに PreToolUse hook の "
+        "durationMs の max を取った分布 (並列に走るので和ではなく max)。PostToolUse は含まない"
+        " — 無出力の PostToolUse hook は attachment を残さないので、1 回分の所要を transcript から"
+        "求められない (hook 段 = Pre + Post の和は lab で測る)。non_global は user settings に"
+        "だけ登録された hook と設定に紐づかない firing を除いた max。"
+        "母集団は main session の transcript だけで、"
+        "subagent の tool 呼び出しは含まない (store は subagents/ 配下を取り込まない — "
+        "store meta の skipped_nested_files)",
     ],
 }
 

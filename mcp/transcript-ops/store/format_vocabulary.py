@@ -22,8 +22,9 @@ from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
-# ingest / adapter が読む on-disk の key 名・type 名・埋め込みタグ。
-# 追加した知識は必ずここへ足す (足し忘れは gate の見逃しになる)。
+# lake (transcript) に現れる on-disk の key 名・type 名・埋め込みタグ。ingest / adapter
+# が今読むかどうかによらない — 読み手が居なくなっても、SQL に出れば生の形式への到達を
+# 示すので消さない。追加した知識は必ずここへ足す (足し忘れは gate の見逃しになる)。
 ON_DISK_NAMES: frozenset[str] = frozenset({
     # record 共通の anchor
     "sessionId", "parentUuid", "isMeta", "isSidechain", "userType",
@@ -35,7 +36,11 @@ ON_DISK_NAMES: frozenset[str] = frozenset({
     "promptSource", "origin", "isCompactSummary", "gitBranch", "version",
     # attachment 本体
     "attachment", "hookName", "hookEvent", "exitCode", "durationMs",
-    "timedOut", "timeoutMs", "hookInfos",
+    "timedOut", "timeoutMs", "toolUseID",
+    # 読まなくなったが lake には現れる名前 (`system.stop_hook_summary` の hookInfos)。
+    # store に projection が無いので、SQL に出たら生の形式へ届こうとしている証拠 —
+    # 使うなら先に ingest へ projection を足す。deny から外さない
+    "hookInfos", "stop_hook_summary",
     "hook_success", "hook_cancelled", "hook_additional_context",
     "hook_system_message",
     "nested_memory", "displayPath", "contentDiffersFromDisk", "globs",
@@ -43,7 +48,7 @@ ON_DISK_NAMES: frozenset[str] = frozenset({
     "readdedNames", "removedNames", "agent_listing_delta", "addedTypes",
     "deferred_tools_delta", "addedLines", "addedBlocks",
     # system record
-    "stop_hook_summary", "compact_boundary", "compactMetadata",
+    "compact_boundary", "compactMetadata",
     "preTokens", "postTokens", "cumulativeDroppedTokens",
     # assistant の token 経済・帰属
     "input_tokens", "output_tokens",

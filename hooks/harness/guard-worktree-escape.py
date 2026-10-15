@@ -11,8 +11,8 @@ cwd 自体が汚染されうるため、cwd だけでは逸脱を判別できな
   - 本体の worktree 隔離 guard が 2.1.222 以降「worktree-isolated session」の main checkout への
     Edit / Bash を止めており、本 hook の deny は約 3.9 万回の起動で 0 件
   - 未確認なのは、`EnterWorktree` / `claude --worktree` / `isolation: "worktree"` を使わずに
-    手で `git worktree add` した worktree で作業する session (外部ツール claude-dispatcher の worker は
-    clone で起動し、セッション内で `git worktree add` した worktree へ移って作業する) を
+    手で `git worktree add` した worktree で作業する session (外部ツール claude-dispatcher の worker は、
+    workflow 定義の hooks で `git worktree add` した workspace を cwd にして起動しうる) を
     本体 guard が isolated と扱うか。扱うと確認できたら本 hook は退役できる
 
 そこで信頼できる唯一の情報源であるメインセッションの cwd を session_id キーの
@@ -50,14 +50,35 @@ fail-posture: **fail-open — ADR 0046 の「guard は原則 fail-closed」に�
 この 3 点が崩れたら (例: 発火条件を絞れる / 守る対象が security 相当になる) posture の
 再評価が要る。原則の適用を免れているのは見落としではなく認定された例外である。
 
-限界: Bash のコマンド文字列内に埋め込まれた main checkout への絶対 path
-(例: `cat /path/to/main/file`) までは検査しない。cwd の照合のみ行う。
+限界:
+  - Bash のコマンド文字列内に埋め込まれた main checkout への絶対 path
+    (例: `cat /path/to/main/file`) までは検査しない。cwd の照合のみ行う
+  - git の位置は git を起動せず `.git` をたどって引く。扱うのは通常の checkout と linked worktree
+    だけで、次の形態は扱わない。どの形態も、git rev-parse で判定していた実装との差分実行で
+    確認済み (#1435):
+      - submodule: super の linked worktree の session から、super の main checkout 配下にある
+        submodule への Edit / Bash は deny。submodule 内の session (linked worktree でない) と、
+        submodule の linked worktree の session (common dir の名前が `.git` でなく main
+        checkout を引けない) は passthrough。git rev-parse の判定と一致
+      - bare repo: bare の中とその linked worktree の session は passthrough (main checkout が
+        無い)。git rev-parse の判定と一致
+      - GIT_DIR 指定 (環境変数): `GIT_DIR` 等の env は読まないので、hook の process に
+        `GIT_DIR` が渡っていても (`GIT_WORK_TREE` の有無とも) cwd から linked worktree を検出し、
+        subagent の main checkout 配下への Edit / Bash を deny しうる。git rev-parse は env を
+        優先して passthrough しており、passthrough に倒す方針から外れる (#1512)。
+        `GIT_COMMON_DIR` 等の他の env は未確認。hook の process にこれらが渡る起動経路が
+        実在するかも未確認
+      - `git init --separate-git-dir` (`.git` が gitdir を指す file。env ではない): gitdir の
+        名前が `.git` でなければ main checkout を引けず passthrough。`.git` と名付けるとその
+        親 dir を main checkout と見なし、実の working tree への操作は passthrough、gitdir の
+        親 dir 配下への操作は deny。どちらも git rev-parse の判定と一致
+  - git の discovery のうち、safe.directory と探索の停止 (GIT_CEILING_DIRECTORIES / filesystem
+    境界) には倣っていない。git rev-parse と食い違いうるが、差分実行は未確認
 """
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -120,46 +141,98 @@ def emit_deny(tool: str, target: str, main_root: str, session_root: str) -> None
     ))
 
 
-def git_rev_parse(cwd: str, flag: str) -> str | None:
+# --- git の位置 (git を起動せずファイルシステムから引く) ----------------
+# hook は tool 呼び出しのたびに走るので、git の subprocess は呼ばない (#1435)。
+# 探索は git の discovery (`git rev-parse` が祖先の `.git` を探す手順) に倣う。
+# 倣っていない差分 (GIT_DIR 等の env / safe.directory / 探索の停止) と扱わない形態は、
+# module docstring の「限界」。
+
+
+def is_git_dir(path: str) -> bool:
+    """path が git dir (HEAD と、common dir 側の objects / refs を持つ) なら True。"""
+    if not os.path.isfile(os.path.join(path, "HEAD")):
+        return False
+    common = common_dir(path)
+    return (os.path.isdir(os.path.join(common, "objects"))
+            and os.path.isdir(os.path.join(common, "refs")))
+
+
+def common_dir(git_dir: str) -> str:
+    """git dir の common dir (realpath)。linked worktree の git dir は `commondir` file で指す。"""
     try:
-        proc = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", flag],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+        with open(os.path.join(git_dir, "commondir"), encoding="utf-8") as f:
+            pointer = f.read().strip()
+    except OSError:
+        return os.path.realpath(git_dir)
+    return os.path.realpath(os.path.join(git_dir, pointer))
+
+
+def gitfile_target(dot_git: str) -> str | None:
+    """`.git` file (`gitdir: <path>`) が指す git dir (realpath)。相対 path は file の置き場基準。
+
+    解析は git に揃える: 先頭が `gitdir: ` でなければ不正、path は末尾の改行 (CR / LF) だけを除く。
+    """
+    try:
+        with open(dot_git, encoding="utf-8") as f:
+            content = f.read()
+    except (OSError, UnicodeDecodeError):
         return None
-    if proc.returncode != 0:
+    if not content.startswith("gitdir: "):
         return None
-    return proc.stdout.strip() or None
+    target = content[len("gitdir: "):].rstrip("\r\n")
+    return os.path.realpath(os.path.join(os.path.dirname(dot_git), target))
+
+
+def git_location(path: str) -> tuple[str | None, str] | None:
+    """path が属する (working tree の root, git dir)。どちらも realpath。
+
+    git dir の内側では root が None (working tree ではない)。git 外・壊れた `.git` file の
+    下は None。`git rev-parse --show-toplevel` / `--absolute-git-dir` が返す値に揃えてある。
+    """
+    if not path or not os.path.isdir(path):
+        return None
+    current = os.path.realpath(path)
+    while True:
+        dot_git = os.path.join(current, ".git")
+        if os.path.isfile(dot_git):
+            git_dir = gitfile_target(dot_git)
+            if git_dir and is_git_dir(git_dir):
+                return current, git_dir
+            return None
+        if os.path.isdir(dot_git) and is_git_dir(dot_git):
+            return current, os.path.realpath(dot_git)
+        if is_git_dir(current):
+            return None, current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
 
 
 def worktree_root(path: str) -> str | None:
-    """path が属する working tree の root (realpath)。git 外なら None。"""
-    if not path or not os.path.isdir(path):
-        return None
-    top = git_rev_parse(path, "--show-toplevel")
-    return os.path.realpath(top) if top else None
+    """path が属する working tree の root (realpath)。git 外・git dir の内側なら None。"""
+    location = git_location(path)
+    return location[0] if location else None
 
 
 def is_linked_worktree(root: str) -> bool:
     """root が linked worktree (git worktree add で作られた副 tree) なら True。"""
-    git_dir = git_rev_parse(root, "--absolute-git-dir")
-    common = git_rev_parse(root, "--git-common-dir")
-    if not git_dir or not common:
+    location = git_location(root)
+    if not location:
         return False
-    common_abs = os.path.realpath(os.path.join(root, common))
-    return os.path.realpath(git_dir) != common_abs
+    git_dir = location[1]
+    return common_dir(git_dir) != git_dir
 
 
 def main_checkout_root(linked_root: str) -> str | None:
     """linked worktree が属する main checkout の root。bare repo 等は None。"""
-    common = git_rev_parse(linked_root, "--git-common-dir")
-    if not common:
+    location = git_location(linked_root)
+    if not location:
         return None
-    common_abs = os.path.realpath(os.path.join(linked_root, common))
-    if os.path.basename(common_abs) != ".git":
+    common = common_dir(location[1])
+    if os.path.basename(common) != ".git":
         return None
-    return os.path.dirname(common_abs)
+    return os.path.dirname(common)
 
 
 def is_under(path: str, root: str) -> bool:
@@ -195,12 +268,19 @@ def write_state(session_id: str, root: str) -> None:
     if not path:
         return
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(root + "\n")
+        if read_state(session_id) == root:
+            # 内容が同じなら書かない (メインセッションは tool 呼び出しのたびに来る)。mtime だけ
+            # 進めて、続いているセッションの状態を TTL 掃除から守る
+            os.utime(path)
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(root + "\n")
+            # 掃除は書いたときだけ走らせ、tool 呼び出しごとの dir 走査をなくす。TTL を
+            # 過ぎた状態は、新しいセッションの SessionStart など内容が変わる記録のときに消える
+            prune_stale_states(os.path.dirname(path))
     except OSError:
         return  # 状態が書けなくても tool 実行は妨げない
-    prune_stale_states(os.path.dirname(path))
 
 
 def prune_stale_states(state_dir: str) -> None:

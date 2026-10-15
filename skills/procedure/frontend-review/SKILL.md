@@ -4,14 +4,14 @@ user-invocable: true
 argument-hint: "[target-html] [target-css]"
 description: >-
   実装済みの HTML/CSS を デザインシステムの規範 (Refactoring UI tactics / WCAG AA /
-  Rams・Nielsen heuristics) に照らして検査する。静的検査 script + 51 項目 self-review で
+  Rams・Nielsen heuristics) に照らして検査する。静的検査 script + 51 項目のチェックリストで
   Red Flag と Green Light を出す。設計ドキュメントの作成と browser 表示検証は対象外。
   Use when「この画面をレビューして」「HTML デザインをレビューして」「実装が規範に沿うか見て」.
 ---
 
 # frontend-review
 
-実装済みのフロントエンド成果物 1 つを、静的検査 script と 51 項目の self-review にかけて洗練度を判定する。**設計判断はしない** — 何の画面があり component が何を持つかは `ui-design` skill が決め、本 skill はその実装が規範に沿うかだけを見る。
+実装済みのフロントエンド成果物 1 つを、静的検査 script と 51 項目のチェックリストにかけて洗練度を判定する。**設計判断はしない** — 何の画面があり component が何を持つかは `ui-design` skill が決め、本 skill はその実装が規範に沿うかだけを見る。
 
 ## 実装中に使う (レビュー前)
 

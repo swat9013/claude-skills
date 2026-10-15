@@ -14,6 +14,7 @@ Why: PR #275 で `Bash(chmod +x:*)` 一律 allow を revert した (commit 08798
 
     そこで chmod 自体を PreToolUse で捕捉し、path prefix で 3 分岐する:
       - allow prefix (本 plugin 配下 / repo scripts / .githooks / hooks) → auto allow
+        (改行で続けた 2 行目を持つ command は除く — #1698)
       - deny prefix (自動発火 path) → deny (reason label 付き)
       - それ以外 → passthrough (既存 ask フローに委ねる)
 
@@ -33,82 +34,26 @@ Registration: hooks/hooks.json PreToolUse / Bash matcher / if: Bash(chmod:*)
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 import shlex
 import subprocess
 import sys
+from typing import NoReturn
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _prelude import (  # noqa: E402
+    allow,
+    continues_on_another_line,
+    decide,
+    deny,
+    hook_name,
+    passthrough,
+    read_payload_or_deny,
+    read_stdin_text,
+    tool_input_text,
+)
 
 DENY_REASON_LABEL = "chmod-x-auto-trigger-path"
-
-
-class _Finished(Exception):
-    """判定が確定したことを main() へ運ぶ。stdout へ書く本文を持つ。
-
-    判定関数が直接 stdout / exit を触らないのは、テストが hook を import して in-process で
-    呼べるようにするため (subprocess 起動を省く)。process 境界に触るのは末尾の wrapper だけ。
-    """
-
-    def __init__(self, stdout_text: str) -> None:
-        super().__init__(stdout_text)
-        self.stdout_text = stdout_text
-
-
-def passthrough() -> None:
-    """判断を出さずに終了する (既存 ask フローに委ねる)。
-
-    判断は出さないが観測痕跡は残す (#587 / ADR 0043)。無出力の exit は transcript に
-    attachment を残さず、棚卸しで「壊れて死んだ guard」と「窓内に出番が無かった guard」が
-    同じ見え方になる。`permissionDecision` を持たない envelope は通常の permission フローへ
-    委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard
-    の一致を見る)。
-    """
-    raise _Finished(
-        '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
-    )
-
-
-def deny_unreadable(failure: str) -> None:
-    """読み取り失敗を deny で確定する (fail-closed / ADR 0046)。
-
-    理由には内訳と hook 名を載せる — 理由の分からない deny は、踏んだ人間が hook 自体を
-    無効化する方向に働くため (#598)。判定 deny (`emit_deny`) とは文言で区別できるように保つ。
-
-    末尾の改行は他の fail-closed 出口 (`_prelude._emit` / sh guard 群の `deny_unreadable`) に
-    揃える。本関数は payload が壊れている経路でしか出ないので、行として完結させておく。
-    """
-    raise _Finished(json.dumps(
-        {"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"payload を読めなかったため chmod を停止した (fail-closed): {failure} "
-                f"[guard-chmod-x.py]"
-            ),
-        }},
-        ensure_ascii=False,
-    ) + "\n")
-
-
-def emit_deny(reason: str) -> None:
-    raise _Finished(json.dumps(
-        {"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": f"guard: {DENY_REASON_LABEL}: {reason}",
-        }},
-        ensure_ascii=False,
-    ))
-
-
-def emit_allow() -> None:
-    raise _Finished(json.dumps(
-        {"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-        }},
-        ensure_ascii=False,
-    ))
 
 
 # --- chmod command parse ----------------------------------------------------
@@ -265,27 +210,11 @@ def classify(path: str, repo_root: str | None, home: str, plugin: str) -> str:
 # --- main -------------------------------------------------------------------
 
 
-def judge(stdin_text: str) -> None:
-    """payload を判定し、確定したら _Finished を送出する (必ず送出して終わる)。"""
-    raw = stdin_text
-    if not raw.strip():
-        deny_unreadable("stdin が空")
-    try:
-        data = json.loads(raw)
-    except (ValueError, TypeError):
-        deny_unreadable("JSON として parse できない")
-    if not isinstance(data, dict):
-        deny_unreadable("payload が object でない")
+def judge(stdin_text: str) -> NoReturn:
+    payload = read_payload_or_deny(stdin_text)
 
-    # `tool_input` の shape 検査は sh guard 群 (`(.tool_input | type) != "object"`) と
-    # `_prelude._parse()` に揃える。旧実装の `data.get("tool_input") or {}` は list / str を
-    # 黙って `{}` へ潰し、以降の判定が空振りしたまま passthrough していた。
-    tool_input = data.get("tool_input")
-    if not isinstance(tool_input, dict):
-        deny_unreadable("tool_input が object でない")
-
-    # command が空 / 不在なのは正常系 (prelude と同じ扱い)。読めているので passthrough。
-    command = str(tool_input.get("command") or "")
+    # command が空 / 不在なのは正常系 (読めている) なので passthrough。
+    command = tool_input_text(payload, "command")
     if not command:
         passthrough()
 
@@ -294,7 +223,10 @@ def judge(stdin_text: str) -> None:
     except ValueError:
         # unbalanced quotes 等でコマンドを tokenize できない = 読み取り失敗。素通しにすると
         # `chmod +x '<自動発火 path>` が無検査で通るので deny する (ADR 0046)。
-        deny_unreadable("コマンドを tokenize できない (quote の対応が取れていない)")
+        deny(
+            "コマンドを tokenize できないため停止した (fail-closed): "
+            f"quote の対応が取れていない [{hook_name()}]"
+        )
     if not tokens:
         passthrough()
 
@@ -306,7 +238,7 @@ def judge(stdin_text: str) -> None:
     if not mode_adds_execute(mode):
         passthrough()
 
-    cwd = str(data.get("cwd") or "")
+    cwd = str(payload.get("cwd") or "")
     repo_root = repo_root_of(cwd)
     home = os.path.expanduser("~")
 
@@ -316,9 +248,9 @@ def judge(stdin_text: str) -> None:
     # deny 優先: 1 つでも deny prefix にヒットしたら deny (原因 path を明示)
     for path, v in zip(resolved, verdicts):
         if v == "deny":
-            emit_deny(
-                f"{path} は自動発火 path 配下 (`.git/hooks` / LaunchAgents / "
-                f"~/.claude/hooks / /etc/cron.* 等) のため +x 禁止"
+            deny(
+                f"guard: {DENY_REASON_LABEL}: {path} は自動発火 path 配下 "
+                f"(`.git/hooks` / LaunchAgents / ~/.claude/hooks / /etc/cron.* 等) のため +x 禁止"
             )
 
     # `-R` は allow prefix でも auto-allow しない (再帰配下の symlink や submodule
@@ -326,23 +258,25 @@ def judge(stdin_text: str) -> None:
     if recursive:
         passthrough()
 
+    # 改行の後の行は別のコマンドとして走るので auto allow しない (#1698)。shlex は改行を語の
+    # 区切りとしか見ず、2 行目の語 (+x した script の起動など) が chmod の path に混ざる。
+    # deny は上で済ませてあるので、外れるのは allow だけ
+    if continues_on_another_line(command):
+        passthrough()
+
     # 全 path が allow prefix にマッチしたときのみ auto allow
     if all(v == "allow" for v in verdicts):
-        emit_allow()
+        allow("chmod +x の対象が全て allow prefix 配下")
 
     passthrough()
 
 
 def main(stdin_text: str) -> tuple[int, str]:
     """hook の純粋な入口。(exit code, stdout 本文) を返す。"""
-    try:
-        judge(stdin_text)
-    except _Finished as finished:
-        return 0, finished.stdout_text
-    raise AssertionError("judge() は必ず _Finished で終わる")
+    return decide(judge, stdin_text)
 
 
 if __name__ == "__main__":
-    exit_code, stdout_text = main(sys.stdin.read())
+    exit_code, stdout_text = main(read_stdin_text())
     sys.stdout.write(stdout_text)
     sys.exit(exit_code)

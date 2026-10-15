@@ -1,0 +1,3 @@
+# Spec 源の issue 本文を取得する
+
+本文の取得手順はレビュー対象 repo の `docs/agents/issue-tracker.md` に従う (tracker と置き場は repo ごとに違う)。その file が無ければ remote の host に合わせて `gh issue view` / `glab issue view` で取り、issue 置き場を `-R <issue 置き場>` で明示する。置き場は、ref が `owner/repo#N` の形ならその repo、`#N` の形ならレビュー対象 repo (remote) とする — `-R` を省くと CLI が clone の remote から repo を推すので、置き場が別 repo のとき同じ番号の別 issue を読む。GitHub では `gh issue view <N> -R <issue 置き場> --json title,body,labels,comments` で本文と全コメントを読む (`--comments` は非 TTY 実行ではコメントだけを出力し、本文が黙って抜ける)。GitLab では `glab issue view <N> -R <issue 置き場> --comments` で本文と全コメントを取り、出力に本文が含まれることを確かめる (glab が非 TTY 実行で本文を落とすかは確かめていない)。本文が欠けていれば、本文を取得できなかったときとして扱う。

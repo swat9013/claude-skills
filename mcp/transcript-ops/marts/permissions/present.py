@@ -548,6 +548,52 @@ def _firing_stats(firings: list[dict]) -> dict:
     }
 
 
+def _per_call_stats(per_call: list[int]) -> dict:
+    return {"calls": len(per_call), "p50": _percentile(per_call, 0.5),
+            "p90": _percentile(per_call, 0.9),
+            "max": max(per_call) if per_call else 0}
+
+
+def _pre_tool_use_per_call(configured: list[dict], firings: list[dict],
+                           command_keys: dict[str, str]) -> list[dict]:
+    """tool 呼び出し 1 回あたりの PreToolUse hook 群の所要を tool ごとに分位点で返す (#1434)。
+
+    同じ tool 呼び出しの hook は並列に走るので、1 回分の所要は durationMs の **max**。
+    PostToolUse を扱わない理由は `contract.HOOK_OBSERVABILITY` の notes。
+    `non_global` は user settings (scope `global`) にだけ登録された hook と、設定に紐づかない
+    firing を除いた max で、repo / plugin が持つ hook の分だけを見る。
+    `command_keys` は firing の command → 照合キーの写像で、`aggregate_hook_activity` が
+    全 firing について 1 回だけ求めたものを受ける (導出を 1 箇所に保つ)。
+    """
+    scopes: dict[str, set[str]] = collections.defaultdict(set)
+    for entry in configured:
+        if entry["hook_event"] == "PreToolUse":
+            scopes[entry["command_key"]].add(entry["scope"])
+    per_call_all: dict[tuple[str, str], int] = {}
+    per_call_repo: dict[tuple[str, str], int] = {}
+    for firing in firings:
+        duration = firing["duration_ms"]
+        if (firing["hook_event"] != "PreToolUse" or duration is None
+                or not firing["tool_use_id"]):
+            continue
+        call = (firing["hook_name"].partition(":")[2], firing["tool_use_id"])
+        per_call_all[call] = max(per_call_all.get(call, 0), duration)
+        owners = scopes.get(command_keys[firing["command"]], set())
+        if owners - {"global"}:
+            per_call_repo[call] = max(per_call_repo.get(call, 0), duration)
+    grouped: dict[str, dict[str, list[int]]] = collections.defaultdict(
+        lambda: {"all": [], "non_global": []})
+    for (tool, _), ms in per_call_all.items():
+        grouped[tool]["all"].append(ms)
+    for (tool, _), ms in per_call_repo.items():
+        grouped[tool]["non_global"].append(ms)
+    rows = [{"tool": tool, "all": _per_call_stats(v["all"]),
+             "non_global": _per_call_stats(v["non_global"])}
+            for tool, v in grouped.items()]
+    rows.sort(key=lambda row: (-row["all"]["calls"], row["tool"]))
+    return rows
+
+
 def aggregate_hook_activity(configured: list[dict], firings: list[dict]) -> dict:
     """設定側の分母 × fire 実績。**bucket は付けない** (判定は LLM 段階)。
 
@@ -627,6 +673,7 @@ def aggregate_hook_activity(configured: list[dict], firings: list[dict]) -> dict
     return {
         "configured": rows,
         "observed_unlisted": unlisted_rows,
+        "pre_tool_use_per_call": _pre_tool_use_per_call(configured, firings, command_keys),
         "totals": {
             "configured_units": len(rows),
             "unobserved_units": sum(1 for r in rows if r["fire_count"] is None),

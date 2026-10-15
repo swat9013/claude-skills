@@ -22,7 +22,7 @@ description: >-
 - `<name>` は設計対象の名前 (kebab-case)。既存ディレクトリと重複したら、それが同じ対象の旧設計か別対象かをユーザーに確かめる — 同じ対象なら「5. 既存設計を更新する」の側
 - 同じ対象の `sud-design` 成果物 (`usecases.md` / `domain.puml`) が既にあれば Read して入力にする。**無くても進める** — ユースケースは本 skill が画面インベントリの段で聞き出す
 
-置き場が決まったら、「2.」「5.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、適用条件が今回の設計に当たる leaf を全部 Read する。以降の手順が `principle-*` を名指ししたら、索引が示す path から Read する — leaf は invoke せず読む。本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
+置き場が決まったら、「2.」「5.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引の読み方に従って今回の設計に当たる leaf を読む。以降の手順が `principle-*` を名指ししたときも、索引の読み方に従う。本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
 
 ## 2. 設計セッションを進める
 
@@ -128,7 +128,7 @@ README / screens.md / navigation.puml / components.md / tokens.md の 5 成果�
 ## 何をしない skill か
 
 - **実装しない**: 設計ドキュメントの完成が終点。実装は呼び出し元のフローに委ねる
-- **実装物を検査しない**: 実装済み HTML/CSS への static 検査と 51 項目 self-review は `frontend-review` skill が持つ
+- **実装物を検査しない**: 実装済み HTML/CSS への static 検査と 51 項目のチェックリストは `frontend-review` skill が持つ
 - **描画の検証をしない**: HTML/CSS の syntax verify や browser 表示検証は呼び出し元のフローに委ねる
 - **ドメインの構造を扱わない**: 境界・ユースケース・entity は `sud-design` skill の対象。本 skill は画面から先
 - **リポジトリ全体の ADR を起票しない**: decision/ からの昇格基準 (artifacts.md) に当たる決定は、対象リポジトリの ADR 運用に従うようユーザーに提案する

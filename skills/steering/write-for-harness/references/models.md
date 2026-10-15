@@ -10,33 +10,42 @@ Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化�
 
 | モデル | ID (執筆時点) | 強み | 主な向き先 |
 |---|---|---|---|
-| Fable 5 | `claude-fable-5` | 最高能力 (frontier)。長時間の自律実行で計画を切り替え・自己チェックできる / vision (図表・スクリーンショットからの構造抽出) | 数時間〜数日規模の agentic タスク / 大規模移行 / 前例のない複雑さ・曖昧さを持つ問題 |
-| Opus 5 | `claude-opus-5` | Fable に迫る推論深度を約半額で。**公式が推す既定の上位選択** | 設計 / 仕様検討 / 多段推論 / 創造的タスク |
-| Sonnet 5 | `claude-sonnet-5` | バランス (速度 × 推論 × コスト) | 通常の実装 / レビュー / 中程度の推論 |
-| Haiku 4.5 | `claude-haiku-4-5-20251001` | 高速 / 低コスト | 機械的判定 / 軽い分類 / 高頻度呼び出し |
+| Fable 5.1 | `claude-fable-5-1` | 最高能力 (frontier)。長時間の自律実行で計画を切り替え・自己チェックできる / vision (図表・スクリーンショットからの構造抽出) | 数時間〜数日規模の agentic タスク / 大規模移行 / 前例のない複雑さ・曖昧さを持つ問題 |
+| Opus 5.5 | `claude-opus-5-5` | Fable に迫る推論深度を Fable の 4 割ほどの単価で。**公式が推す既定の上位選択** | 設計 / 仕様検討 / 多段推論 / 創造的タスク |
+| Sonnet 5.5 | `claude-sonnet-5-5` | バランス (速度 × 推論 × コスト) | 通常の実装 / レビュー / 中程度の推論 |
+| Haiku 5.5 | `claude-haiku-5-5` | 最速 / 最低単価 | 分類 / 抽出 / routing / 大量・低レイテンシの subagent 作業 |
 
-**単価の段差** (選定判断に効くのは絶対額でなく比): **Fable ≒ Opus × 2** (2026-07 時点の公式 pricing)。以下は 1 段下がるごとにおおむね 2〜4 倍安くなる。絶対額は改定されるので本表に書かない ([sources](../../../procedure/claude-config-review/references/sources.md) 経由で確認する)。
+**単価の段差** (選定判断に効くのは絶対額でなく比): **Fable ≒ Opus × 2.5、Opus ≒ Sonnet × 2、Sonnet ≒ Haiku × 20** (2026-10 時点の公式 pricing)。Haiku 5.5 だけは prompt の長さで単価が変わり、100k token を超える prompt では Sonnet との差が 4 倍まで縮む — 長い入力を読ませる仕事は、Haiku に下ろしても安くなる幅が小さい。絶対額は改定されるので本表に書かない ([sources](../../../knowledge/claude-config-reference/references/sources.md) 経由で確認する)。
 
 **context window / max output は Fable と Opus で同等** (1M / 128k)。両者の差は「扱える長さの上限」ではなく、能力と単価にある — 長い入力を読ませたいだけなら Fable に上げる理由にならない。
 
-モデル ID は変更されうる。最新 ID は `claude-code-guide` subagent で確認する ([sources](../../../procedure/claude-config-review/references/sources.md))。本節と以降の特性・使い分けは 2026-07-30 に公式一次情報 (anthropic.com のモデル発表 / platform.claude.com の choosing-a-model・pricing・effort・prompting ガイド) で確認した。
+モデル ID は変更されうる。最新 ID は `claude-code-guide` subagent で確認する ([sources](../../../knowledge/claude-config-reference/references/sources.md))。本節と以降の特性・使い分けは 2026-07-30 に公式一次情報 (anthropic.com のモデル発表 / platform.claude.com の choosing-a-model・pricing・effort・prompting ガイド) で確認し、Fable 5.1 / Opus 5.5 の行は 2026-09-29 に公式の migration guide / prompting ガイドで確認した。Sonnet 5.5 / Haiku 5.5 の行と単価比は 2026-10-08 に公式の models overview・pricing・model-config で確認した (両モデルの prompting ガイドの差分は、まだ [models/](./models/) に起こしていない)。
+
+## 文面の基準モデル
+
+指示文をどのモデルに合わせて書くかの基準。本書は基本的に「どのモデルを選ぶか」を扱うが、この基準はモデル ID の表と同時に動くので本書に置く。**現在は Opus 5.5** (差分は [models/opus-5-5.md](./models/opus-5-5.md))。
+
+**対象モデルの決め方** (write-for-harness の各所はここを引く): 実行モデルを宣言している指示文 (skill の `model:` / agent 定義の `model:` や Agent tool の `model` 引数で指名する subagent への依頼文) はそのモデル。宣言の無い指示文 (`model:` 未指定の skill / CLAUDE.md / rules / hook 注入文) は文面の基準モデル。`opus` / `sonnet` のような alias は、解決先のモデル (`claude-code-guide` で確かめる) に合わせる。
+
+基準は常に最新の Opus に置く。ただし移すのは、新しい Opus の差分 reference を [models/](./models/) に新設するのと同じ変更で行う — 差分の無いモデルを基準にすると、そのモデル固有の対策が空白のまま文面が書かれる。
 
 ## モデル別の向き先と避ける帯
 
 梯子は **haiku → sonnet → opus → fable の 4 段**。既定は sonnet、深い推論が要るなら opus、opus でも届かない規模・曖昧さに限って fable。1 段ずつ上げ、上げる根拠 (下位で何が落ちるか) を言えないなら上げない。
 
-**prompt 本文の書き方 (文面) の正本は [writing.md](./writing.md)** — 共通原則をそこに、Fable 5 / Opus 5 / Sonnet 5 の差分を [models/](./models/) の 3 本に置いた。本書は「どのモデルを選ぶか」に効く特性だけを扱い、文面の規則は書かない (二重管理を避ける)。
+**prompt 本文の書き方 (文面) の正本は [writing.md](./writing.md)** — 共通原則をそこに、モデル別の差分を [models/](./models/) に置いた。本書は「どのモデルを選ぶか」に効く特性 (と上の文面の基準モデル) だけを扱い、文面の規則は書かない (二重管理を避ける)。
 
 ### Fable
 
-- **thinking は常時 on** (無効化不可)。深さは `effort` で制御する → 「thinking budget の使いどころ」。
-- **Opus 向け prompt をそのまま流用できない**: 上げるときは既存 prompt / skill の文面監査がコストとして付く (監査観点は [models/fable-5.md](./models/fable-5.md))。互換範囲は公式が明示しておらず、それ以外は実測で確かめる。
-- **避ける**: 短時間で終わる定型作業。単価が Opus の約 2 倍で、差が出るのは長時間・高曖昧性の帯に限られる。
+- **thinking は常時 on** (無効化不可)。深さは `effort` で制御する → 「effort の使いどころ」。
+- **Opus 向け prompt をそのまま流用できない**: 上げるときは既存 prompt / skill の文面監査がコストとして付く (監査観点は [models/fable-5.md](./models/fable-5.md) と [models/fable-5-1.md](./models/fable-5-1.md))。互換範囲は公式が明示しておらず、それ以外は実測で確かめる。
+- **避ける**: 短時間で終わる定型作業。単価が Opus の約 2.5 倍で、差が出るのは長時間・高曖昧性の帯に限られる。ただし Fable 5.1 は `low` effort でもタスク当たりのコストで Opus / Sonnet に匹敵することが多いので、下位モデルを高い effort で回す案と比べる。
 
 ### Opus
 
+- **thinking は常時 on** (Opus 5.5。無効化不可)。深さは `effort` で制御し、既定は `medium` → 「effort の使いどころ」。
 - **長い文脈を活かす**: 関連ファイル群を Read したうえで整合性を取らせるタスクが向く。
-- **迷ったときの上位選択はここ**: 公式も「不確実ならまず Opus」と位置づける。ベンチマークによっては Opus が Fable の最良結果を約 1/3 のコストで上回る。
+- **迷ったときの上位選択はここ**: 公式も「不確実ならまず Opus」と位置づける。ベンチマークによっては Opus が Fable の最良結果を約 1/3 のコストで上回る (Opus 5 / Fable 5 の世代で確認)。
 - **避ける**: 下方向は単純な穴埋めや lint チェックだけのタスク (コスト過剰)。上方向は数時間〜数日の自律実行や前例のない複雑さ (Fable の領分であり、Opus に投げても計画の切り替えが続かない)。
 
 ### Sonnet
@@ -46,7 +55,8 @@ Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化�
 
 ### Haiku
 
-- **単純指示 + チェックリスト + 厳密な出力フォーマット**が最も効く (公式のモデル別 prompting ガイドが存在しない帯なので、haiku の文面要点はここが正本)。
+- **単純指示 + チェックリスト + 厳密な出力フォーマット**が最も効く (Haiku 5.5 には公式のモデル別 prompting ガイドがあるが、差分 reference は [models/](./models/) にまだ無いので、haiku の文面要点は当面ここが正本)。
+- **`low` effort は長い agent prompt で早期停止しやすい**: 検索の省略・確認の省略・作業途中での停止が起きる。検索や複数手順を伴う subagent は `medium` に置く。
 - **推論誘導テンプレートは逆効果**: 「まず考えてから」「複数案を出して」のような思考誘導は、応答時間とコストを悪化させる割に効果が薄い。
 - 1 段の判定 / 分類 / 抽出に絞る。複雑になりそうなら sonnet に上げる (梯子は 1 段ずつ。haiku から直接 opus / fable へ飛ばさない)。
 
@@ -58,9 +68,10 @@ Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化�
 |---|---|---|
 | 数時間〜数日の自律実行 / 大規模移行 / 前例のない曖昧さ | fable | 長時間の計画切り替え・部分委譲・自己チェックが前提。ここだけが opus で届かない帯 |
 | 下位で読み違えた図表・画面の再挑戦 | fable | vision 精度 (図から数値を正確に読む / 画面からソースを再構成する水準)。ただし opus が落ちる証拠を得てから上げる — 画像を扱うだけでは根拠にならない |
-| 仕様検討 / アーキテクチャ判断 | opus | 推論深度。低頻度 × 高価値で総コスト許容。fable に迫る性能を約半額で出す |
+| 仕様検討 / アーキテクチャ判断 | opus | 推論深度。低頻度 × 高価値で総コスト許容。fable に迫る性能を fable の 4 割ほどの単価で出す |
 | 創造的設計 / 複数案比較 | opus | 思考の幅 |
-| 実装 / 通常レビュー | sonnet | バランス。デフォルト選択 |
+| 単発の実装 / 通常レビュー | sonnet | バランス。デフォルト選択 |
+| 親セッションの実装を並列に分け持つ (依存が 1 本の鎖になる実装) | `inherit` | 分担先だけ下位モデルにすると、親の判断を前提に続ける工程で品質が落ちる。呼び出し元と同じ深さに揃える ([agent 定義](./components/agent.md) の `model: inherit`) |
 | コードフォーマット判定 / 軽い分類 | haiku | 高速・低コスト。高頻度呼び出しでも採算合う |
 | 大量ファイルの構造的検査 (機械的) | haiku | 並列・反復で上位モデルはコスト過剰 |
 
@@ -68,14 +79,16 @@ Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化�
 
 skill 単位で `model:` を固定するときは「最も負荷が高いケース」に合わせる。例: 通常は sonnet で十分でも、エッジケースで opus 級の判断が要るなら opus を指定する。梯子の天井は fable だが、1 段上げるコストは単価差そのものなので、上げる根拠を書けないなら上げない。
 
-## thinking budget の使いどころ
+## effort の使いどころ
 
-- **厚く** (extended thinking 有効): 仕様検討 / 設計判断 / 複雑な debug。
-- **薄く** (デフォルト): 機械的タスク / 既定パターンの実装 / 1 段判定。
+思考の深さは `effort` で制御する。手動の thinking budget は fable / opus / sonnet で受け付けられず、Haiku 5.5 も思考量の制御は effort に移った。
 
-extended thinking は fable / opus / sonnet で意味が大きく、haiku では費用対効果が低い。
+- **上げる**: 仕様検討 / 設計判断 / 複雑な debug。
+- **下げる** (`low` / `medium`): 機械的タスク / 既定パターンの実装 / 1 段判定。
 
-fable は例外で **thinking を無効化できない** (adaptive thinking が常時 on)。深さは `effort` で調整する。「thinking を切って安く回す」が fable では選択肢にならないので、薄く回したい用途なら model 自体を 1 段下げる。
+既定の段はモデルで違う (Claude Code では Opus 5.5 / Sonnet 5.5 / Haiku 5.5 が `medium`、それ以外は `high`。API の既定とは一致しないモデルがある) ので、skill の `effort:` や agent 定義の `effort:` で明示する。Haiku 5.5 は 5 段すべてに対応するが、深い推論を任せる帯ではない。
+
+fable・Opus 5.5・Sonnet 5.5 は **thinking を無効化できない** (adaptive thinking が常時 on。Haiku 5.5 は無効化を受け付ける)。「thinking を切って安く回す」は選択肢にならないので、浅く回したいなら effort を下げ、それでも重いなら model を 1 段下げる。
 
 ## コンテキスト管理 (Inferential コンポーネントの設計制約)
 
@@ -120,22 +133,23 @@ token 数の増加に伴い signal-to-noise 比が下がり、関連情報が他
 
 - **haiku に多段推論を強要**: 「step by step で考えて」「複数案を比較して」を haiku に流すと、応答が冗長になり推論精度も上がらない。
 - **上位モデルに rote な lint チェックだけさせる**: コスト過剰。haiku か sonnet で十分な作業に opus / fable を使わない。
-- **「上位ほど良い」で fable を既定にする**: fable は opus の約 2 倍単価で、差が出るのは長時間・高曖昧性の帯に限られる。上位側の既定は opus に置き、fable は帯を名指しできるときだけ選ぶ。
-- **モデル ID をハードコードして放置**: skill の `model:` に書いた ID が deprecated になっても気付かない。定期的に `claude-code-guide` で確認する ([sources](../../../procedure/claude-config-review/references/sources.md))。
-- **プロンプトと指定モデルのミスマッチ**: opus 用に書いた多段推論プロンプトを haiku モデルで動かしても効かない。逆に opus 向けの推論誘導を fable にそのまま流すと refusal を踏む。本文と `model:` は常にペアで設計する (文面側の規則は [writing](./writing.md))。
+- **「上位ほど良い」で fable を既定にする**: fable は opus の約 2.5 倍単価で、差が出るのは長時間・高曖昧性の帯に限られる。上位側の既定は opus に置き、fable は帯を名指しできるときだけ選ぶ。
+- **モデル ID をハードコードして放置**: skill の `model:` に書いた ID が deprecated になっても気付かない。定期的に `claude-code-guide` で確認する ([sources](../../../knowledge/claude-config-reference/references/sources.md))。
+- **プロンプトと指定モデルのミスマッチ**: opus 用に書いた多段推論プロンプトを haiku モデルで動かしても効かない。逆に推論を本文に書き出させる誘導を fable / Opus 5.5 にそのまま流すと refusal を踏む。本文と `model:` は常にペアで設計する (文面側の規則は [writing](./writing.md))。
 
 ## 更新トリガー
 
 以下のいずれかが発生したら本ドキュメントを更新する。
 
 - 新モデルの発表 (世代が上がったら本表の ID を差し替える。ID 一覧は本書が唯一の正本なので他 doc の追随は不要)
-- **tier の増減** (既存の上位/下位に新しい段が入る)。この場合は ID 差し替えでは済まず、「モデル別 prompt 設計指針」「`model:` 選定基準」「thinking budget」「アンチパターン」の各節に書かれた**梯子の記述をすべて組み替える**。特性が未確認のまま一覧行だけ足すのは未更新と同義 (2026-07 の Fable 5 追加で踏んだ穴)
+- **tier の増減** (既存の上位/下位に新しい段が入る)。この場合は ID 差し替えでは済まず、「モデル別の向き先と避ける帯」「`model:` 選定基準」「effort の使いどころ」「アンチパターン」の各節に書かれた**梯子の記述をすべて組み替える**。特性が未確認のまま一覧行だけ足すのは未更新と同義
+- 新しい Opus の差分 reference を [models/](./models/) に新設したとき (「文面の基準モデル」をそのモデルへ移す)
 - 既存モデルの ID 変更
 - 既存モデルの deprecation 通知
 - 公式 prompt engineering ガイドの大きな更新 (文面の正本は [writing.md](./writing.md) 側なので、本書と対で見直す)
 - Long-context 挙動 (Lost in the Middle / context dilution 等) に関する主要研究 / ベンダー doc の更新
 
-確認方法: `claude-code-guide` subagent → 不足あれば `web-research` ([sources](../../../procedure/claude-config-review/references/sources.md))。
+確認方法: [sources](../../../knowledge/claude-config-reference/references/sources.md) の「エスカレーション戦略」の順で当たる。
 
 ## 参照
 

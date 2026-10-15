@@ -51,9 +51,12 @@ HOOK_CURRENT = re.compile(r"^claude: current", re.MULTILINE)
 
 SUBPROCESS_TIMEOUT_SEC = 60
 
-# 起動後に agent が検出されるまでの poll (screen manifest の検出に数秒要る)
-POLL_ATTEMPTS = 5
+# 起動後に agent が検出されるまで待つ上限 (screen manifest の検出に数秒要る)。
+# この秒数を POLL_INTERVAL_SEC 刻みで poll する (どちらも整数秒で持つ)。刻みが上限を割り切らないと
+# poll の合計が上限から外れる。割り切れることは test (上限ちょうどで待つ / 経過時間が上限に一致する) が見る
+AGENT_WAIT_LIMIT_SEC = 10
 POLL_INTERVAL_SEC = 2
+POLL_ATTEMPTS = AGENT_WAIT_LIMIT_SEC // POLL_INTERVAL_SEC
 
 
 class LauncherError(Exception):

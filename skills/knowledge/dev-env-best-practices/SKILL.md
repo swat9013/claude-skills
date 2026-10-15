@@ -35,7 +35,9 @@ staleness 判定はこの表の「最終取得日」を single source とする�
 |---|---|---|
 | Node.js / TypeScript | `references/node-dev-env-best-practices.md` | 2026-06-08 |
 | Python | `references/python-dev-env-best-practices.md` | 2026-06-08 |
+| Go | `references/go-dev-env-best-practices.md` | 2026-09-28 |
 | Android (on Mac) | `references/android-dev-env-on-mac.md` | 2026-06-11 |
+| Google Apps Script (clasp + TypeScript) | `references/gas-clasp-dev-env-best-practices.md` | 2026-10-02 |
 
 ## フロー
 
@@ -48,4 +50,4 @@ reference と index の書き込み先は plugin の上流 repo `swat9013/swat-s
 
 ## 調査の委譲
 
-新規・更新調査は `mattpocock-skills` plugin の `research` skill に委譲する。観点リストを調査観点として埋め込んだ調査依頼文を組み立ててから渡す (依頼文に観点を入れないと、調査軸がこの skill の網羅性基準からずれる)。同 skill は model からも起動できるので、Skill tool 経由で直接呼んでよい。
+新規・更新調査は `swat-skills:research` skill に委譲する。観点リストを調査観点として埋め込んだ調査依頼文を組み立ててから渡す (依頼文に観点を入れないと、調査軸がこの skill の網羅性基準からずれる)。同 skill は model からも起動できるので、Skill tool 経由で直接呼んでよい。

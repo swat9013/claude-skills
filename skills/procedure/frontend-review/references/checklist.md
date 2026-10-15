@@ -1,6 +1,6 @@
 # Review Checklist (51 項目)
 
-frontend-review で使う self-review checklist。
+frontend-review で使う 51 項目のチェックリスト。
 
 - 判定者は `script` (review-static.py で自動検出) か `Claude` (主観判定) のいずれか
 - Red Flag が 1 件でもあれば「未達」判定 → 必ず修正

@@ -10,22 +10,34 @@ curl は settings の ask 対象 (外部ホストへのデータ持ち出し / �
   - curl の出力ファイル (-o 等) は /dev/null / stdout / tmp ルート配下のみ
   - 接続先を再マップ・外部注入しうる flag (--resolve / --connect-to / -K) を含まない
   - shell リダイレクト / subshell / background を含まない
+  - 改行で続けた 2 行目を持たない (`_prelude.continues_on_another_line`)
 
 fail-safe: 静的に安全と確証できないケースは一切 allow せず exit 0 (出力なし) で素通しし、
 settings の ask に委ねる。guard-* の deny は本 hook 追加後も従来どおり効く
 (deny > allow のため compound 内の危険操作は別 hook がブロックする)。
 
-allow-tmp-delete.sh と同じ「確証なき場合は素通し」方針。shell tokenize と URL 解析の
+allow-tmp-delete.py と同じ「確証なき場合は素通し」方針。shell tokenize と URL 解析の
 正確性のため sh ではなく python3 (shlex / urllib / ipaddress) で実装する。
 """
 from __future__ import annotations
 
 import ipaddress
-import json
 import os
 import shlex
 import sys
+from typing import NoReturn
 from urllib.parse import urlsplit
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _prelude import (  # noqa: E402
+    allow,
+    continues_on_another_line,
+    decide,
+    passthrough,
+    read_payload_or_pass,
+    read_stdin_text,
+    tool_input_text,
+)
 
 # --- サブコマンド境界 / その他 punctuation ---
 SPLIT_OPS = {";", "&&", "||", "|"}
@@ -73,42 +85,6 @@ LONG_OTHER_VALUE = {
 }
 
 LOOPBACK_EXTRA = {"0.0.0.0", "::", "[::]"}
-
-
-class _Finished(Exception):
-    """判定が確定したことを main() へ運ぶ。stdout へ書く本文を持つ。
-
-    判定関数が直接 stdout / exit を触らないのは、テストが hook を import して in-process で
-    呼べるようにするため (subprocess 起動を省く)。process 境界に触るのは末尾の wrapper だけ。
-    """
-
-    def __init__(self, stdout_text: str) -> None:
-        super().__init__(stdout_text)
-        self.stdout_text = stdout_text
-
-
-def passthrough() -> None:
-    """判定を settings (ask) に委ねる。
-
-    判断は出さないが観測痕跡は残す (#587 / ADR 0043)。無出力の exit は transcript に
-    attachment を残さず、棚卸しで「壊れて死んだ hook」と「窓内に出番が無かった hook」が
-    同じ見え方になる。`permissionDecision` を持たない envelope は通常の permission フローへ
-    委ねるので、判断の意味論は無出力のときと変わらない。逐語で 1 行に保つ (テストが全 guard
-    の一致を見る)。
-    """
-    raise _Finished(
-        '{"hookSpecificOutput":{"hookEventName":"PreToolUse"},"suppressOutput":true}\n'
-    )
-
-
-def emit_allow() -> None:
-    raise _Finished(json.dumps(
-        {"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": "loopback 宛 curl を自動許可",
-        }},
-    ))
 
 
 def is_loopback(host: str | None) -> bool:
@@ -245,14 +221,14 @@ def build_out_roots(cwd: str) -> list[str]:
     return roots
 
 
-def judge(stdin_text: str) -> None:
-    """payload を判定し、確定したら _Finished を送出する (必ず送出して終わる)。"""
-    try:
-        data = json.loads(stdin_text)
-    except (ValueError, TypeError):
-        passthrough()
-    command = (data.get("tool_input") or {}).get("command") or ""
+def judge(stdin_text: str) -> NoReturn:
+    payload = read_payload_or_pass(stdin_text)
+    command = tool_input_text(payload, "command")
     if not command or "curl" not in command:
+        passthrough()
+    # 2 行目は別のコマンドとして走るので allow しない (#1698)。shlex は改行を語の区切りとしか
+    # 見ず、2 行目の語が 1 行目の curl の operand に混ざるので、下の分割では捉えられない
+    if continues_on_another_line(command):
         passthrough()
 
     lex = shlex.shlex(command, posix=True, punctuation_chars=PUNCT)
@@ -263,7 +239,7 @@ def judge(stdin_text: str) -> None:
     except ValueError:
         passthrough()  # クォート不整合等 → 確証なし
 
-    out_roots = build_out_roots(data.get("cwd") or "")
+    out_roots = build_out_roots(str(payload.get("cwd") or ""))
 
     # punctuation でサブコマンドへ分割。SPLIT_OPS 以外の punctuation は bail。
     segments: list[list[str]] = []
@@ -292,20 +268,16 @@ def judge(stdin_text: str) -> None:
                 passthrough()
 
     if curl_seen:
-        emit_allow()
+        allow("loopback 宛 curl を自動許可")
     passthrough()
 
 
 def main(stdin_text: str) -> tuple[int, str]:
     """hook の純粋な入口。(exit code, stdout 本文) を返す。"""
-    try:
-        judge(stdin_text)
-    except _Finished as finished:
-        return 0, finished.stdout_text
-    raise AssertionError("judge() は必ず _Finished で終わる")
+    return decide(judge, stdin_text)
 
 
 if __name__ == "__main__":
-    exit_code, stdout_text = main(sys.stdin.read())
+    exit_code, stdout_text = main(read_stdin_text())
     sys.stdout.write(stdout_text)
     sys.exit(exit_code)

@@ -22,38 +22,34 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.py",
             "if": "Bash(bash:*)"
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.py",
             "if": "Bash(sh:*)"
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.py",
             "if": "Bash(zsh:*)"
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-inline-python.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-inline-python.py"
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-pipe-execute.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-pipe-execute.py"
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-destructive.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-destructive.py"
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-rm-force.sh"
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/allow-tmp-delete.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/allow-tmp-delete.py"
           },
           {
             "type": "command",
@@ -68,20 +64,11 @@
         ]
       },
       {
-        "matcher": "WebFetch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-webfetch.sh"
-          }
-        ]
-      },
-      {
         "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/pretooluse-guard-write.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-write.py"
           }
         ]
       },

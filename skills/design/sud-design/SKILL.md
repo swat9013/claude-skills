@@ -20,7 +20,7 @@ description: >-
 - 既定は `docs/design/<name>/`。対象リポジトリに設計ドキュメントの置き場が既にあるならそちらに従う
 - `<name>` は設計対象の名前 (kebab-case)。既存ディレクトリと重複したら、それが同じ対象の旧設計か別対象かをユーザーに確かめる — 同じ対象なら「4. 既存設計を更新する」の側
 
-置き場が決まったら、「2.」「4.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、適用条件が今回の設計に当たる leaf を全部 Read する。以降の手順が `principle-*` を名指ししたら、索引が示す path から Read する — leaf は invoke せず読む。本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
+置き場が決まったら、「2.」「4.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引の読み方に従って今回の設計に当たる leaf を読む。以降の手順が `principle-*` を名指ししたときも、索引の読み方に従う。本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
 
 ## 2. 設計セッションを進める
 

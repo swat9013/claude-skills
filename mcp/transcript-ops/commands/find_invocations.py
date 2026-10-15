@@ -44,11 +44,12 @@ from adapter.transcript import (
     is_slash_expansion_record,
     parse_slash_invocation,
     resolve_now,
-    resolve_repo_at,
+    resolve_repo_of_existing_cwd,
     session_id_of,
     truncate,
 )
 from artifacts import prepare_output_dir
+from store.ingest import iter_lake_files
 
 # --- 定数 --------------------------------------------------------------------
 
@@ -284,15 +285,10 @@ def _command_args(text: str) -> str:
 def resolve_scope(cwd: str) -> tuple[str | None, str]:
     """呼出元の (repo, 環境差の分散キー) を返す。
 
-    repo は cwd が**実在するときだけ** git から解決する。消えた worktree の祖先
-    遡りは `scan_prompts` の観測契約なので持ち込まない ([ADR 0013](https://github.com/swat9013/swat-skills/blob/main/docs/adr/0013-intra-subsystem-implementation-sharing.md))
-    — 代わりに分散キーは `repo or cwd` に倒し、repo 未解決でも別環境の呼出しが
-    1 件も選ばれない事態を避ける。
+    repo は `resolve_repo_of_existing_cwd` で解く。分散キーは `repo or cwd` に倒し、
+    repo 未解決でも別環境の呼出しが 1 件も選ばれない事態を避ける。
     """
-    if not cwd:
-        return None, ""
-    path = Path(cwd)
-    repo = resolve_repo_at(path) if path.is_dir() else None
+    repo = resolve_repo_of_existing_cwd(cwd)
     return repo, repo or cwd
 
 
@@ -401,33 +397,30 @@ def collect(args: argparse.Namespace) -> dict:
     excluded: collections.Counter = collections.Counter()
     scanned = 0
 
-    root = args.transcripts_dir
-    project_dirs = sorted(root.iterdir()) if root.is_dir() else []
-    for project_dir in project_dirs:
-        if not project_dir.is_dir():
+    # lake の走査 (どの file が観測対象か) は store を使う tool と同じ 1 箇所に寄せる。
+    # 写しを持つと観測範囲の変更が片側にしか効かず、監査する file 集合が黙ってずれる
+    for _project_dir, jsonl in iter_lake_files(args.transcripts_dir):
+        scanned += 1
+        invocations, file_excluded, anchor = extract_invocations(jsonl, args.skill)
+        excluded.update(file_excluded)
+        if not invocations:
             continue
-        for jsonl in sorted(project_dir.glob("*.jsonl")):
-            scanned += 1
-            invocations, file_excluded, anchor = extract_invocations(jsonl, args.skill)
-            excluded.update(file_excluded)
-            if not invocations:
-                continue
-            try:
-                mtime = dt.datetime.fromtimestamp(
-                    jsonl.stat().st_mtime, dt.timezone.utc
-                ).isoformat().replace("+00:00", "Z")
-            except OSError:
-                mtime = ""
-            repo, scope_key = resolve_scope(anchor["cwd"])
-            hits.append(TranscriptHit(
-                path=str(jsonl),
-                session_id=anchor["session_id"],
-                cwd=anchor["cwd"],
-                repo=repo,
-                scope_key=scope_key or str(jsonl),
-                mtime=mtime,
-                invocations=sorted(invocations, key=lambda i: (i.timestamp, i.uuid)),
-            ))
+        try:
+            mtime = dt.datetime.fromtimestamp(
+                jsonl.stat().st_mtime, dt.timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+        except OSError:
+            mtime = ""
+        repo, scope_key = resolve_scope(anchor["cwd"])
+        hits.append(TranscriptHit(
+            path=str(jsonl),
+            session_id=anchor["session_id"],
+            cwd=anchor["cwd"],
+            repo=repo,
+            scope_key=scope_key or str(jsonl),
+            mtime=mtime,
+            invocations=sorted(invocations, key=lambda i: (i.timestamp, i.uuid)),
+        ))
 
     selected = select_transcripts(hits, args.limit)
     return build_slice(

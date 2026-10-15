@@ -28,9 +28,9 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 ### 3. CLAUDE.md:78-84  「skill script path 変更時は...」
 - bucket: move-to-path-scoped
 - 証拠: skill/hook 編集時のみ発火する規則。他 file 編集では無関係
-- 提案: `.claude/rules/skill-script-permissions.md` に切り出し、`paths: "skills/**/SKILL.md, settings/settings.local.json"` を宣言
+- 提案: `.claude/rules/skill-script-permissions.md` に切り出し、`paths: "skills/**/SKILL.md, .claude/settings.local.json"` を宣言
 - 適用手順: 新 rules file を作成 + CLAUDE.md の対象行を削除 (or 索引 stub 残置)
-- 推測: `settings/settings.local.json` は `.claude/settings.local.json` とは別 file だが glob 上両方を包含できる
+- 推測: script path の変更は SKILL.md と settings の allow entry を同時に触るので、paths に両方を並べればどちらの編集でも規則が読み込まれる
 
 ### 4. CLAUDE.local.md:11-13  「migration script を流す前に必ず dry-run する」
 - bucket: move-to-path-scoped
@@ -52,16 +52,32 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 - 証拠: 参照先 issue が close 済 (observation.stale_refs)
 - 提案: 削除
 
+### 7. CLAUDE.md:31  「エラーメッセージは読んでから対処する」
+- bucket: delete
+- 証拠: 診断表「既定どおりの行 (no-op)」に当たる / micro-test (1 場面・各 1 回): 場面「テストが失敗した直後に次の手を決める」/ あり: 失敗出力を読んで原因箇所を特定してから修正 / なし: 同じく失敗出力を読んでから修正 → 取る行動が一致 / est_tokens: 12
+- 提案: 削除
+- 適用手順: 対象 file (CLAUDE.md) の該当行を編集
+
 ## merge
 
-### 7. CLAUDE.md:92 / CLAUDE.md:140  「file paths を quote」
+### 8. CLAUDE.md:92 / CLAUDE.md:140  「file paths を quote」
 - bucket: merge
 - 証拠: 双方が同義の規範を重複記述 (observation の該当 2 行を引用)
 - 提案: CLAUDE.md:92 に統合し 140 行目を削除
+- 停止理由: <write-for-harness が返した文を逐語で転記>
+
+## rewrite
+
+### 9. CLAUDE.md:48  「テストを書かずに PR を出さないこと」
+- bucket: rewrite
+- 証拠: 診断表「禁止の形で書かれた規範」に当たる / est_tokens: 18 (estimator: <token_cost.estimator を転記>)
+- 提案: 肯定の形へ書き換え (例: 「PR を出す前に、変更した振る舞いのテストを足す」)
+- 適用手順: 対象 file (CLAUDE.md) の該当行を編集
 
 ## informational
 
 - CLAUDE.md:130  「Revision Policy」— 決定的観測では bucket 割当てなし。用途不明のため人間確認
+- CLAUDE.md:66  「変更は小さく保つ」— no-op の疑い・未検証 (micro-test の上限から外れた)
 
 ## 観測範囲外 (人間確認へ回す)
 
@@ -70,13 +86,15 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 
 ## summary
 
-| # | bucket | 対象 | scope |
-|---|---|---|---|
-| 1 | keep-inline | CLAUDE.md:14-22 | project |
-| 2 | keep-inline | CLAUDE.local.md:8 | project-local |
-| 3 | move-to-path-scoped | CLAUDE.md:78-84 | project |
-| 4 | move-to-path-scoped (共有化) | CLAUDE.local.md:11-13 | project-local → project |
-| 5 | move-to-lint | CLAUDE.md:56 | project |
-| 6 | delete | CLAUDE.md:120 | project |
-| 7 | merge | CLAUDE.md:92 / 140 | project |
+| # | bucket | 対象 | scope | 採否 |
+|---|---|---|---|---|
+| 1 | keep-inline | CLAUDE.md:14-22 | project | - |
+| 2 | keep-inline | CLAUDE.local.md:8 | project-local | - |
+| 3 | move-to-path-scoped | CLAUDE.md:78-84 | project | 反映済み |
+| 4 | move-to-path-scoped (共有化) | CLAUDE.local.md:11-13 | project-local → project | 見送り |
+| 5 | move-to-lint | CLAUDE.md:56 | project | - |
+| 6 | delete | CLAUDE.md:120 | project | 反映済み |
+| 7 | delete | CLAUDE.md:31 | project | 未判定 (打ち切り) |
+| 8 | merge | CLAUDE.md:92 / 140 | project | 承認済み・未反映 |
+| 9 | rewrite | CLAUDE.md:48 | project | 反映済み |
 ```

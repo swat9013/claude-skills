@@ -1,6 +1,6 @@
 """`slice_sessions` tool の実装 (session id 名指しの transcript slice, ADR 0074)。
 
-dispatcher-debrief が dispatcher の `log.jsonl` に載った orchestrator / worker の
+dispatcher-debrief が dispatcher の `log.jsonl` に載った worker の
 session id から transcript を読むための入口。既存 tool は skill 名
 (`find_invocations`) か統計 (`scan_*`) で引くだけで、id を名指しする経路が無かった。
 

@@ -11,8 +11,8 @@ skill は Claude Code が特定タスクに対して引き出すべき手順・�
 - **目的**: 高頻度の意思決定パターン / 仕様暗黙知 / 反復チェックを再利用可能な形で外出しする。
 - **proactive (I/Guide)**: `description` の trigger 語彙から自動起動し、事前に手順をロードする用途。
 - **evaluative (I/Sensor)**: `disable-model-invocation: true` + 手動呼び出し or hook 連動で、行動後に semantic 評価を返す用途。slot 判断の根拠は [architecture](../architecture.md) を参照。
-- **並列実行を伴う skill の実装基盤**: skill 内で複数の skill を並列起動する設計 (例: `observe-and-reflect`) は Agent Teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) を前提とする。Task tool subagent は Skill ツールを invoke できず、`claude -p` は 2026-06-15 以降 subscription の separate monthly credit を消費する。Skill を介さない並列処理 (大量 grep 集計 / ファイル I/O fan-out 等) は引き続き Task tool subagent を使う。判断軸の根拠は 2026-05-27 `observe-and-reflect` PoC。
-- **対象外**: 1 回限りのタスク (skill 化のオーバーヘッドが回収できない)、自動実行 (それは hook の責務 → [hook](../../../../procedure/claude-config-review/references/hook.md))。
+- **並列実行を伴う skill の実装基盤**: Agent tool で立てる subagent は、agent 定義の `tools` が Skill を含む (または `tools` を指定しない) なら Skill tool を invoke でき、`skills:` frontmatter で skill を preload もできる。skill を並列に走らせる設計も、Skill を介さない並列処理 (大量 grep 集計 / ファイル I/O fan-out 等) も subagent で組める。
+- **対象外**: 1 回限りのタスク (skill 化のオーバーヘッドが回収できない)、自動実行 (それは hook の責務 → [hook](../../../../knowledge/claude-config-reference/references/hook.md))。
 
 ## 想定環境
 
@@ -66,14 +66,14 @@ skill を新設・編集する前に確認する。
 - [ ] proactive / evaluative どちらの用途か明確で、`disable-model-invocation` の有無と整合しているか
 - [ ] **周期実行される skill (`/loop` / cron の prompt に置く skill) に `disable-model-invocation: true` を立てていないか** — 立てると 2 周目以降 skill 本文がロードされない
 - [ ] `model:` がタスク負荷と整合か → [models](../models.md) の表で照合
-- [ ] 本文の prompt スタイルが指定モデルに最適か ([writing](../writing.md) が文面規則の正本。共通原則で足りるか、対象モデル確定なら同 skill の references/models/ の差分まで見る)。`model:` 未指定の skill は呼び出し元継承なので Opus 5 を既定と仮定して照合する。haiku は同 skill に reference がなく [models](../models.md) の Haiku 節が正本
+- [ ] 本文の prompt スタイルが対象モデルに最適か ([writing](../writing.md) が文面規則の正本。対象モデルの差分まで見る — 対象モデルの決め方は [models](../models.md) の「文面の基準モデル」)。haiku は同 skill に reference がなく [models](../models.md) の Haiku 節が正本
 - [ ] `allowed-tools` が最小化されているか (× 全 tool / ○ 必要な tool のみ列挙)
+- [ ] 手順が subagent を起こすなら、[agent](./agent.md) の「切り出す条件」「本文と呼び出し元の分担」「起動の仕方」に照らしたか (inline のままにするか切り出すか / Agent tool の `model`・`effort` 引数を渡していないか / 定義の本文を prompt に書き写していないか / 報告を SendMessage で求めていないか)
 - [ ] 配置場所が project-local vs global で妥当か (判断基準はプロジェクト CLAUDE.md / rules 側)
 - [ ] 既存 skill との重複がないか (同様の trigger 語彙を持つ skill との競合)
-- [ ] 並列実行を伴う skill の場合、実装基盤に Agent Teams を選んでいるか (Task tool subagent / `claude -p` を選んでいないか)
 - [ ] 配布 skill (`skills/`) の SKILL.md と `references/` が変更の届け方を指示していないか → 上記「届け方を書かない判定基準」で照合 (`references/` も skill ディレクトリごと配布される)
 - [ ] 本文が参照する references / scripts ファイルは SKILL.md 本文から明示的にリンクされているか (SKILL.md から参照されない補助ファイルは load / 実行されず無視される)
-- [ ] 情報の階層 (何を本文に置き何を references/ へ外出しするか) と重複の刈り込みは `mattpocock-skills:writing-for-agents` の Information hierarchy / Pruning が正本なので、そちらで照合したか
+- [ ] 情報の階層 (何を本文に置き何を references/ へ外出しするか) と重複の刈り込みは `swat-skills:writing-for-agents` の Information hierarchy / Pruning が正本なので、そちらで照合したか
 - [ ] 本文に AC-xxx 等の冗長な acceptance-criteria ラベルを書いていないか (必要なければ排除)
 - [ ] 編集後に type (discipline-enforcing / technique / pattern / reference) を分類し、本文様式 (ルールの列挙 / 原則の列挙) とテスト強度を type から決めたか — 様式の判断軸と micro-test での束縛力確認は [writing](../writing.md) (「本文様式の選び方」「メタ規則」) が正本。discipline-enforcing skill は combined-pressure シナリオで境界遵守を検証する
 
@@ -107,9 +107,9 @@ skill は編集されないまま周囲が動くので、外部への参照は�
 - **skill 内に絶対パスをハードコード**: 別環境で動かない。`~/<dotfiles>/` 形式のチルダ展開や動的解決を使う。
 - **1 回限りのタスクを skill 化**: 再利用されない skill はノイズ。コマンド or プロンプトテンプレートで十分な場合は skill 化しない。
 - **実装の詳細を skill に転記**: エイリアス一覧・キーバインド一覧・関数一覧・プラグイン一覧等、ソースを読めば分かる情報を skill に書かない。冗長で同期メンテコストも生む。記載すべきは「なぜそうなっているか」「どう判断するか」「踏みやすい罠」(設計判断基準 / 非自明な理由 / トラブルシューティング / gotcha) のみ。
-- **`disable-model-invocation: true` skill への委譲**: その skill は model の available skills 一覧に出ず、他 skill 本文に「`<name>` skill に渡す」と書いても Skill tool では起動できない。この skill への委譲は「依頼文を組み立ててユーザーに `/<name> <依頼文>` の実行を提案する」形で書く。逆に model-invocable な skill (`disable-model-invocation` 無し) は、main-loop で実行中の skill が `allowed-tools` に `Skill` を加えれば Skill tool で直接起動できる (実績: `wrapping-up` が `Skill contextual-commits` を起動)。Skill 起動が不可なのは ① subagent (Task tool) からの起動 ② `disable-model-invocation` 先への委譲 の 2 ケースのみで、「skill は skill を起動できない」と一般化しない。
+- **`disable-model-invocation: true` skill への委譲**: その skill は model の available skills 一覧に出ず、他 skill 本文に「`<name>` skill に渡す」と書いても Skill tool では起動できない。この skill への委譲は「依頼文を組み立ててユーザーに `/<name> <依頼文>` の実行を提案する」形で書く。逆に model-invocable な skill (`disable-model-invocation` 無し) は、main-loop で実行中の skill が `allowed-tools` に `Skill` を加えれば Skill tool で直接起動できる (実績: `wrapping-up` が `Skill contextual-commits` を起動)。Skill 起動が不可なのは ① `disable-model-invocation` 先への委譲 ② agent 定義の `tools` / `disallowedTools` で Skill を外した subagent からの起動 の 2 ケースで、「skill は skill を起動できない」と一般化しない。
 
 ## 参照
 
-- 共通: [architecture](../architecture.md) (proactive=I/Guide / evaluative=I/Sensor の slot 配置根拠) / [models](../models.md) (モデル別 prompt 設計指針) / [sources](../../../../procedure/claude-config-review/references/sources.md) (公式仕様の引き方)
-- 公式: Claude Code skills ドキュメント (URL は [sources](../../../../procedure/claude-config-review/references/sources.md) 経由で確認)
+- 共通: [architecture](../architecture.md) (proactive=I/Guide / evaluative=I/Sensor の slot 配置根拠) / [models](../models.md) (モデル選定と文面の基準モデル) / [sources](../../../../knowledge/claude-config-reference/references/sources.md) (公式仕様の引き方)
+- 公式: Claude Code skills ドキュメント (URL は [sources](../../../../knowledge/claude-config-reference/references/sources.md) 経由で確認)

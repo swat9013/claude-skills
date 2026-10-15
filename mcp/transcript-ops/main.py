@@ -81,13 +81,18 @@ INSTRUCTIONS = """\
 
 server = MCPServer(name=SERVER_NAME, version=SERVER_VERSION, instructions=INSTRUCTIONS)
 
-# commands / marts が「予期した失敗」として投げる例外。列挙にない例外は crash として
-# SDK の仕分けに残す (traceback 付き ERROR ログ + LLM には tool 名だけ)。
+# tool が委譲する先が「予期した失敗」として投げる例外 (domain error)。列挙にない
+# 例外は crash として SDK の仕分けに残す (traceback 付き ERROR ログ + LLM には
+# tool 名だけ)。
 # 新しい domain error class を足したらここにも足す — 漏れると message が黙って消える
+# (足し忘れは `tests/test_transcript_server_tools.py` の網羅テストが落とす。どの
+# module を走査するかの正本は同 file の `_domain_error_classes`)
 ANTICIPATED_ERRORS = (
     prompts_mart.RepoScopeUnresolved,
+    overhead_mart.RepoScopeUnresolved,
     sessions_slice.SessionIdsRejected,
     query_mod.QueryRejected,
+    query_mod.QueryFailed,
     SyncLockTimeout,
 )
 
@@ -100,27 +105,25 @@ def tool():
     (SDK 抜きでもテストが走る) ため `ToolError` を投げられず、翻訳はこの配線層に置く。
     潰されると「repo か all_repos を明示せよ」のような**次の一手を含む文言**が LLM に
     届かなくなる。
+
+    async な tool は登録時に拒否する — 同期の wrapper は coroutine を返すだけで、
+    例外は await 側 (try の外) で上がり、翻訳されずに汎用文言へ潰れる。async の
+    tool が要る消費者が現れたら、そのとき async 版の wrapper を足す。
     """
     register = server.tool()
 
     def decorate(fn):
         if inspect.iscoroutinefunction(fn):
+            raise TypeError(
+                f"{fn.__name__}: async な tool は domain error を翻訳できない "
+                "(同期の wrapper しか持たない)")
 
-            @functools.wraps(fn)
-            async def wrapper(*args, **kwargs):
-                try:
-                    return await fn(*args, **kwargs)
-                except ANTICIPATED_ERRORS as exc:
-                    raise ToolError(str(exc)) from exc
-
-        else:
-
-            @functools.wraps(fn)
-            def wrapper(*args, **kwargs):
-                try:
-                    return fn(*args, **kwargs)
-                except ANTICIPATED_ERRORS as exc:
-                    raise ToolError(str(exc)) from exc
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except ANTICIPATED_ERRORS as exc:
+                raise ToolError(str(exc)) from exc
 
         return register(wrapper)
 

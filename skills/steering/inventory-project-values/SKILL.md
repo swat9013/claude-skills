@@ -176,15 +176,14 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 **変更の届け方は実行 project の運用に従う** — 作業ツリーを分けるか・branch を切るか・PR にするかを本 skill は決めない。反映先 repo の規約に従って運ぶ。
 
-**規範文を書く工程は `write-for-harness` に委ねる。** 本 skill の責務は観測・候補化・人間判定と反映先の指定までで、harness ファイルの文面規範を本 skill は持たない。順序は次の 3 段で固定する:
+**規範文を書く工程は `write-for-harness` に委ねる。** 本 skill の責務は観測・候補化・人間判定と反映先の指定までで、harness ファイルの文面規範を本 skill は持たない。invoke の前に `${CLAUDE_SKILL_DIR}/../write-for-harness/references/caller-contract.md` (呼び出し元向けの契約) を Read し、契約が定める事項は契約に従う。順序は次の 2 段で固定する:
 
-1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。** args はその候補の**反映先 path 1 本**で、新規 `.claude/rules/<topic>.md` を起こす候補だけは `新規: rules <目的>` を渡す (まだ存在しない path を渡すと委譲先が対象 file を解決できない)。候補・証拠 anchor・反映 diff 案は同一 context に載ったまま渡るので、args に足す必要はない。5-1 の制約は args へ混ぜず、invoke 直前の同一 turn のテキストで宣言する
-2. **新規 rules を起こした候補は、対象 repo の CLAUDE.md が rules 索引表を持つなら CLAUDE.md を args にもう 1 回 invoke して索引行を足す。** 委譲先は args の file しか書き換えないので、この 1 回を省くと新規 rules が索引に載らないまま反映が終わる
-3. **全候補の反映が済んだら diff を提示する**
+1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。** 候補の反映先 (新規 `.claude/rules/<topic>.md` を含む) を契約の args の形で渡し、5-1 の制約を添える
+2. **全候補の反映が済んだら diff を提示する**
 
 - **反映するのは器が決まった候補だけ。** 器が決まらなかった候補はレポートに器の候補と含意を残すところで止める (「近いから CLAUDE.md に入れておく」は規範の所在を歪める)
 - 採否の説明が要るときは手順 6 のレポート summary 表を使う (再出現回数と証拠 anchor はそこに揃っている)
-- `write-for-harness` が反映を完了せずに終わった候補は、理由を問わず**承認済み・未反映**としてレポートと報告に残す (承認が黙って消えないようにする)。停止の理由と復旧の案内は `write-for-harness` が返した文をそのまま伝え、本 skill では解釈も再記述もしない
+- `write-for-harness` が反映を完了せずに終わった候補は、理由を問わず**承認済み・未反映**としてレポートと報告に残す (承認が黙って消えないようにする)
 
 #### 5-1. invoke 時に文面で添える制約
 
@@ -200,9 +199,9 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (`meta.store` の 0 でない項目。すべて 0 なら「劣化なし」と明記)
 2. **除外の明示**: slice の `meta.excluded` (`below_min_chars` / `other_repo` / `boilerplate`) と `meta.band_histogram` を転記し、「短文帯 N 件・他 repo N 件・定型 N 件を意図的に対象外にした」ことを明記する。`meta.truncated_by_limit` が非 0 ならその件数も出す
 3. **定型一覧**: `boilerplate_forms` を件数付きで転記し、拾い戻した候補があればどれかを書く (拾い戻しゼロならその旨を書く。読んだことが復元できる形にする)
-4. **候補 section** (器の分類別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 規範の言い換え / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / 保留)
+4. **候補 section** (器の分類別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 規範の言い換え / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / 保留)。承認済み・未反映の候補は「停止理由」の行を足し、`write-for-harness` が返した文を逐語で書く
 5. **informational**: 4 発話型のどれにも当てはまらず候補にしなかった slice record と、その理由 + 読了 provenance
-6. **summary 表**: 番号 × 出現回数 × 器の分類 × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形
+6. **summary 表**: 番号 × 出現回数 × 器の分類 × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形。採用した候補の判定結果列には、手順 5 の結果 (反映済み / 承認済み・未反映) を書く
 
 冒頭に**束ね漏れ許容の前提** (3-2) を 1 行入れる。「網羅した一覧」と誤読させない。
 

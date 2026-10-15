@@ -356,7 +356,7 @@ ORDER BY denial_kind, denial_reason_label, ts DESC, seq
 SELECT hf.hook_name AS hook_name, hf.hook_event AS hook_event,
        hf.command AS command,
        hf.exit_code AS exit_code, hf.duration_ms AS duration_ms,
-       hf.timed_out AS timed_out,
+       hf.timed_out AS timed_out, hf.tool_use_id AS tool_use_id,
        r.session_id AS session_id, r.ts AS ts
 FROM hook_firing hf
 JOIN record r ON r.file_id = hf.file_id AND r.line_no = hf.line_no

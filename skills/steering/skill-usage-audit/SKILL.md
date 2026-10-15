@@ -24,7 +24,7 @@ description: 指定 skill の実呼出 transcript を一次証拠に、SKILL.md 
 args に plugin prefix (`swat-skills:` 等) が付いていれば除去し、**配布 skill と repo-local skill の両方**を glob で解決する — `skills/*/<skill-name>/SKILL.md` と `.claude/skills/<skill-name>/SKILL.md` (後者は plugin 配布外の project-local 配置)。解決した repo 相対 path を以降 `<skill-path>` として手順 4 の版差分コマンドにもそのまま渡す (category を決め打ちで組み立て直さない — 実在しない path を `git log` に渡すと空ログになり、版差分確認が silent に skip される)。見つからない場合と、以下のいずれかに該当する場合は、監査対象外である旨を報告して終了する:
 
 - **vendor 配置の skill** (上流 repo から取り込んだもの。上流 diff 最小化のため SKILL.md を編集しない)。swat-skills では `skills/third/` 配下
-- **SKILL.md 単独編集が片肺更新になる skill** — 「正本 → SKILL.md へ蒸留」のような 2 段更新規約を持つもの。swat-skills では判断規則集系 knowledge skill (`pr-quality`) が該当し、内容の改善は `inventory-project-values` の領分
+- **SKILL.md 単独編集が片肺更新になる skill** — 「正本 → SKILL.md へ蒸留」のような 2 段更新規約を持つもの。swat-skills では `principle-index` が該当し (一覧は leaf の frontmatter からの生成物)、直すのは leaf 側
 
 解決した SKILL.md を Read し、以下を checklist 化して user に提示する (提示は報告のみで、承認待ちはしない。完了条件 1 はこの提示を指す):
 
@@ -44,34 +44,24 @@ args に plugin prefix (`swat-skills:` 等) が付いていれば除去し、**�
 - **`meta.total_invocations` が呼出回数、`matched_files` は file 数**。両者を混同しない
 - `transcripts[]` は読む順に並ぶ (scope ごとの最新 1 件を先取り → 残りを mtime 降順)。環境差 (GitHub/GitLab、tracker 等) を確保するための順序なので、上から使う
 - `meta.excluded` は「マーカーは在るが実呼出しではない」hit の内訳。**呼出回数には入らない**。ここが大きいときは監査対象 skill が自分の transcript に頻繁に引用されている (SKILL.md 本文の提示等) というだけで、逸脱の証拠ではない
-- 各 invocation の `channel` (`skill_tool` / `command`) と `args` は手順 3 の subagent に渡す anchor になる。`is_sidechain: true` は subagent 側からの呼出し
+- 各 transcript の `invocations[]` (呼出ごとの `timestamp` / `uuid` / `channel` (`skill_tool` / `command`) / `args` / `is_sidechain`) は、手順 3 の subagent に渡す anchor になる。`is_sidechain: true` は subagent 側からの呼出し
 
 ### 3. 各 transcript の監査 (subagent 並列委譲)
 
-transcript 1 件 = subagent 1 体で並列に委譲する。subagent は Bash / Read を持つ general-purpose 型を **name 付き**で起動する (name が無いと後述の報告催促が送れない)。プロンプトには対象 transcript の**絶対 path**、手順 1 の監査基準 checklist、以下の報告フォーマットを埋め込む:
+transcript 1 件 = subagent 1 体で、`subagent_type: swat-skills:transcript-auditor` を同じ message で並列に起動する。`name` は付けず、Agent tool の `model` / `effort` 引数も渡さない — 報告は各 subagent の最終メッセージで届き、深さは agent 定義が固定している。prompt に渡すのは次の 4 つだけにする:
 
-1. 呼出時の args・実行日時 (transcript 内 timestamp。無ければ file mtime で代用と明記)・状況
-2. 手順ごとの一致 / 逸脱 (逸脱には実行 command・assistant text の引用を証拠として添付)
-3. 責務境界 (手順 1 の制約条件) の逸脱有無
-4. 成功条件 (完了条件) の充足
-5. 手順 1 の監査基準 checklist に無い、新たに観測した落とし穴
-6. 逸脱リスト (severity: high=結果を壊す / medium=仕様不履行だが結果は妥当 / low=軽微) + SKILL.md 改善提案
-7. 工程ごとの消費: step / 工程ごとの所要・起動した subagent 数・token 概算
-8. 手戻り: 同じ作業のやり直し・同じ file の再読・空振りに終わった invoke・待ち合わせだけで進まなかった turn を、証拠つきで列挙する
+- 対象 transcript の**絶対 path**
+- 手順 2 で得たその transcript の `invocations[]` (呼出の anchor)
+- 手順 1 の監査基準 checklist
+- 対象 skill の手順の一覧 — 手順 1 で Read した SKILL.md の手順を番号と見出し (見出しの無い手順は先頭文) で並べたもの。監査 subagent はこれを工程の単位にするので、全 subagent に同じものを渡す (transcript ごとの消費を同じ区切りで突き合わせるため)
 
-**項目 7・8 は逸脱の有無と独立に埋めさせる。** 仕様どおりに走った transcript では消費構造が唯一の改善材料になるので、ここを空で通すと「逸脱ゼロ = 改善なし」で監査が毎回終わる。
+報告の項目・定量値の拾い方・transcript の読み方は agent 定義が持つので、prompt に書き写さない (写すと 2 箇所の指示が食い違ったときにどちらが効くか決まらない)。
 
-定量値の拾い方もプロンプトに書く: 所要は record の `timestamp` の差、subagent 数は subagent 起動の tool_use (`Task` / `Agent`) の数。token は assistant record の `message.usage` から**工程内の `output_tokens` + `input_tokens` + `cache_creation_input_tokens`** を足し、`cache_read_input_tokens` は別掲にする (cache read は同じ context を turn ごとに再計上するので、足し込むと工程の大小が context の長さで決まってしまう)。**値が取れない工程は「計測不能」と書かせる** (欠測を 0 と書くと、消費が無かった工程と区別できなくなる)。監査対象 transcript 1 件の工程を出す機械計測は無いので、項目 7・8 は subagent が transcript から直接拾う。
-
-解析ヒントも渡す: JSONL の構造 (`{type, message: {content}}`)、大 file は grep でアンカー特定 → `sed -n` で周辺読み、圧縮 transcript では tool_use command 本文が欠落するため tool_result から挙動を判定し、逐語引用できない項目は「逐語検証不能」と明記して報告する旨。
-
-**報告の提出方法もプロンプトに書く**: 「上記 8 項目を SendMessage で `<呼出元の name>` 宛に送る」。name 付き subagent は報告本文を送らないまま idle 化しやすく、事前に書かないと催促の往復が発生する。
-
-それでも報告が届かず idle 化したら、SendMessage で提出を要求する (idle 通知は完了報告ではない)。宛先を含む具体形まで書かないと再度 idle 化する事例があるため、催促文にも SendMessage の使用と宛先を明記する。
+`swat-skills:transcript-auditor` の名前が解決しないときは、`general-purpose` で代わりに起こさない — 代わりに起こすと model・effort・tools が呼出元の値へ黙って戻り、指名した深さで監査したように見える。手順 4 以降はすべて監査 subagent の報告に依存するので、次の 3 つを返して終了する: 停止理由 (Agent tool の error が挙げた available agents)・手順 1 の checklist と手順 2 の slice の path・次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから再実行する)。
 
 ### 4. 総合判定
 
-**報告が届いていない transcript を残したまま総合判定に入らない。** 催促しても届かない場合は、その transcript を「報告なし」と明記した上で残りで判定する — 欠落を伏せて完了報告を出すと、遅れて届いた報告の逸脱が報告後の追補になる。
+手順 3 で起動した全 subagent の終了 (完了またはエラー) が届いてから判定に入る。報告を返さずに終わった subagent (エラーで終わった・項目が欠けた・呼出が見つからず監査不能と返した) の transcript は、「報告なし」か欠けた項目を明記した上で残りで判定する — 欠落を伏せると、その transcript の逸脱が無かったことになる。
 
 全報告を突合し、逸脱ごとに原因を 3 分類する:
 
@@ -87,11 +77,11 @@ transcript 1 件 = subagent 1 体で並列に委譲する。subagent は Bash / 
 git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 ```
 
-各 transcript の実行日時 (手順 3 報告の項目 1) と突合して実行時点の版を特定し、旧版準拠の挙動を現行仕様違反と誤判定しない。旧版本文が要るときは `git -C ... show <hash>:<path>` で取得する。log が空 (未 commit の新設 skill 等) なら版差分確認は skip し、現行版のみで評価する。現行版で是正済みの逸脱は「是正の実証」として記録するに留める。
+各 transcript の実行日時 (監査 subagent の報告にある呼出時の実行日時) と突合して実行時点の版を特定し、旧版準拠の挙動を現行仕様違反と誤判定しない。旧版本文が要るときは `git -C ... show <hash>:<path>` で取得する。log が空 (未 commit の新設 skill 等) なら版差分確認は skip し、現行版のみで評価する。現行版で是正済みの逸脱は「是正の実証」として記録するに留める。
 
 #### 最適化候補
 
-逸脱の 3 分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。各報告の項目 7・8 を突合し、次の形に当たる工程を候補にする:
+逸脱の 3 分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。監査 subagent の報告にある工程ごとの消費と手戻りを突合し、次の形に当たる工程を候補にする:
 
 - 指摘数・対象数に比例して subagent が増える委譲
 - 差分に絞れる工程での全量再走査
@@ -109,17 +99,17 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 #### 5-1. `write-for-harness` への委譲
 
-SKILL.md 指示文は Inferential harness なので、**文面規範の Read と検証は `swat-skills:write-for-harness` に委ねる** — 本 skill は規範を持たない。
+SKILL.md 指示文は Inferential harness なので、**文面規範の Read と検証は `swat-skills:write-for-harness` に委ねる** — 本 skill は規範を持たない。invoke の前に `${CLAUDE_SKILL_DIR}/../write-for-harness/references/caller-contract.md` (呼び出し元向けの契約) を Read し、契約が定める事項は契約に従う。
 
-- **args は `<repo-root>/<skill-path>` の絶対 path 1 本**を渡す (手順 1 の `<skill-path>` は repo 相対で、監査セッションの cwd は任意)。args なしだと委譲先が差分から対象を自動検出する経路に落ち、まだ編集していない作業ツリーでは差分が空なので「対象なし」で正常終了して規範が一度も読まれない
-- **invoke と編集は main agent 自身が行う** — 手順 3 の subagent には渡さない (subagent から Skill tool は起動できない)
-- **差分の起草と反映は委譲先が行う。** 本 skill は証拠と下記の制約を渡して結果を受け取る
-- 委譲先が反映を完了せずに終わったら、その改善候補を**判定済み・未反映**として報告フォーマットの 4 に残す。停止の理由と復旧の案内は委譲先が返した文をそのまま伝え、本 skill では解釈も再記述もしない
+- **args の path は `<repo-root>/<skill-path>` の絶対 path にする** (手順 1 の `<skill-path>` は repo 相対で、監査セッションの cwd は任意)。args なしだと委譲先が差分から対象を自動検出する経路に落ち、まだ編集していない作業ツリーでは差分が空なので「対象なし」で正常終了して規範が一度も読まれない
+- **invoke は main agent 自身が行う** — 手順 3 の subagent には渡さない (手順 3 の subagent は transcript 1 件分の証拠しか持たず、採否を縛る手順 4 の総合判定と下記の委譲制約は main agent にしか無い)
+- **差分の起草と反映は委譲先が行う** (委譲先は main agent の context で動く)
+- 委譲先が反映を完了せずに終わったら、その改善候補を**判定済み・未反映**として報告フォーマットの 4 に残す
 
-制約は args へ混ぜず、invoke 直前の同一 turn のテキストで宣言する (委譲先は監査側の制約を知らない):
+invoke の直前に、監査の証拠と次の制約を宣言する (委譲先は監査側の制約を知らない):
 
 - **採るのは監査の証拠に紐づく最小差分だけ。** 委譲先の findings は重要度で絞らず全件出る建て付けなので、監査で観測していない指摘は採らない
-- **構造提案 (`structural_proposals`) は反映しない。** 配置・統廃合は対象 skill の再設計にあたるので、監査報告に載せて別ループへ送る
+- **構造提案 (`structural_proposals`) と、配置を変えるパッチ (外出し・分割) は反映しない。** 配置・統廃合は対象 skill の再設計にあたるので、報告フォーマットの 4 に載せて別ループへ送る
 
 ## 報告フォーマット (完了条件)
 
@@ -128,6 +118,6 @@ SKILL.md 指示文は Inferential harness なので、**文面規範の Read と
 1. 監査基準 (目的 / 成功条件 / 制約) の整理
 2. transcript ごとの判定サマリ表 (環境・判定・主要逸脱・消費 (所要 / subagent 数 / token 概算))
 3. 逸脱リスト (severity・原因分類つき)
-4. 適用した改善の差分 (改善なしの場合はその根拠)
+4. 適用した改善の差分と、反映しなかった案 (構造提案と、委譲先が報告に回したパッチ。改善なしの場合はその根拠)
 5. 最適化候補 (仕様どおりだが高コストな工程。実測値つき。候補が無ければその判断根拠)
 

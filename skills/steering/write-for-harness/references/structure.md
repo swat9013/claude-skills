@@ -8,9 +8,9 @@ write-for-harness の俯瞰 (構造) reviewer として dispatch されたとき
 
 構造レビューが扱うのは cross-component の 3 領域のみ:
 
-- **配置**: その規制・知識がいまの層 (skill / hook / CLAUDE.md / settings / rules) にあるべきか、別の層へ移すべきか
-- **統廃合**: skill / rules の分割・統合。重複した正本の一本化
-- **統治構造**: その規制を guide (事前) と sensor (事後)、Inferential (散文規範) と Computational (hook / settings / linter) のどちらで強制すべきか
+- **配置**: その規制・知識がいまの層 (skill / hook / CLAUDE.md / settings / rules / agent) にあるべきか、別の層へ移すべきか
+- **統廃合**: skill / rules / agent 定義の分割・統合。重複した正本の一本化
+- **統治構造**: その規制を guide (事前) と sensor (事後)、Inferential (散文規範) と Computational (hook / settings / agent の tools / linter) のどちらで強制すべきか
 
 ファイル**内**の文面品質 (節構成・冗長・frontmatter の妥当性) は検証 subagent の領域なので扱わない。同じ事象でも「この節をこのファイル内で直す」は検証 subagent、「この節を別 component へ移す」は構造レビューに属する。
 
@@ -18,6 +18,7 @@ write-for-harness の俯瞰 (構造) reviewer として dispatch されたとき
 
 - 規制がどの slot (Computational / Inferential × Guide / Sensor) に属するかは [architecture](./architecture.md) の 4 slot 表と Slot 選択フローで決める
 - 常時ロード層 (CLAUDE.md) と条件ロード層 (rules / docs 索引 / skill) の振り分けは [claude-md](./components/claude-md.md) の「載せる基準と段階開示」の表で決める — 載せる基準は「無いと判断が変わるか」、逃がし先は「誰がロードを起動するか」
+- skill の本文に書いた subagent の手順 (inline subagent) と agent 定義の振り分けは [agent](./components/agent.md) の「切り出す条件」で決める
 - 現在地と判断枠上の正位置が食い違うファイル・節が、配置提案の候補になる
 
 ## 分割・統合の判断規則
@@ -56,4 +57,4 @@ write-for-harness の俯瞰 (構造) reviewer として dispatch されたとき
 ## 参照
 
 - 共通: [architecture](./architecture.md) (4 slot 表と選択フロー — 配置判断の枠) / [claude-md](./components/claude-md.md) (常時ロード層の載せる基準と段階開示 — 層間振り分けの枠) / [models](./models.md) (context 肥大と分割の判断材料)
-- 文面品質の領域境界: [skill](./components/skill.md) / [rules](./components/rules.md) / [hook-inject](./components/hook-inject.md) / [settings](../../../procedure/claude-config-review/references/settings.md) / [hook](../../../procedure/claude-config-review/references/hook.md) (ファイル内の観点はこれら component 別 reference の領域)
+- 文面品質の領域境界: [skill](./components/skill.md) / [rules](./components/rules.md) / [hook-inject](./components/hook-inject.md) / [agent](./components/agent.md) / [settings](../../../knowledge/claude-config-reference/references/settings.md) / [hook](../../../knowledge/claude-config-reference/references/hook.md) (ファイル内の観点はこれら component 別 reference の領域)

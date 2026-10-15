@@ -1,42 +1,84 @@
 ---
 name: issue-triage
-description: open issue を読み取りで調査し、label・コメント・close の推奨案を人間の承認を通して tracker へ反映する対話 triage。
-disable-model-invocation: true
+description: issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (着手可・close) は tracker へ反映し、外側の判定 (規範の文案・深掘り・報告者への質問) と止まったものを呼び出し元へ返す. Use when「issue を着手可・close・人待ちへ振り分けて tracker に反映する」「triage 待ちの issue を処理する」.
+user-invocable: true
 ---
 
 # issue-triage
 
-open issue を全件読み取りで調査し、issue ごとの推奨 (label / コメント / close / 深掘り待ち) を組み立て、人間の承認を通ったものだけを tracker へ反映する。tracker と user の認識を同期させる対話セッションで、深掘りそのもの (grilling) はここでは行わず、深掘り待ち label で可視化して終える — 複数 issue の深掘りを 1 セッションに積むと triage が終わらなくなるため。dispatch の orchestrator が対話系依頼を受けたときの案内先でもある (dispatch 未導入でも単独で動く)。
+issue を N 件 (1 件以上) 受け、AFK 境界 (agent が人に問わず自分で決めてよい判断と、人に返す判断の境目) に従って振り分ける。境界の内側と判定したものは承認を待たずに tracker へ反映し、外側の判定と止まったものは呼び出し元へ返す — 内側の判断は人が事後に覆せるので、承認で止めずに進めて、人が見る判断を外側に絞る。repo のファイルは変更しない。人へどう届けるか (label で待たせるか、その場で問うか) は呼び出し元が決める。
 
-本文のコマンド例は GitHub 置き場 (`gh`) の綴り。issue 置き場の tracker が別 (GitLab / Jira 等) なら、手順 1 で読んだ CLI 規約の同等コマンドに読み替える。書き込み・読み取りとも issue 置き場を `-R <issue 置き場>` で明示する — cwd 推論に委ねると、cwd と置き場が別 repo の構成で同番号の別 issue に刺さる。
+args は issue 置き場 (省けば下の文書の宣言) と、issue ごとの `#<N>` の見出し。見出しの下に本文の書き換え案が逐語で添えられていたら、tracker 上の本文の代わりにそれを振り分けの対象にする。書き換え案には、案の元にした本文を保存した file の path (基準) も添えてもらう — 基準が無いと、案を作った後に入った他の書き手の編集を検知できない。基準の無い書き換え案は振り分けには使うが、tracker へは書き戻さずに返す。
 
-## 前提と読み込み
+置き場と CLI 規約・label 語彙は対象 repo の `docs/agents/issue-tracker.md` / `docs/agents/triage-labels.md` を Read して決める。CL 置き場は issue の変更が入る repo (cwd の repo) で、issue 置き場と別のことがある。宣言を読み取れなければ cwd の repo を両方の置き場とする。コマンドには置き場を `-R <issue 置き場>` (PR は `-R <CL 置き場>`) で明示する — cwd に任せると、別 repo の同じ番号を読み書きする。本文で使う label の役割は、着手可・triage 待ち・情報待ち・深掘り待ち・人待ち・計画的な分解の親・作業中 (claim)。役割の label が宣言されていなければ、既存 label の使われ方から読み取る。置き場や label を宣言から読めなかったときは、その前提を返す内容に書く。コマンド例は GitHub (`gh`) の綴りで、他の tracker なら読み替える。
 
-1. 対象 repo の `docs/agents/issue-tracker.md` (issue 置き場と CLI 規約) と `docs/agents/triage-labels.md` (label 語彙) を Read する。どちらも無い repo では tracker の既存 label の使われ方から規約を読み取り、読み取った前提を報告に書き出す (推測した規約で分類すると、根拠が誰にも再現できない)。label の綴りは表から引く — 表に無い label は発明しない。深掘り待ちの label が宣言されていない repo では、深掘り待ちは label でなく報告で user へ返す (label 新設は user の判断)
-2. `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、適用条件が今回の triage に当たる leaf を全部 Read する。以降の手順が `principle-*` を名指ししたら、索引が示す path から Read する — leaf は invoke せず読む
+## 1. 読む
 
-## 調査 (読み取りのみ)
+- 原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-ai-delegation-boundary.md` を Read する — AFK 境界の中身 (人に返す判断の種類) の正本。要るのはこの leaf 1 本なので、索引は引かない
+- issue ごとに `gh issue view <N> -R <issue 置き場> --json title,body,labels,comments,closedByPullRequestsReferences` で本文と全コメントを読む (`--comments` は非 TTY で本文が抜ける)。1 回で引ける `gh issue list` は番号で絞れず、受けた N 件のために使うと読まない issue の本文まで context に載る。本文は書き換えうるので、`${CLAUDE_SKILL_DIR}/references/body-rewrite.md` を Read し、その「基準の保存」に従う (一時 file は呼び出し元が置き場を決めていなければ `mktemp` で作業ツリーの外に作る)。呼び出し元が書き換え案と基準を添えた issue は、添えられた基準を使う
+- issue を実装している open CL を控える。候補は、上で読んだ `closedByPullRequestsReferences` の各 CL (要素の url で `gh pr view <url> --json state` を撃ち、open のものだけを残す) と、`gh pr list -R <CL 置き場> --state open --search "<N> in:body" --json number,body` のうち本文がこの issue を参照する CL (CL 置き場と issue 置き場が同じなら `#<N>`、違えば `<owner>/<repo>#<N>` か issue の URL。どちらも番号の直後が数字でないもの) — open CL を全件引くと、1 件の issue のために repo の CL を全部読むことになる
+- open issue の題名を `gh issue list -R <issue 置き場> --state open --limit 1000 --json number,title` で 1 回だけ引いて file に受け (件数が `--limit` に届いたら上げて引き直す)、close の確かめと §5 の follow-up issue の重複探しで使い回す
+- close の 3 種 (重複・既に直っている・前提が変わった) は、この題名の一覧と、`git fetch` 後の `origin/<既定 branch>` で本文が名指す file・識別子を `git show` / `git grep` した結果の 2 つだけで確かめる。どちらにも当たらなければ、3 種のどれでもないとみなす — 決定記録や過去 PR を広く読みに行くと、1 件の triage の費用が上限なく増える。cwd は人の checkout でありうるので HEAD は動かさない
 
-3. open issue を全件引く (`gh issue list --state open --json number,title,labels,updatedAt`)。1 セッションで捌けない件数なら、最初の AskUserQuestion で対象の絞り方 (label / 更新日 / 件数上限) を user に確認してから進む
-4. issue ごとに調査する。この段階では tracker に何も書かない:
-   - 本文とコメントを逐語で読む (`gh issue view <N> --comments`)
-   - 既存 issue・ADR・過去 PR を検索し、重複と既知を潰す。重複していたら分類ではなく統合先を示す
-   - 現 main のコードと突き合わせ、既に直っている / 前提が変わっている (stale) かを確かめる
-   - `principle-fix-root-causes`: 症状が出ている層より下に原因がありうるかの当たりを付ける。再現・計測の実行が要ると判明したら自分では実行せず、「再現確認タスク」を手順としてコメント案に書き、着手可 label を推奨へ倒す (実行は AFK agent に委ねる — triage は user の対話時間を予約しているので、機械で済む長い作業を混ぜない)
-   - 負債として受ける判断には `principle-debt-quadrant` (所在・悪化条件・返済トリガー) を添え、人手でしか解けない項目は `principle-ai-delegation-boundary` に従い「人へ返す」と明示する
+## 2. 振り分ける
 
-## 推奨案の組み立てと承認
+issue ごとに 1 つの区分に決める。規範とは対象 repo の CLAUDE.md・rules・決定記録・原則 leaf・docs を指す。
 
-5. issue ごとに推奨を 1 つ決め、根拠を 1 行添える。推奨は label 変更 / close / コメントのみ / 深掘り待ち label / 変更なし のいずれか。選択肢を 2〜4 個に絞れない論点を抱えた issue は、選択肢を捏造せず深掘り待ちを推奨にする
-6. 推奨どおりに反映すると着手可 label が付いている issue — 新たに付ける issue と、既に付いていて据え置く issue (open CL を持つものを含む) の両方 — に限り、`swat-skills:ready-for-agent-review` を Skill tool で issue 番号と issue 置き場を渡して invoke し、返った提案を手順 7 の承認材料にする (着手可にしない issue には掛けない — 本文を正として実装されるのは着手可の issue だけなので)。提案に指摘が残った issue は、着手可のまま / 修正案をコメントして着手可 / 深掘り待ち のどれにするかを設問の選択肢に含める。その issue に open CL があれば、CL の差し戻し (差し戻しコメント / close) も選択肢に含める — CL は issue の欠陥をそのまま実装している。本文の書き換え案はコメントに差分として載せる。skill が提案を返さずに停止したら、その issue には着手可を推奨せず、停止理由を設問の前の本文に出す
-7. AskUserQuestion で全 issue 分の承認を取る (1 回 4 問まで)。各設問に推奨と根拠を載せ、user が Other で深掘りを求めた issue は深掘り待ちへ倒す。手順 6 の提案は全文を設問の前の本文に出し、設問にはその要点だけを書く (設問の欄に全文は収まらない)。tracker への書き込み (label / close / コメント) は承認された分だけ行う — 全変更が承認制なのは、機械が勝手に label を動かさないという他セッションからの信頼を守るため
+| 区分 | 当てはまるもの | 境界 |
+|---|---|---|
+| 1 | 判断が要らない、または既存の規範で決まる | 内側 |
+| 3 | 規範はまだ決めていないが、判断がこの issue の中で閉じる。自分で決め、決めたことと退けた案を本文に書く | 内側 |
+| close | 重複している・既に直っている・前提が変わった | 内側 (reopen で戻せる) |
+| 2 | 判断がこの issue の外へ一般化する (同じ種類の判断が次の issue でも来る) のに、決めるための一般則が規範に無い。一般則を決めることは規範を作ることなので、人に返す | 外側 |
+| 4 | 原則 leaf が人に返すとした種類の判断、または人手でしか進まない作業 (権限で塞がれた操作・人の資格情報・物理的な作業) が要る | 外側 |
+| 情報待ち | 報告者しか持たない事実が要る | 外側 |
 
-## 反映と報告
+- 再現や計測の実行が要る issue は自分で実行せず、再現確認を受け入れ条件に足して区分 1 にする
+- 範囲や受け入れ条件を変えるときは、書き換え後の本文全体を書き換え案にする — 無人で実装する側は本文しか読まない。元の本文に、前の本文より優先すると宣言した追記の節 (`## 確定事項` 等) があれば、その内容を本文の該当箇所へ溶かし込んで節を消す (書き換えた本文に優先順位の規則を残さない)
+- open CL がある issue と作業中の label が付いた issue は、区分を決めても tracker に書かない — CL は書き換える前の本文を実装していて、作業中の issue は作業の途中で本文が変わる。判定と書き換え案を添えて呼び出し元へ返す (CL を差し戻すかは人が決める)
+- 自分で下した判断は、規範へ書き起こす (codify) 候補にしない。codify は人の決定を規範にするもので、承認する人がいない場で文案を積まない
+- 過去の triage のコメントが外側 (深掘り待ち・人待ち・情報待ち) と判定した issue は、label が triage 待ちに戻っていても、そのコメント以降に新しい情報 (報告者・人の回答、決定を書き込んだ本文の書き換え、論点を決めた規範の追加) が無ければ、前回と同じ外側の区分で返す。区分 1・3・close にしない — 前回人に返すとした判断を、agent が後から自分で下さない(前回の判定の後に、重複・既に直っている・前提が変わったことを §1 の確かめ方で確かめた issue は close してよい)
 
-8. 承認された操作を反映する: `gh issue edit <N> --add-label/--remove-label` / `gh issue close <N> --comment` / `gh issue comment <N>`。決定と根拠は issue コメントに残す — label だけでは、なぜその分類になったかが次に読む人へ残らない
-9. 報告して終える。含めるもの: 反映した操作と根拠 / 承認されず据え置いた issue / 深掘り待ち (今回付けた分と既存の残数) / user に残る作業。深掘り待ちの消化はこの skill の外 — user が任意のセッションで grill 系 skill を呼び、固まった内容の issue への反映 (コメント追記・着手可 label 化・深掘り待ち label の除去) をそのセッションに指示する
+## 3. 着手可にする前の検査 (区分 1・3)
 
-## 実行環境
+1. 区分 1・3 の issue をまとめて `swat-skills:ready-for-agent-review` を Skill tool で invoke する。args は issue 置き場と `#<N>` の見出しで、書き換え案がある issue は見出しの下に逐語で置く
+2. 返った issue ごとのブロックで分ける。`### 指摘` に指摘がある issue は、修正案を書き換え案に当て、その issue だけで invoke し直す。未反証の節が残った issue も、そのまま invoke し直す。invoke は 1 issue につき 2 回まで (手順 1 のまとめての invoke を 1 回目と数える) にし、invoke し直すときも Skill tool で invoke する — Agent に手順を読ませて代わりに回すと、その回が上限に数えられない。2 回目でも指摘が残れば、残った論点に応じて区分 2・4・情報待ちへ振り直す。未反証の節が残るか、ブロックを返さずに停止した issue は、着手可にせず停止として返す
+3. 指摘が follow-up issue の文案 (規範の衝突を裁定したときの、負けた規範を直す issue) を含んでいたら、最後に返った文案を控える
+4. `### 指摘` が「該当なし」で未反証の節も無い issue は、`${CLAUDE_SKILL_DIR}/references/follow-up-depth.md` を Read してその「測る」に従い、follow-up issue の深さを測る。上限以内 (exit 0) のものを着手可にする。それ以外は着手可にせず、同書の表が挙げるものを添えて深さで保留として返す
 
-- tracker への書き込みは AskUserQuestion の承認を通った分だけ。issue 本文は編集しない
-- repo への write は行わないので、変更の届け方の判断は発生しない
+## 4. 規範の文案 (区分 2)
+
+先に、同じ規範の文案を待つ issue を探す。`gh issue list -R <issue 置き場> --state open --label <人待ち> --limit 1000 --json number,comments` の出力を file に受け (返った件数が `--limit` に届いたら上げて引き直す)、行頭が `規範の文案: <置き場の path>` のコメントを拾う (検索 qualifier は日本語の語句を取りこぼすので、コメントを読んで照らす)。同じ path があれば文案を書き直さず、その issue の番号を返す。
+
+無ければ、足りない一般則を書き込む先の path と、規範の文面を逐語で書く。返すときは 1 行目を `規範の文案: <置き場の path>` にし、path の後ろには何も書かない (書き込む節の見出しや説明は 2 行目から書く) — 呼び出し元がこの行を人待ちの issue へ投稿すると、次の triage がこの節の検索で見つける。
+
+## 5. 反映 (着手可にする issue・close)
+
+§3 で着手可にすると決まった issue と close の issue のうち、open CL も作業中の label も無く、書き換え案があるなら基準もあるものだけ、次の順で反映する。深さで保留・停止・振り直しになった issue には何も書かない。文面は file に書いて `--body-file` で渡す。
+
+1. **本文**: 書き換え案があれば、`${CLAUDE_SKILL_DIR}/references/body-rewrite.md` の「書き戻し」の順で書き戻す。手順 1 で外す label は、既に付いている着手可だけ (検査を通る前の本文に着手可を残さない。ほかの状態の label は下の 4 で外す)。手順 2 か 5 で止めたら、その issue の以降の操作をせず、同書「停止の扱い」の 4 項目を停止として返す。旧本文の記録の投稿に失敗したら、基準の file の中身を逐語で添えて返す
+2. **follow-up issue** (§3 で文案を控えたとき): 題名は `<負けた規範の path>: <文案の題名>` にする — 文案の題名は呼ぶたびに書かれて揺れるので、重複は path で照らす。§1 で受けた題名の一覧から、同じ `<負けた規範の path>:` で始まる issue を探す。あれば起票せずに発端 (この issue の番号) をコメントで足す。無ければ `gh issue create -R <issue 置き場> --title <題名> --body-file <file> --label <triage 待ち>` で起票し、起票した番号と題名を一覧の file に追記する (同じ実行の続く issue で二重に起票しない)。§3 の 4 で読んだ深さの宣言の測り方が `github-sub-issue` なら `--parent <この issue>` を足して子にする。本文には文案どおり `## 範囲` の節を置く (範囲の無い issue は次の検査で差し戻される)
+3. **根拠**: 区分と根拠をコメントにする。区分 3 は決めたことと退けた案、close は重複先・直した変更・変わった前提を書く — label だけでは理由が次に読む人へ残らない。既に着手可だけが付き、本文を書き換えず、根拠が直近の triage のコメントと変わらない issue にはコメントを足さない (同じ根拠が積み重なるだけになる)
+4. **状態**: 着手可は `gh issue edit <N> -R <issue 置き場> --add-label <着手可> --remove-label <付いている状態の label>` の 1 回で付け替える (状態の label は triage 待ち・情報待ち・深掘り待ち・人待ち。本文を書き換えず、既に着手可だけが付いているなら付け替えない)。2 回に分けると、間で止まったときに状態の無い issue か、着手可と別の状態が併存する issue が残る。close は先に `gh issue close <N> -R <issue 置き場>` で閉じ、その後で状態の label を外す — 間で止まっても、閉じた issue に古い label が残るだけで済む
+
+## 6. 返す
+
+issue ごとに次の形で返す。呼び出し元が同じ agent で、あとで表などにまとめ直すときも、先にこのブロックを全 issue 分出す — まとめ直した表には基準や手順コメントの欄が無い。呼び出し元はこれを読んで人へ渡すので、操作の文面と文案は逐語で書く。区分 4 を深掘り待ちにして人へ渡す呼び出し元は、返った手順コメントをそのまま投稿する。
+
+```
+### #<N> <題名>
+- 区分: <1 | 3 | close | 2 | 4 | 情報待ち>
+- 結果: <反映済み | 返却 (外側) | 停止 | 深さで保留 | 書き込まず (open CL #<M> / 作業中 / 基準なし)>
+- 反映した操作: <本文の書き戻し・コメント・起票した follow-up issue の番号・label。無ければ「なし」>
+- 根拠: <区分の根拠。区分 3 は決めたことと退けた案>
+- 基準: <この issue で保存した基準の file の path>
+- 呼び出し元に渡すもの:
+  <区分 2: 「規範の文案: <path>」の行と逐語の文面、または同じ規範を待つ issue の番号>
+  <区分 4: 論点と選択肢 (推奨を 1 つ名指す)。続けて深掘りのセッションへの手順コメントを、`${CLAUDE_SKILL_DIR}/references/grilling-handoff.md` を Read して値まで埋めて逐語で書く (雛形の二つの path には `${CLAUDE_SKILL_DIR}/../../design/grill-with-docs/SKILL.md` と `${CLAUDE_SKILL_DIR}/references/body-rewrite.md` を、ここに見えている絶対 path のまま書く)。読んだコメントに 1 行目が同じコメントが既にあれば、手順コメントは書かず「手順コメントあり」とする>
+  <情報待ち: 報告者へ聞くことの逐語>
+  <停止: 停止理由・label の現状・まだ反映していない操作・人が次にやること。旧本文の記録の投稿に失敗したときは基準の file の中身の逐語>
+  <深さで保留: follow-up-depth.md の表が挙げるもの>
+  <書き込まず: 判定と書き換え案の逐語、反映しなかった理由>
+```
+
+置き場や label を宣言から読めなかったときは、その前提を末尾に 1 行添える。
