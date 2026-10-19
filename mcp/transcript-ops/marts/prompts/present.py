@@ -6,11 +6,34 @@ slice へ組み替え、**path だけを返す** (本体は context に載せな
 本 module の責務は決定的な抽出・絞り込みまで — **「どれがフィードバックか」
 「どれが価値観か」の判定は一切行わない**。bucket を知らない生データだけを出し、
 判断は棚卸し実行時の人間、文章の具体化のみ LLM が担う (3 段階モデル。運用正本は
-plugin repo の docs/steering.md §1)。ADR 0032 の決定的ルール層は本 domain を
+plugin repo の docs/reference/steering.md §1)。ADR 0032 の決定的ルール層は本 domain を
 対象外にしている (SKILL.md が「決定的シグナルが存在しない」ことを明文化済み)。
 
 repo 解決 (git 呼び出し) は I/O なので UDF に置けない。**post-query で cwd 単位に
 1 回だけ行う** (query 層は cwd の値をそのまま返すだけ)。
+
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+scan_prompts:
+
+1. totality — 走査した user record 数 == 採用数 + 除外理由ごとの件数の総和
+2. 除外集合 — `contract.EXCLUSION_REASONS` の各理由に落ち、人間の手入力だけが残る
+3. anchor — 採用 record が session_id / repo / timestamp を必ず持つ
+4. 母集団 — 既定は main transcript のみ (subagent の user record は走査しない)
+5. 観測窓 — 窓の外の record は走査しない
+
+select_candidates:
+
+6. totality — 母数 == emitted + 打ち切り + 除外理由ごとの件数の総和
+7. 読み順 — text_chars 降順
+8. 読み順の全順序 — 同字数でも timestamp → session_id → uuid で決まり、入力順に依存しない
+9. 短文帯 — 既定の閾値未満は候補に出ず、除外件数が meta と band_histogram に出る
+10. 打ち切り非隠蔽 — `--limit` が削った件数が meta に出る
+11. 定型除外 — 正規形が完全一致する 3 件以上の群だけを落とし、落とした群を件数付きで一覧に出す
+12. 定型の検出母数 — 検出は全 repo の母数で行い、除外の帰属は repo scope 側で数える
+13. cross-repo 候補 — 定型一覧の repo 数が rule の入力 (`repo_count`) まで届き、全 repo 横断の slice だけが評価する
+14. repo scope の解決 — `repo` 未指定は cwd の repo に解決し、他 repo の prompt を載せない
+15. repo scope の fail-closed — cwd の repo を解決できなければ全 repo に倒さず fail する
 """
 
 from __future__ import annotations
@@ -33,6 +56,7 @@ from adapter.transcript import (
 )
 from artifacts import prepare_output_dir
 from marts import load_statements
+from marts import transcript_kind as transcript_kind_mod
 from store import ingest
 from store import store as store_mod
 
@@ -77,7 +101,7 @@ def _store_meta(conn: sqlite3.Connection, sync_report: ingest.SyncReport) -> dic
     anomalies = store_mod.anomalies(conn)
     return {
         **anomalies,
-        "skipped_nested_files": sync_report.skipped_nested_files,
+        "unrecognized_nested_files": sync_report.unrecognized_nested_files,
         "synced_files": sync_report.ingested_files,
         "unchanged_files": sync_report.unchanged_files,
         "removed_files": sync_report.removed_files,
@@ -175,12 +199,12 @@ SCOPED_PROMPT_COLUMNS = (
 
 
 def _load_scoped_prompt(conn: sqlite3.Connection, statements: dict[str, str],
-                        cutoff_epoch: float) -> None:
+                        cutoff_epoch: float, transcript_kinds: str) -> None:
     conn.execute(statements["clear_scoped_prompt"])
     conn.execute(
         f"INSERT INTO scoped_prompt ({', '.join(SCOPED_PROMPT_COLUMNS)}) "
         + statements["refined_prompt"],
-        {"cutoff_epoch": cutoff_epoch},
+        {"cutoff_epoch": cutoff_epoch, "transcript_kinds": transcript_kinds},
     )
 
 
@@ -215,13 +239,14 @@ def _boilerplate_membership(conn: sqlite3.Connection, statements: dict[str, str]
 
 
 def _open(transcripts_dir: Path, cache_dir: Path | None, now: dt.datetime,
-         cutoff_epoch: float) -> tuple[sqlite3.Connection, dict[str, str], ingest.SyncReport]:
+          cutoff_epoch: float, transcript_kinds: str,
+          ) -> tuple[sqlite3.Connection, dict[str, str], ingest.SyncReport]:
     conn, sync_report = ingest.open_synced(transcripts_dir, cache_dir=cache_dir, now=now)
     udf.register(conn)
     statements = load_statements(QUERY_PATH)
     conn.execute(statements["create_scoped_prompt"])
     conn.execute(statements["create_scoped_prompt_index"])
-    _load_scoped_prompt(conn, statements, cutoff_epoch)
+    _load_scoped_prompt(conn, statements, cutoff_epoch, transcript_kinds)
     return conn, statements, sync_report
 
 
@@ -230,11 +255,17 @@ def _open(transcripts_dir: Path, cache_dir: Path | None, now: dt.datetime,
 @dataclasses.dataclass(frozen=True)
 class ScanRequest:
     days: int = DEFAULT_DAYS
+    # 数える transcript の種類 (`main` / `all`)。値の検査は `transcript_kinds()`
+    transcript_kind: str = transcript_kind_mod.DEFAULT
     transcripts_dir: Path = DEFAULT_TRANSCRIPTS_DIR
     output_dir: Path = DEFAULT_OUTPUT_DIR
     text_limit: int = DEFAULT_TEXT_LIMIT
     now: str | None = None
     cache_dir: Path | None = None
+
+    def transcript_kinds(self) -> str:
+        """SQL の `:transcript_kinds`。未知の値は store を開く前に止める。"""
+        return transcript_kind_mod.kinds_param(self.transcript_kind)
 
 
 def _stamp(moment: dt.datetime) -> str:
@@ -271,7 +302,8 @@ def build_mart(request: ScanRequest,
     cutoff = now - dt.timedelta(days=request.days)
 
     conn, statements, sync_report = _open(
-        request.transcripts_dir, request.cache_dir, now, cutoff.timestamp())
+        request.transcripts_dir, request.cache_dir, now, cutoff.timestamp(),
+        request.transcript_kinds())
     try:
         verdicts = _verdict_counts(conn, statements)
         accepted = _accepted_rows(conn, statements)
@@ -314,6 +346,7 @@ def build_mart(request: ScanRequest,
             "window_start": _stamp(cutoff),
             "window_end": _stamp(now),
             "days": request.days,
+            "transcript_kind": request.transcript_kind,
             "transcripts_dir": str(request.transcripts_dir),
             "text_limit": request.text_limit,
             "total_prompts": len(prompts),
@@ -358,6 +391,7 @@ def emit_mart(mart: dict, output_dir: Path) -> str:
 
 def run_scan_prompts(
     days: int = DEFAULT_DAYS,
+    transcript_kind: str = transcript_kind_mod.DEFAULT,
     output_dir: str = str(DEFAULT_OUTPUT_DIR),
     transcripts_dir: str = str(DEFAULT_TRANSCRIPTS_DIR),
     text_limit: int = DEFAULT_TEXT_LIMIT,
@@ -365,7 +399,7 @@ def run_scan_prompts(
 ) -> dict:
     """`scan_prompts` tool の入口。mart は返さず、書いた path と meta だけを返す。"""
     request = ScanRequest(
-        days=days, output_dir=Path(output_dir),
+        days=days, transcript_kind=transcript_kind, output_dir=Path(output_dir),
         transcripts_dir=Path(transcripts_dir), text_limit=text_limit, now=now,
     )
     mart = build_mart(request)
@@ -376,6 +410,7 @@ def run_scan_prompts(
             "window_start": meta["window_start"],
             "window_end": meta["window_end"],
             "days": meta["days"],
+            "transcript_kind": meta["transcript_kind"],
             "total_prompts": meta["total_prompts"],
             "distinct_sessions": meta["distinct_sessions"],
             "distinct_repos": meta["distinct_repos"],
@@ -561,8 +596,13 @@ def build_slice(
     if repo_scope == REPO_SCOPE_CWD:
         repo_filter = default_repo_resolver(request.repo_root)
 
+    # 母集団は窓と同じく provenance の mart から引き継ぐ (scan_prompts で選んだ
+    # transcript_kind に揃える)。mart が無ければ既定の main
+    transcript_kind = (mart_meta or {}).get("transcript_kind",
+                                            transcript_kind_mod.DEFAULT)
     conn, statements, sync_report = _open(
-        request.transcripts_dir, request.cache_dir, now, cutoff.timestamp())
+        request.transcripts_dir, request.cache_dir, now, cutoff.timestamp(),
+        transcript_kind_mod.kinds_param(transcript_kind))
     try:
         accepted = _accepted_rows(conn, statements)
         membership = _boilerplate_membership(conn, statements, request.min_chars)
@@ -619,6 +659,7 @@ def build_slice(
             "window_start": _stamp(cutoff),
             "window_end": generated_at,
             "days": days,
+            "transcript_kind": transcript_kind,
             "transcripts_dir": str(request.transcripts_dir),
             "min_chars": request.min_chars,
             "repo_filter": repo_filter,
@@ -717,6 +758,8 @@ def run_select_candidates(
 def parse_scan_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="scan_prompts の mart を組む")
     p.add_argument("--days", type=int, default=DEFAULT_DAYS)
+    p.add_argument("--transcript-kind", choices=transcript_kind_mod.CHOICES,
+                   default=transcript_kind_mod.DEFAULT)
     p.add_argument("--transcripts-dir", type=Path, default=DEFAULT_TRANSCRIPTS_DIR)
     p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     p.add_argument("--text-limit", type=int, default=DEFAULT_TEXT_LIMIT)
@@ -753,7 +796,8 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "scan":
         args = parse_scan_args(rest)
         request = ScanRequest(
-            days=args.days, transcripts_dir=args.transcripts_dir,
+            days=args.days, transcript_kind=args.transcript_kind,
+            transcripts_dir=args.transcripts_dir,
             output_dir=args.output_dir, text_limit=args.text_limit,
             now=args.now, cache_dir=args.cache_dir,
         )

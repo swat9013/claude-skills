@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """guard-shell.py — PreToolUse / Bash(bash|sh|zsh:*): bash/sh/zsh の直接実行を deny し、構文チェックとスクリプト起動を書き換える。
 
+置く理由: 抜け道を塞ぐ・補正
+    判定ごとに理由が違う (ADR 0108)。stdin script (`bash <<EOF`) の deny は、permission rule が
+    中身を検査しない経路を止める抜け道を塞ぐ側。script の直接実行は塞ぐ側に加えて補正でもある —
+    `./x.sh` で同じ効果が出るので、単一コマンドで interpreter の直後に path を明示した形 (`bash ./x.sh` /
+    `bash ../x.sh` / `bash /abs/x.sh`) は直接起動へ書き換え、それ以外 (bare name の `bash x.sh`・複合行・
+    リダイレクト付き・option が前に付く `bash -x ./x.sh`) は deny の
+    理由文で直接パス起動へ案内して、正しい綴りへ直す。
+
 fail-posture: **fail-closed** (#250 決定 3 / #596 / ADR 0046)。payload を読めなかったときは
 判断保留 = 素通しにせず deny する。読み取り失敗を素通しにすると command が空文字になり、
 下の全判定が不成立のまま passthrough して bash/sh/zsh の直接実行が無検査で通る。

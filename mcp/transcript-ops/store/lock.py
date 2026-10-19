@@ -13,6 +13,15 @@ sync 全体をこの lock で直列化し、後続は先行の完了を待って
 
 lock は store file と 1 対 1 で、lake ごとに分かれる (`store_path` が lake digest を
 file 名に持つため)。別 lake の観測は互いを待たない。
+
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+1. 先行が握ったままなら後続は待ち上限で `SyncLockTimeout` を上げる (黙って素通りしない)
+2. 本体が例外で落ちても lock を握ったままにしない
+3. 全 tool の入口 (`open_synced`) が lock を通る
+4. lock は store file と 1 対 1 で、別 lake は互いを待たない
+5. store を drop しても lock file は消さず、排他が残る
+6. lock file は store と同じ 0700 の cache dir に置く
+7. `store.drop` は sqlite の併走 file (-wal / -shm) まで回収する
 """
 
 from __future__ import annotations

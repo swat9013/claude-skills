@@ -7,6 +7,9 @@
 -- 写像は presentation 層 (`present.py`) の観測契約。本 file は「窓で絞った行を
 -- 順序どおりに返す」relational algebra だけを持つ。
 --
+-- **母集団は main session の transcript だけ** (`f.transcript_kind = 'main'` を全文に置く。
+-- 理由は store/schema.sql の `file.transcript_kind`)。
+--
 -- 文は `-- name: <識別子>` で区切り、`marts.load_statements` が名前で引く。
 
 -- Skill / Agent / mcp__* / Read の tool_use。unit 判定 (Read は config 依存の
@@ -21,6 +24,7 @@ FROM tool_use tu
 JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
 JOIN file f ON f.file_id = tu.file_id
 WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
   AND (tu.tool IN ('Skill', 'Agent', 'Read') OR tu.tool LIKE 'mcp\_\_%' ESCAPE '\')
 ORDER BY f.project_dir, f.path, r.line_no, tu.block_no
 
@@ -32,7 +36,8 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
 FROM slash_invocation si
 JOIN record r ON r.file_id = si.file_id AND r.line_no = si.line_no
 JOIN file f ON f.file_id = si.file_id
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
 ORDER BY f.project_dir, f.path, r.line_no
 
 -- 人間可読の user turn 抜粋 (invocation 直前文脈の breadcrumb)。
@@ -42,7 +47,8 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
 FROM user_turn ut
 JOIN record r ON r.file_id = ut.file_id AND r.line_no = ut.line_no
 JOIN file f ON f.file_id = ut.file_id
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
 ORDER BY f.project_dir, f.path, r.line_no
 
 -- 窓内で観測された全 tool_use の (tool, session) 1 組 1 行 + その組の初回時刻。
@@ -59,7 +65,9 @@ SELECT tu.tool AS tool, r.session_id AS session_id,
        MIN(r.ts_epoch) AS first_ts_epoch
 FROM tool_use tu
 JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch) AND tu.tool != ''
+JOIN file f ON f.file_id = r.file_id
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main' AND tu.tool != ''
 GROUP BY tu.tool, r.session_id
 
 -- 「session に提示された分母」の 1 名前 = 1 行。type 別の意味 (どの type が
@@ -69,7 +77,9 @@ SELECT pn.attachment_type AS attachment_type, pn.name AS name,
        r.session_id AS session_id, r.ts AS ts
 FROM presented_name pn
 JOIN record r ON r.file_id = pn.file_id AND r.line_no = pn.line_no
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+JOIN file f ON f.file_id = r.file_id
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
 ORDER BY pn.line_no, pn.seq
 
 -- 静的コンテキスト種別ごとに観測された session (名前 0 件の record でも
@@ -79,7 +89,9 @@ ORDER BY pn.line_no, pn.seq
 SELECT DISTINCT sp.attachment_type AS attachment_type, r.session_id AS session_id
 FROM static_payload sp
 JOIN record r ON r.file_id = sp.file_id AND r.line_no = sp.line_no
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch) AND r.session_id != ''
+JOIN file f ON f.file_id = r.file_id
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main' AND r.session_id != ''
 
 -- assistant turn の token 経済 (帰属 skill 別の内訳は presentation 層が畳む)。
 -- name: assistant_usage
@@ -89,4 +101,6 @@ SELECT at.attribution_skill AS attribution_skill,
        at.cache_read_input_tokens AS cache_read_input_tokens
 FROM assistant_turn at
 JOIN record r ON r.file_id = at.file_id AND r.line_no = at.line_no
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+JOIN file f ON f.file_id = r.file_id
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'

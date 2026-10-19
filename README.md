@@ -13,8 +13,6 @@ Claude Code のセッション内で 2 手順:
 
 インストール後、`/` 補完に skill が並ぶ。
 
-一部の skill が呼ぶ、または一緒に使う前提の [mattpocock/skills](https://github.com/mattpocock/skills) の skill は、`skills/third/` に同梱している。別の plugin を入れなくても動く。
-
 ## 同梱している skill
 
 <!-- generated:skills -->
@@ -64,9 +62,8 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | `playbook-skill-creation` | コマンド | 新規 skill 作成を、skill 化の要否判定からレビュー工程の通過までの番号付き step で通す playbook。 |
 | `playbook-test-optimization` | コマンド | テストスイートの軸ごとの診断を、原則の索引 Read から適用判断の返却までの番号付き step で通す playbook。 |
 | `playbook-test-perf-tuning` | コマンド | テスト実行時間の短縮を、原則の索引 Read からレビュー工程の通過までの番号付き step で通す playbook。 |
-| `review-stage` | コマンド / 自動 | CL を出す前の差分を、差分の重さから選んだレビュー段階に応じて欠陥探し・原則・Spec の観点で並列にレビューし、指摘を Act on / Consider / Noted / Dismissed に分けて PR へ貼れる 1 枚で返す。 |
+| `review-stage` | コマンド / 自動 | CL を出す前の差分を、差分の重さに応じた複数の観点で並列にレビューし、PR へ貼れる 1 枚で返す。 |
 | `frontend-review` | コマンド / 自動 | 実装済みの HTML/CSS を デザインシステムの規範 (Refactoring UI tactics / WCAG AA / Rams・Nielsen heuristics) に照らして検査する。 |
-| `stacked-implement` | コマンド | 名指しした実装 (issue 集合・分割計画・単一の仕様) を CL 計画に分け、CL ごとに CL エージェントを並列に起動して実装させ、merge まで追従する。 |
 
 ### design
 
@@ -75,7 +72,7 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | skill | 起動 | 用途 |
 | --- | --- | --- |
 | `ui-design` | コマンド / 自動 | UI 設計ドキュメント一式を 画面インベントリ → 画面遷移 → 領域/レイアウト → component 分解 → デザイントークン の順の対話的セッションで作成・更新する。 |
-| `sud-design` | コマンド / 自動 | 設計ドキュメント一式をシステム関連図 → ユースケース → ドメインモデル図の順の 対話的セッションで作成・更新する。 |
+| `sud-design` | コマンド / 自動 | 設計ドキュメント一式を目的 → システム関連図 → ユースケース → ドメインモデル図の順の 対話的セッションで作成・更新する。 |
 | `grill-with-docs` | コマンド | 計画・設計を共有理解に至るまで問い詰め、決まった用語を用語集に、戻しにくい決定を ADR に、同じ種類の判断で再び使える決定を規範に書き残す。 |
 
 ### util
@@ -90,12 +87,13 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 | `inventory-launcher` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-project-values) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動する launcher。 |
 | `issue-restructure` | コマンド | open issue を根本課題ごとのクラスタに束ねて課題型の issue へまとめ直す案を、人間の承認を通して tracker へ反映する、triage の前段の対話。 |
 | `backlog-triage` | コマンド | open issue 全件を issue-triage に通し、AFK 境界の外側に残った判定と止まったものを、人間と設問のラウンドで決めて tracker と規範へ反映する対話 triage。 |
-| `issue-triage` | コマンド / 自動 | issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (着手可・close) は tracker へ反映し、外側の判定 (規範の文案・深掘り・報告者への質問) と止まったものを呼び出し元へ返す. |
+| `issue-triage` | コマンド / 自動 | issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (ready-for-agent・close・wontfix) は tracker へ反映し、外側の判定 (規範の文案・深掘り・報告者への質問) と止まったものを呼び出し元へ返す. |
 | `ready-for-agent-review` | コマンド / 自動 | issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・AI 委任範囲の未閉鎖・規範同士の衝突を反証済みの修正提案として issue ごとに返す (issue を N 件まとめて受け、tracker へは書き込まない). |
+| `stacked-implement` | コマンド | 名指しした実装 (issue 集合・分割計画・単一の仕様) を CL 計画に分け、CL ごとに CL エージェントを並列に起動して実装させ、merge まで追従する。 |
 
 ### third
 
-この plugin の skill が呼ぶ、または一緒に使う前提の、外部 repo の skill の同梱版。license は skills/third/ 直下の LICENSE.* にある。
+この plugin の skill が呼ぶ、または一緒に使う前提の、外部 repo の skill の同梱版。別の plugin を入れなくても動く。license は上流ごとの LICENSE を skills/third/ に同梱している。
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
@@ -122,12 +120,13 @@ Agent tool 経由で skill やメインの Claude から委譲される、専用
 | subagent | 用途 |
 | --- | --- |
 | `web-research` | WebSearch / WebFetch だけを持つ読み込み専用の Web 調査 subagent。 |
+| `adversarial-verifier` | 差分が宣言する主張 (仕様・要件・docstring・既存の契約・暗黙の主張) を、主張ごとに先に定めたオラクルに照らして壊しにいき、破れた主張を欠陥として返す攻撃役の subagent。 |
 | `refuter` | レビュー指摘・欠陥候補を 1 件受け取り、実コードの読解で反証が成立するかを判定する読み取り専用 subagent。 |
 | `reviewer` | レビュー skill の reviewer 工程を担う subagent。 |
 | `harness-component-reviewer` | Claude Code harness の component 1 種 (skill / CLAUDE.md / rules / hook / settings / agent 定義など) の file を、呼び出し元が渡す reference に照らして読み、違反と改善余地を findings の JSON で返す読み取り専用 subagent。 |
 | `harness-structure-reviewer` | Claude Code harness に書いた file の配置・統廃合・統治構造を、呼び出し元が渡す reference と harness 全体の一覧に照らして読み、構造提案を JSON で返す読み取り専用 subagent。 |
 | `cl-agent` | 並列 CL 実装の CL 計画の 1 行を受け持ち、担当範囲の CL を 1 本実装して出し、merge されるまでその CL への依頼と conflict 解消に応える subagent。 |
-| `transcript-auditor` | skill の実呼出 transcript 1 件を読み、渡された監査基準 checklist に照らした逸脱と、工程ごとの消費 (所要 / subagent 数 / token) と手戻りを決まった形式で報告する subagent。 |
+| `transcript-auditor` | skill の実呼出 transcript 1 件を読み、渡された監査基準 checklist に照らした逸脱と、工程ごとの境界 (最初と最後の record の uuid) と手戻りを決まった形式で報告する subagent。 |
 <!-- /generated:agents -->
 
 ## 同梱している hook
@@ -156,4 +155,4 @@ hook は install した環境でそのまま動くが、以下を前提にして
 
 MIT ([LICENSE](LICENSE))
 
-`skills/third/` の skill は [mattpocock/skills](https://github.com/mattpocock/skills) のもので、上流の license ([skills/third/LICENSE.mattpocock-skills](skills/third/LICENSE.mattpocock-skills)) に従う。
+[`skills/third/`](skills/third/) の skill はそれぞれの上流 repo のもので、上流の license に従う。上流ごとの LICENSE を `skills/third/LICENSE.<owner>-<repo>` として同梱している。

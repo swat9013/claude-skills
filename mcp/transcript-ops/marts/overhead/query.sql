@@ -6,6 +6,9 @@
 -- session 絞り込みは presentation 層の観測契約 (query 層は on-disk type 値・
 -- git 解決を持たない)。
 --
+-- **母集団は main session の transcript だけ** (`f.transcript_kind = 'main'` を全文に置く。
+-- 理由は store/schema.sql の `file.transcript_kind`)。
+--
 -- 文は `-- name: <識別子>` で区切り、`marts.load_statements` が名前で引く。
 
 -- 静的コンテキスト 4 種 (memory file を除く) の per-record token 概算を
@@ -18,7 +21,9 @@ SELECT sp.attachment_type AS attachment_type, r.session_id AS session_id,
            AS tokens
 FROM static_payload sp
 JOIN record r ON r.file_id = sp.file_id AND r.line_no = sp.line_no
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+JOIN file f ON f.file_id = r.file_id
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
 GROUP BY sp.attachment_type, r.session_id
 
 -- memory file 注入 1 件 = 1 行。`memory_key` (path 正規化 UDF) と `tokens`
@@ -37,7 +42,8 @@ SELECT memory_key(mi.path) AS memory_key, mi.path AS path,
 FROM memory_injection mi
 JOIN record r ON r.file_id = mi.file_id AND r.line_no = mi.line_no
 JOIN file f ON f.file_id = mi.file_id
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
 ORDER BY f.project_dir, f.path, r.line_no
 
 -- compaction boundary。`cumulative_dropped_tokens` は session 内で累積するので、
@@ -48,7 +54,9 @@ SELECT r.session_id AS session_id, r.cwd AS cwd, cb.trigger AS trigger,
        cb.cumulative_dropped_tokens AS cumulative_dropped_tokens
 FROM compact_boundary cb
 JOIN record r ON r.file_id = cb.file_id AND r.line_no = cb.line_no
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+JOIN file f ON f.file_id = r.file_id
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
 
 -- session の cwd (repo scope 解決の入力)。同一 session 内で複数 cwd が観測された
 -- 場合の tie-break (最初に観測された値を採る) は presentation 層が行う。
@@ -58,5 +66,6 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
 FROM record r
 JOIN file f ON f.file_id = r.file_id
 WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind = 'main'
   AND r.session_id != '' AND r.cwd != ''
 ORDER BY f.project_dir, f.path, r.line_no

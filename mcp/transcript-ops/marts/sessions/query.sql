@@ -18,6 +18,8 @@
 
 -- 対象 session が載っている transcript file と、その file での session の開始 ts。
 -- 対象 session は `:session_ids` (JSON array の文字列) で渡す。
+-- **main session の transcript だけを見る** (理由は store/schema.sql の
+-- `file.transcript_kind`。混ぜると最終 text が subagent の報告に化ける)。
 -- name: requested_file
 CREATE TEMP TABLE requested_file AS
 SELECT r.file_id AS file_id, r.session_id AS session_id,
@@ -25,6 +27,7 @@ SELECT r.file_id AS file_id, r.session_id AS session_id,
 FROM record r
 JOIN file f ON f.file_id = r.file_id
 WHERE r.session_id IN (SELECT value FROM json_each(:session_ids))
+  AND f.transcript_kind = 'main'
 GROUP BY r.file_id, r.session_id
 
 -- session ごとの transcript file。1 行も無い session id は「未観測」で、

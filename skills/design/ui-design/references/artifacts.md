@@ -1,13 +1,13 @@
 # 成果物の様式
 
-設計ディレクトリ 1 つ (`docs/design/<name>/`) が持つファイルと、それぞれの書式。SKILL.md の手順から Read される。
+設計ディレクトリ 1 つ (`<置き場>/` — SKILL.md の「1. 置き場を決める」で決めたもの) が持つファイルと、それぞれの書式。SKILL.md の手順から Read される。
 
 **表の列と ID の書式は `scripts/check-ui-design.py` が機械検査する。** 列名・見出しを変えると検査が読めなくなるので、様式は本書に合わせる。
 
 ## 配置骨格
 
 ```
-docs/design/<name>/
+<置き場>/
 ├── README.md          # 索引 + 画面遷移図の貼付 + 操作シナリオ + 省略の宣言
 ├── screens.md         # 画面インベントリ (画面一覧表 + 画面ごとの領域構成)
 ├── navigation.puml    # 画面遷移図の正本 (状態遷移図の記法)
@@ -87,6 +87,8 @@ Home --> Detail : 項目を選ぶ
 Detail --> Home : 戻る
 Detail --> [*] : 離脱
 ' uncovered: Home x 戻る — 入口画面なので戻り先が無い
+' uncovered: Home x 離脱 — 離脱は詳細を見終えた後の操作で、入口画面には置かない
+' uncovered: Detail x 項目を選ぶ — 詳細画面は項目の一覧を持たない
 @enduml
 ```
 

@@ -118,8 +118,13 @@ MART_NOTES = (
     "mart は全 project 横断で作る。repo での絞り込みは select_candidates の領分。",
     "excluded.no_prompt_source が急増していたら CLI の schema 変更で観測が劣化した"
     "疑い (silent zero にはならない設計)。急増の判定には前回 mart が要る。",
-    "store.broken_lines / store.unreadable_files / store.skipped_nested_files が"
+    "store.broken_lines / store.unreadable_files / store.unrecognized_nested_files が"
     "0 でなければ分母が欠けている (件数だけ出す。判断は読み手)。",
+    "分母は meta.transcript_kind が選ぶ。**既定 main は main session の transcript だけを"
+    "数える**。all は subagent の transcript も走査する。subagent の user record は "
+    "isSidechain / isMeta / tool_result を持つものが多く、その分は excluded の "
+    "sidechain / meta_injected / tool_result に落ちる。採用 (prompts) に入るのは、"
+    "どの除外にも当たらない subagent の record だけ。",
 )
 
 SLICE_NOTES = (
@@ -130,6 +135,8 @@ SLICE_NOTES = (
     "(host/owner/name) の distinct で、解決できなかった repo は数えない。",
     "repo / all_repos を渡さないと repo_root の git remote に解決する。解決できない"
     "ときは全 repo へ倒さず失敗する。",
+    "候補の母集団 (meta.transcript_kind) は provenance の mart の transcript_kind を"
+    "引き継ぐ。mart を渡さなければ main session の transcript だけ。",
 )
 
 

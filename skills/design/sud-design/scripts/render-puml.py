@@ -30,6 +30,16 @@
 
 Exit 0 = 違反なし (描画モードなら全件描画成功) / 1 = 違反あり or 検査・描画不能 /
 2 = 引数エラー。
+
+invariant (破ると exit 1):
+
+1. `plantuml --check-syntax` が落ちた source は描画しない
+2. class の属性行が `{field}` で始まらなければ違反
+3. 描画の stdout が SVG の root を持たなければ描画失敗とし、SVG を書かない
+4. plantuml が PATH に無ければ何も書かずに落ちる
+5. 引数の path が .puml を 1 件も指さなければ落ちる
+6. `--check` は検査だけを行い、SVG を書かない
+7. .puml が読めなければ (UTF-8 でない等) exit 1
 """
 
 from __future__ import annotations

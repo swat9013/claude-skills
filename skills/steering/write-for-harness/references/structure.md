@@ -19,6 +19,7 @@ write-for-harness の俯瞰 (構造) reviewer として dispatch されたとき
 - 規制がどの slot (Computational / Inferential × Guide / Sensor) に属するかは [architecture](./architecture.md) の 4 slot 表と Slot 選択フローで決める
 - 常時ロード層 (CLAUDE.md) と条件ロード層 (rules / docs 索引 / skill) の振り分けは [claude-md](./components/claude-md.md) の「載せる基準と段階開示」の表で決める — 載せる基準は「無いと判断が変わるか」、逃がし先は「誰がロードを起動するか」
 - skill の本文に書いた subagent の手順 (inline subagent) と agent 定義の振り分けは [agent](./components/agent.md) の「切り出す条件」で決める
+- rules の分割と統合は [rules](./components/rules.md) のチェックリストで決め、下の「分割・統合の判断規則」は rules に当てない — rules は `paths:` で自動ロードされて呼び出し入口を持たないので、同節の分割の軸 (課題領域の独立性) も対価 (trigger 語彙の競合・選択の誤り) も rules では成り立たない
 - 現在地と判断枠上の正位置が食い違うファイル・節が、配置提案の候補になる
 
 ## 分割・統合の判断規則

@@ -81,7 +81,8 @@ SELECT
 FROM user_prompt up
 JOIN record r ON r.file_id = up.file_id AND r.line_no = up.line_no
 JOIN file f ON f.file_id = up.file_id
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind IN (SELECT value FROM json_each(:transcript_kinds))
 -- 走査順 = (project dir 名, file 名, 行)。seq がこの順を写す
 ORDER BY f.project_dir, f.path, r.line_no
 

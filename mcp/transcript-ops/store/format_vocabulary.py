@@ -2,7 +2,8 @@
 
 ADR 0031 の format isolation は「**query 層 SQL に transcript の生 key 名が出たら
 違反**」という機械検査で守る。その「生 key 名」の定義を本 module 1 箇所に置き、
-gate script (`scripts/gate/verify-query-format-isolation.py`) が参照する。
+gate script (`scripts/gate/verify-query-format-isolation.py`) は本 module を
+import せず、`__main__` の CLI 出力 (禁止語を 1 行 1 語) だけに依存する。照合は gate 側が持つ。
 
 deny 語彙は `ON_DISK_NAMES` から **store schema が宣言している識別子を引いた差**
 として導出する (`forbidden_names`)。2 つを別々に手書きすると、store 側に列を足した
@@ -86,15 +87,9 @@ def forbidden_names() -> frozenset[str]:
     return ON_DISK_NAMES - GENERIC_NAMES - schema_identifiers()
 
 
-def violations(sql_text: str) -> list[str]:
-    """SQL 本文に現れた禁止語を出現順・重複なしで返す。
-
-    照合は語境界つきの完全一致。`record_uuid` のような store 側の識別子が
-    `uuid` に部分一致して偽陽性になるのを避ける。
-    """
-    forbidden = forbidden_names()
-    found: list[str] = []
-    for token in _IDENTIFIER_RE.findall(sql_text):
-        if token in forbidden and token not in found:
-            found.append(token)
-    return found
+if __name__ == "__main__":
+    # CLI 契約: 禁止語を 1 行 1 語・昇順で stdout へ出す。gate
+    # (`scripts/gate/verify-query-format-isolation.py`) は本 module を import せず、
+    # この出力だけに依存する (Gate 設計 doc の不変条件 (7))。
+    for _name in sorted(forbidden_names()):
+        print(_name)

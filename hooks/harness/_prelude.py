@@ -23,7 +23,7 @@ bool 引数にしないのは、既定値の側へ黙って倒れる余地を残
 
 判断を出す関数 (`deny()` / `allow()` / `rewrite()` / `passthrough()` 等) は stdout にも exit にも
 触らず、出力する本文を `Finished` に載せて raise する。消費側の hook は判定を `judge(stdin_text)` に
-書き、`main(stdin_text)` で `decide(judge, stdin_text)` を返す — これが `.claude/rules/test-editing.md`
+書き、`main(stdin_text)` で `decide(judge, stdin_text)` を返す — これが `.claude/rules/hook-tests.md`
 が python hook に求める `main(stdin_text) -> (exit_code, stdout_text)` の形で、テストは hook を
 import して in-process で呼べる (#1690)。process 境界 (stdin の読み取り・stdout への書き出し・exit) に
 触るのは hook 末尾の `if __name__ == "__main__":` だけにする:
@@ -251,7 +251,7 @@ def strip_here_documents(command: str) -> str:
 
     本体は shell がデータとして読むだけで実行しないため、判定対象から落とす。危険なコマンドの
     説明文を `cat > doc.md <<EOF` で書くだけで deny される誤爆を塞ぐ。開始行そのものは残す —
-    `find . -delete && cat <<EOF` のように実コマンドが同居する形を取り逃さないため。終端が
+    `find . -exec rm {} + && cat <<EOF` のように実コマンドが同居する形を取り逃さないため。終端が
     現れない入力は末尾まで落とす (実 shell も残りを本体として扱う)。引用文字列中の `<<`
     (`git commit -m "a << b"`) を開始と誤認する余地は残るが、shell parser 無しに実コマンドと
     区別する術は無いので受容する。

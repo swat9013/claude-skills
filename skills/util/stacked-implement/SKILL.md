@@ -9,7 +9,7 @@ description: 名指しした実装 (issue 集合・分割計画・単一の仕�
 
 このセッション (親セッション) は CL 計画を立て、CL 1 本につき CL エージェント (`swat-skills:cl-agent`) を 1 体、worktree 付きで並列に起動する。CL エージェント同士は担当範囲に沿って依頼し合い、決着しない事項と質問だけが親へ上がる。親はそれをユーザーに問う。
 
-親は自分では実装しない — 実装している間は、CL エージェントからの依頼と質問の中継が止まる。merge と issue close はユーザーの領分で、親は merge の合図を受けて後始末 (conflict 解消の指示・target の確認・worktree の片付け) をする。
+親は自分では実装しない — 実装している間は、CL エージェントからの依頼と質問の中継が止まる。merge と issue close はユーザーの領分で、親は merge の合図を受けて後始末 (conflict 解消の指示・target の付け替えの指示・merge 済みの branch の削除・worktree の片付け) をする。
 
 ## args
 
@@ -45,7 +45,7 @@ CL エージェントの最終報告の 1 行目は、次の 3 つの形のど�
 
 ## 手順
 
-途中の報告 (手順 1・2 の除外、手順 4 の計画、手順 5 の起動と CL 到達・見送り) は、次の作業の最初の tool 呼び出しと同じメッセージに書く。turn を終えるのは、ユーザーへの質問、CL エージェントの通知待ち、手順 6 の完了報告のときだけ。通知待ちで turn を終えても、CL エージェントの最終報告と SendMessage がこのセッションを再開させる。
+途中の報告 (手順 1・2 の除外、手順 4 の計画、手順 5 の起動と CL 到達・見送り) は、次の作業の最初の tool 呼び出しと同じメッセージに書く。turn を終えるのは、ユーザーへの質問、CL エージェントか triage の subagent の通知待ち、手順 6 の完了報告のときだけ。通知待ちで turn を終えても、CL エージェントの最終報告と SendMessage がこのセッションを再開させる。
 
 1. **入力を読む。** issue は title と本文を、置き場を常に明示して引く (`gh issue view <N> -R <issue 置き場> --json title,body,state,url,blockedBy` / `glab issue view <N> -R <issue 置き場>`) — cwd 推論に任せると、cwd と置き場が別 repo の構成で同じ番号の別 issue を読む。issue 置き場は、呼び出し元が指定していればそれを使う。指定が無ければ対象 repo の `docs/agents/issue-tracker.md` の宣言に従う。宣言が別の file を正本として指すなら、その file が置き場として宣言する値を使う。指された file が無いか値を読み取れなければ、対象 repo 自身へ落とさず、止まって、指された file の path と読めなかった理由を挙げて置き場をユーザーに問う — 正本が別 repo を宣言していると、同じ番号の別の issue を読むことになる。`docs/agents/issue-tracker.md` が無いか置き場の宣言を読み取れなければ対象 repo 自身を置き場とする。対象 repo は cwd の repo、呼び出し元の指定は起動時の依頼文による置き場の repo の名指しを指す。closed の issue・PR の番号・読めない issue は対象から外し、どれに当たるかを付けて報告へ載せる。範囲の展開は PR の番号も拾い、`gh issue view` はそれも返す — url が `/pull/` を含めば PR として closed と分ける。file は Read する。
 
@@ -79,18 +79,22 @@ CL エージェントの最終報告の 1 行目は、次の 3 つの形のど�
    - **CL エージェント同士で決着しない事項と、CL エージェントからの質問**: 親は裁定しない。双方の言い分 (質問なら選択肢と CL エージェントの推奨) を要約し、親の推奨を付けて AskUserQuestion で問う。答えを関係する CL エージェントへ SendMessage で返す — 親の裁定はユーザーの目に触れないまま CL に固まる
    - **依頼の完了の知らせ**: 応答テキストの報告に載せるだけでよい
    - **最終報告**: 1 行目の形で振り分ける。`CL` の行はそのまま応答テキストに書き写す。`返事待ち` は、待っている相手へ用件を渡すか、ユーザーへ問うかして、返事を SendMessage で返す。`見送り` は、その行と、それに依存する後続の行を見送りとし、理由を報告する。起動済みの後続を止めるかはユーザーに問う。他の行は止めない。ただし計画の修正で外した行の `見送り` は後続へ広げない (後続の扱いは直した計画が決めている)。報告にある push 済みの branch と CL を、計画の修正の項の問いに使う
+   - **起票された follow-up issue** (CL エージェントが `<issue 置き場>#<N>` で知らせてくる): `swat-skills:issue-triage` を invoke する background の subagent に、届いた issue を置き場ごとにまとめて渡す — 親が自分で triage する間は中継が止まる。`ready-for-agent` になった issue は、手順 1〜3 で 1 issue = 1 CL の行にして計画に足し、計画の修正として扱う。それ以外の結果は label を動かさず、返ったブロックを逐語で応答テキストに写す。停止理由が計画の CL を前提に挙げた issue は、issue と CL の名前を対にして応答テキストに書く (手順 7 で使う。会話の圧縮や再開の後も読めるように残す)
 
 6. **完了報告。** 全行が CL 到達か見送りになったら:
    - 全行を `CL <名前> → <参照> <URL>` の形で列挙し、stack 構造 (どの CL がどの branch を target にしているか) を添える
    - merge の推奨順: 前段から順に。依存の無い CL 同士では、他の CL と同じ file を触る数が少ないものから
    - 見送った行とその理由
-   - ユーザーに残る作業: merge したら、親へ「<CL> を merge した」と一言伝える。前段 CL を merge して source branch を削除すると、後続の target は自動で既定ブランチへ付け替わる (gh / glab とも。ただし環境依存があり、手順 7 で親が確かめる)。merge を伴わない branch 削除は後続の CL を close しうるので行わない
+   - ユーザーに残る作業: merge したら、親へ「<CL> を merge した」と一言伝える。CL は source branch を消さずに merge する (`gh pr merge` に `--delete-branch` を付けない・GitLab は「source branch を削除」を外す)。merge を伴わない branch 削除もしない。branch は手順 7 で親が後続の target を付け替えてから消す — 付け替えより先に消すと、後続の CL は close されうる
 
 7. **merge に追従する。** ユーザーから merge の合図が届くたびに、全 CL の状態を引く (`gh pr view <番号> --json state,baseRefName,mergeable` / `glab mr view <番号>`)。
-   - **open で conflict している CL**: その CL エージェントへ SendMessage で「既定ブランチへ merge が入ったので conflict を解消する」よう伝え、`${CLAUDE_SKILL_DIR}/../playbook-conflict-resolution/SKILL.md` の絶対 path と、CL の番号・head (その CL の branch)・base (その CL の現在の target) を添える
-   - **target が削除済みの branch のまま残っている CL**: その CL エージェントへ SendMessage で target の付け替えを指示する
+   - **open で conflict している CL**: その CL エージェントへ SendMessage で「既定ブランチへ merge が入ったので conflict を解消する」よう伝え、`${CLAUDE_SKILL_DIR}/../../procedure/playbook-conflict-resolution/SKILL.md` の絶対 path と、CL の番号・head (その CL の branch)・base (その CL の現在の target) を添える
+   - **merged の CL を target にしていて closed になった CL** (ユーザーが先に branch を消した): 下の片付けより先に当てる。merged の CL の head の commit を引き (`gh pr view <番号> --json headRefOid` / `glab mr view <番号>` の SHA)、その commit で branch を push し直し (`git push <remote> <SHA>:refs/heads/<branch>`)、closed の CL を reopen して (`gh pr reopen <番号>` / `glab mr reopen <番号>`)、次の項の付け替えに回す
+   - **merged の CL を target にしている open の CL**: その CL エージェントへ SendMessage で、merged の CL の target (`baseRefName`) を付け替え先として添えて付け替えを指示する。同じ branch を target にしている open の CL 全部から付け替え済みの返事が届いたら、状態を引き直して確かめる
+   - **merged の CL の source branch**: その branch を target にしている open の CL が残っていなければ remote から消す (`git push <remote> --delete <branch>`)。付け替えより先に消すと、後続の CL は close されうる
    - **merged か closed の CL**: 手順 5 で書き残した worktree を片付ける。`git worktree unlock <worktree の絶対 path>` → `git worktree remove <worktree の絶対 path>` → その CL の branch と、worktree 作成時に作られた branch を `git branch -d` で消す。`-d` が「not fully merged」で拒否した branch (squash merge した CL や、closed の CL) は強制せず、残したことをユーザーに報告する。`git -C` で他の worktree を指すと、worktree に閉じたセッションでは拒否されるので、worktree は絶対 path で渡す
+   - **既定ブランチへ merged になった CL を前提に、triage で停止した follow-up issue**: 手順 5 の follow-up issue の項と同じく triage にかけ直す
 
    SendMessage で CL エージェントが再開しないとき (このセッションが一度閉じられた後など) は、その CL の worktree に未 commit の変更が無いことを確かめて、worktree だけを片付ける (`git worktree unlock` → `git worktree remove`。CL の branch は残す)。そのうえで新しい CL エージェントを起動し、prompt には CL 計画の行・CL の番号・既存の branch 名・頼む作業を入れる。
 
-   全 CL が merged か closed になったら終える。
+   全 CL が merged か closed になり、triage の subagent が残っていなければ終える。

@@ -28,6 +28,17 @@ token 数はすべて **概算** (query 層の UDF `estimate_tokens_from_counts`
 
 `parse_args` / `main(argv)` を残してあるのは、mart schema を固定するテストが CLI
 形の entrypoint を通して観測契約を検査しているため。tool 側の入口は `run()`。
+
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. repo scope の fail-closed — 解決できないとき全 repo へ倒さず `RepoScopeUnresolved` で落ちる
+2. 落ちた session の開示 — repo 絞り込みで落ちた session 数を meta に出す
+3. 母集団 — subagent の transcript は数えない (親 session の id を持つので注入 session が化ける)
+4. 観測窓 — 窓の外の record は数えない
+5. path の畳み込み — worktree / checkout ごとの path は 1 file に畳む (二重計上しない)
+6. memory file の値 — 注入ごとの大きさの最大と、最初 / 最後の注入時刻を残す
+7. 静的コスト — source ごとに session 単位で実測した値を出す
+8. compaction — `cumulativeDroppedTokens` は session 内で max を取る (和にしない)
 """
 
 from __future__ import annotations

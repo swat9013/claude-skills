@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """guard-worktree-escape.py — worktree セッションから main checkout への逸脱を deny する guard。
 
+置く理由: 上流のバグ対策
+
 Claude Code には、git worktree 内のセッションから起動した subagent が path を
 worktree ではなく main repository root で解決する既知バグがある
 (anthropics/claude-code#29083 / #31546 / #44557)。subagent 側では hook 入力の

@@ -22,7 +22,7 @@
 画面・component・トークンは 3 つの file に分かれて書かれるので、片方だけ直して他方が取り残される壊れ方をする。同梱 script が相互参照を機械検査する:
 
 ```bash
-uv run ${CLAUDE_SKILL_DIR}/scripts/check-ui-design.py docs/design/<name>/
+uv run ${CLAUDE_SKILL_DIR}/scripts/check-ui-design.py <置き場>/
 ```
 
 検査する内容 (詳細と exit code は script の `--help` が正本):
@@ -42,12 +42,13 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/check-ui-design.py docs/design/<name>/
 未定義の 画面×操作 は、図の見た目からは「描き忘れ」と「設計判断としての未定義」が区別できない。`sud-design` と同じ script を共有して検査する:
 
 ```bash
-uv run ${CLAUDE_SKILL_DIR}/../sud-design/scripts/check-statechart.py docs/design/<name>/navigation.puml
+uv run ${CLAUDE_SKILL_DIR}/../sud-design/scripts/check-statechart.py <置き場>/navigation.puml
 ```
 
-- exit 0 = 全組合せが「遷移あり」か「理由つき uncovered 宣言」で説明されている
-- exit 1 の出力は組合せを名指しする。**定義漏れなら遷移を足し、意図した未定義なら `' uncovered: <画面> x <操作> — <理由>` を navigation.puml に足す**。理由を書けない組合せは定義漏れの側
-- 到達不能画面 (入口からたどり着けない画面) と初期遷移の欠落も同時に検査される
-- 宣言が残骸化した場合 (遷移を後から足した・画面を改名した) も同じ script が落とすので、遷移を変えたら再実行する
+検査する項目・記法・exit code の正本は script の `--help`。
 
-script は `sud-design` の持ち物で、記法の正本も向こう側にある。**複製しない** — 複製すると記法の仕様が 2 箇所へ分岐する。
+- exit 0 = 違反なし
+- exit 1 の出力は違反か検査不能を名指しする。**未定義の組合せ (`[statechart uncovered]`) は、定義漏れなら遷移を足し、意図した未定義なら `' uncovered: <画面> x <操作> — <理由>` を navigation.puml に足す**。理由を書けない組合せは定義漏れの側。**自分以外へ出ていく遷移 (ラベル無しの自動遷移を含む) が無い画面 (`[statechart dead end]`) は、どの画面からも届くべきフローの終わり (完了画面など) なら `<画面> --> [*]` で final state と宣言し、それ以外は遷移を足す (トップへ戻る等)**。final state を 1 つでも置くと全画面にそこへ届くことが要求されるので、全画面が向かう終わりが無い画面遷移では行き止まりにも遷移を足す側で直す。**final state へ届かない画面 (`[statechart no termination]`) は、届く遷移を足す**。**同じ画面・同じ操作 (操作無しの自動遷移を含む) で遷移先が分かれる遷移 (`[statechart nondeterministic]`) は、guard で排他に分けるか、遷移を 1 本にする**。検査不能 (`[statechart empty]` など) なら、図を `--help` の対応記法の範囲で書き直す
+- 宣言が残骸化した場合 (遷移を後から足した・画面を改名した) も同じ script が落とすので、遷移を変えたら再実行する。残骸の宣言は消すか、改名後の名前に直す
+
+script は `sud-design` の持ち物。**複製しない** — 複製すると記法の仕様が 2 箇所へ分岐する。

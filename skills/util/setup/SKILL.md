@@ -20,6 +20,7 @@ cwd の project を対象に、swat-skills を使うためのセットアップ�
 | cwd project の `.claude/settings.json` | 共有したい旨の回答があったときのみ書き先にする。例外は手順 3-1 の `worktree` キーと hook 登録で、常にここへ書く — hook は worktree の中で動き、gitignored な `.claude/settings.local.json` は新しい worktree に存在しない。`worktree` キーは clone ごとに同じ checkout 範囲を効かせるために共有する |
 | cwd project の worktree の成果物 (`.worktreeinclude` / 初期化 script `.claude/scripts/worktree-setup.sh` (追加型) または `<repo root>/scripts/worktree-setup.sh` (置き換え型) / `.gitignore` の `symlinkDirectories` 対象の末尾 `/` の修正) | 手順 3-1 で委譲先の手順どおりに書く |
 | cwd project の project memory (`CLAUDE.md` か `.claude/CLAUDE.md` があればそれ、無くて `AGENTS.md` があればそれ、どちらも無ければ `CLAUDE.md` を新規作成) | 手順 3-2 の「Worktree 方式」節と、手順 6 で全環境 sandbox と明言されたときの隔離の記載だけを書く。それ以外には触れない。Claude Code は既定で `CLAUDE.md` が無いときだけ `AGENTS.md` を読むので、`AGENTS.md` だけの repo に `CLAUDE.md` を作ると `AGENTS.md` が読まれなくなり、`CLAUDE.md` のある repo の `AGENTS.md` に書いた記載は `CLAUDE.md` が `@AGENTS.md` で取り込まない限り読まれない。記載を探すときは、project memory が `@` で取り込む file も範囲に含める |
+| cwd project の `docs/agents/domain.md` | 手順 2-4 の「規約の置き場」節だけを書く (`domain.md` が無ければ節だけの file を作る)。委譲先が書いた節を含め、他の節には触れない |
 | cwd project の `CONTRIBUTING.md` / `CLAUDE.local.md` | **無い場合のみ**生成する (ある場合は内容を監査しない) |
 | cwd project の pre-commit 設定 (`.pre-commit-config.yaml` / lefthook 設定 / `.husky/pre-commit` / `core.hooksPath` 配下の `pre-commit`) | gitleaks の呼び出しを足すだけ。既存の hook 記述は保持する |
 | `~/.claude/settings.json` (global) | **読むだけ**。上位 scope の deny / ask が project の allow を殺していないかの衝突検知に使う |
@@ -42,7 +43,9 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
 
 | 項目 | 充足の判定 | 不足時に進む手順 |
 |---|---|---|
-| tracker 設定 | `docs/agents/issue-tracker.md` と `docs/agents/triage-labels.md` が存在し、`issue-tracker.md` が「follow-up issue の深さ」節を持つ | 手順 2 |
+| tracker 設定 | `docs/agents/issue-tracker.md` と `docs/agents/triage-labels.md` が存在し、`issue-tracker.md` の「follow-up issue の起票」節が `${CLAUDE_SKILL_DIR}/references/follow-up-filing.md` の「突き合わせ」で変更提案ゼロで、`issue-tracker.md` に「follow-up issue の深さ」節が無い | 手順 2 |
+| 規約の置き場 | `docs/agents/domain.md` の「規約の置き場」節が `${CLAUDE_SKILL_DIR}/references/rule-sources.md` の「突き合わせ」で変更提案ゼロ (節が無いときは提案ゼロとみなす)。**宣言する候補は機械検査で確定しない** — 同書の候補のうち表に無いものがあれば手順 2-4 の対話で確定し、宣言しないなら対象外 | 手順 2-4 |
+| repo-local の label | `triage-labels.md` の「Repo-local labels」表に `needs-grilling` と `tracking-issue` の両方の行がある。**入れるか否かは機械検査で確定しない** — 無い label は手順 2-2 の対話で確定し、入れないなら対象外 | 手順 2-2 |
 | worktree 設定 | `.claude/settings.json` の `worktree` キー / `.worktreeinclude` / worktree 初期化 script (`.claude/scripts/worktree-setup.sh` か `<repo root>/scripts/worktree-setup.sh`) のいずれかが存在する (3 点すべてが要る repo は少ない。置くものが無い repo にも検討済みの印としてコメントだけの `.worktreeinclude` が置かれるので、1 つでも在れば導入済みと扱う)。ただし初期化 script と `.claude/settings.json` の hook 登録は対で、片方だけなら不足とする。対になる登録は、追加型 (`.claude/scripts/worktree-setup.sh`) なら `SessionStart` と `PostToolUse` (matcher `EnterWorktree`) の両方に script を呼ぶ entry、置き換え型 (`<repo root>/scripts/worktree-setup.sh`) なら `hooks.WorktreeCreate` | 手順 3-1 |
 | worktree 規範 | スコープ表の project memory に `## Worktree 方式` 節があり、手順 3-2 の正本の見出しと 2 行の箇条を逐語で含む (空行は照合しない。節は見出しから次の同レベル以上の見出しの直前まで。利用者が足した行は差分に数えない)。**入れるか否かは機械検査で確定しない** — 節が無ければ手順 3-2 の対話で確定し、入れないなら対象外 | 手順 3-2 |
 | settings | 手順 4-4 の群がすべて入っていて、手順 4 の突合で変更提案がゼロ。入っていない群があれば手順 4 で尋ね直す (見送った群は手順 8 で対象外として載せる) | 手順 4 |
@@ -50,13 +53,14 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
 | CLAUDE.local.md | `CLAUDE.local.md` (またはスコープ表の project memory) に隔離環境の記載がある。**この項目だけは機械検査で確定しない** — 隔離の有無は手順 6 の対話で確定する | 手順 6 |
 | secret 検査 | 手順 7 で検出する hook manager の設定に `gitleaks` の呼び出しがある。**入れるか否かは機械検査で確定しない** — 手順 7 の対話で確定し、入れないなら対象外 | 手順 7 |
 
-### 2. tracker 設定 (同梱 skill の手順を実行)
+### 2. tracker 設定と docs/agents の節
 
-委譲先 `setup-matt-pocock-skills` は `disable-model-invocation: true` のため Skill tool では起動できない。そこで本文を Read し、setup の中でその手順を実行する — この制約が塞ぐのは Skill tool による起動だけで、ユーザーが起動した setup の中で本文の手順を辿ることは塞がない。ユーザーへ実行を提案するだけで止めると、提案が流されたまま tracker 設定が欠ける。
+2-1 の委譲先 `setup-matt-pocock-skills` は `disable-model-invocation: true` のため Skill tool では起動できない。そこで本文を Read し、setup の中でその手順を実行する — この制約が塞ぐのは Skill tool による起動だけで、ユーザーが起動した setup の中で本文の手順を辿ることは塞がない。ユーザーへ実行を提案するだけで止めると、提案が流されたまま tracker 設定が欠ける。
 
 1. **委譲先の手順**: `docs/agents/issue-tracker.md` が無いときだけ、`${CLAUDE_SKILL_DIR}/../../third/setup-matt-pocock-skills/SKILL.md` を Read し、本文の手順どおりに実行する。本文中の相対 link (tracker 別の template 等) は同 SKILL.md のディレクトリを起点に Read する。本文が `triage` skill の導入を条件にしている箇所 (Section B の triage label・`docs/agents/triage-labels.md` の草稿と書き込み・`### Triage labels` 小見出し・label の作成) は、すべて導入済みとして実行する — `triage-labels.md` は `issue-triage` / `backlog-triage` / `issue-restructure` / `ready-for-agent-review` が読むので、本文の条件どおり飛ばすとこれらの skill の label 語彙が欠ける。`issue-tracker.md` はあり `triage-labels.md` だけが無いときは、本文の Section B と `triage-labels.md` の書き込みだけを行う
-2. **repo-local の label**: `triage-labels.md` の「Repo-local labels」表に無いものについて、`needs-grilling` (人との深掘り対話を待つ issue) と `tracking-issue` (計画的に子 issue へ分けた作業の親。直接は実装しない) を入れるかを AskUserQuestion (複数選択) で尋ねる。選択肢には入れない場合の影響を添える: `needs-grilling` が無いと triage は深掘り待ちを報告でしか返せない / `tracking-issue` が無いと計画的な分解の子まで follow-up issue として数え、深さを大きめに測る。選ばれた label は表 (無ければ節ごと作る) に書き、tracker に無ければ委譲先の本文と同じ手順で作る。見送った label は手順 8 で「提案のみ」とする
-3. **follow-up issue の深さ**: `issue-tracker.md` に「follow-up issue の深さ」節が無ければ、`${CLAUDE_SKILL_DIR}/../issue-triage/references/follow-up-depth.md` の「宣言の形」と「書く」に従って節を組み、示して承認されたら節だけを書き足す (既存の文書は作り直さない)。label の欄は 2 の結果を反映してから組む。節が無いと、triage は深さを確かめられず着手可の label を自動では付けない。見送られたら手順 8 で「提案のみ」とし、次アクションに節の追加を載せる
+2. **repo-local の label**: `triage-labels.md` の「Repo-local labels」表に無いものについて、`needs-grilling` (人との深掘り対話を待つ issue) と `tracking-issue` (計画的に子 issue へ分けた作業の親。直接は実装しない) を入れるかを AskUserQuestion (複数選択) で尋ねる。確認は質問であって提案ではないので、手順 4-4 と同じく idempotency の「提案ゼロ」とは別勘定にする。選択肢には入れない場合の影響を添える: `needs-grilling` に当たる label が無いと triage は深掘りを待つ issue を報告でしか返せない / `tracking-issue` に当たる label が無いと、triage が計画的に分けた作業の親を除けず、親が `ready-for-agent` になって、直接は実装しない issue に worker が着手しうる。選ばれた label は表 (無ければ節ごと作る。列は既定の label の表と同じく `Canonical name | Label in our tracker | Meaning` の 3 列) に書き、tracker に無ければ委譲先の本文と同じ手順で作る。見送った label は手順 8 で対象外とする
+3. **follow-up issue の起票**: `${CLAUDE_SKILL_DIR}/references/follow-up-filing.md` を Read する。`issue-tracker.md` に「follow-up issue の起票」節が無ければ、同書の「雛形」を示し、承認されたら同書が決める位置に節だけを書き足す。節があれば同書の「突き合わせ」に従う。節が無いと、agent は repo の起票の規範を持たず、重複の確認も発端の行も無しに起票しうる。`issue-tracker.md` に「follow-up issue の深さ」節があれば、起票の節の有無によらず、深さの節ごと外すことを変更提案として示す — triage は深さを測らないので、節は行われない手順を説明している。どちらかが見送られたら手順 8 で「提案のみ」とし、次アクションに見送った節の追加か削除を載せる。見送られた提案は再実行のたびに同じ提案として示す
+4. **規約の置き場**: `${CLAUDE_SKILL_DIR}/references/rule-sources.md` を Read し、同書の「候補の探し方」で、`domain.md` の「規約の置き場」節の表に無い候補を探す。候補があれば、候補ごとに中身の見出しを添えて、規約として宣言するものを AskUserQuestion (複数選択) で尋ねる。確認は質問であって提案ではないので、手順 4-4 と同じく idempotency の「提案ゼロ」とは別勘定にする。選択肢には宣言しない場合の影響を添える: `review-stage` の原則の観点が、その file の規約を規約違反の根拠に使えない。`domain.md` が無いときは、選ぶと節だけの `domain.md` を作ることも添える。選ばれた候補を行にして、節が無ければ同書の「雛形」の節を `domain.md` の末尾に書き、節があれば表に行を足す。節があれば同書の「突き合わせ」の変更提案も示す。`domain.md` の他の節には触れない。見送った候補は手順 8 で対象外とする
 
 終えたら (見送りがあっても) 手順 3 へ進む。
 
@@ -150,7 +154,7 @@ swat-skills の hook は一括 stage (`git add -A` 等) を止めない。秘匿
 
 ### 8. 完了報告
 
-全項目を表で報告する: 項目 / 結果 (**充足** = 検査を素通り / **適用** = 提案が承認され書き込んだ / **提案のみ** = 承認待ちや見送り / **未完了** = 停止・保留 / **対象外** = 手順 3-2 で入れないと決めた worktree 規範と、手順 4-4 で見送った settings の群と、手順 7 で入れないと決めた secret 検査) / 次アクション。セッション内で実行されなかった委譲先も未完了として必ず載せる。手順 3-1 の E2E 検証が通らなかったときは、次アクションに「成果物は書かれているが未検証。worktree-setup の E2E 検証をやり直す」と書く — 成果物が 1 つでもあれば次回の手順 1 は充足と判定するので、この報告が失敗の残る唯一の場所になる。repo に取り込む前提の file (個人スコープの `CLAUDE.local.md` / `.claude/settings.local.json` は除く) に書いたら、書き込んだ file ごとに提案に添えた理由を次アクションに並べる — 後から入った人が setup 由来の記述を消してよいか判断できるようにするため (取り込み方は実行 project の運用に従う)。手順 4-3 のコマンドが失敗して判定できなかった env 群は未完了とし、次アクションに 4-3 で特定した原因の解消を書く。env 群を適用したら、次アクションに Claude Code の再起動を載せる (再起動するまで todolist tool は出ない)。書き先が `.claude/settings.local.json` なら、fresh worktree / fresh clone のセッションには届かないことも添える。
+全項目を表で報告する: 項目 / 結果 (**充足** = 検査を素通り / **適用** = 提案が承認され書き込んだ / **提案のみ** = 承認待ちや見送り / **未完了** = 停止・保留 / **対象外** = 手順 2-2 で見送った repo-local の label と、手順 2-4 で見送った規約の置き場の候補と、手順 3-2 で入れないと決めた worktree 規範と、手順 4-4 で見送った settings の群と、手順 7 で入れないと決めた secret 検査) / 次アクション。セッション内で実行されなかった委譲先も未完了として必ず載せる。手順 3-1 の E2E 検証が通らなかったときは、次アクションに「成果物は書かれているが未検証。worktree-setup の E2E 検証をやり直す」と書く — 成果物が 1 つでもあれば次回の手順 1 は充足と判定するので、この報告が失敗の残る唯一の場所になる。repo に取り込む前提の file (個人スコープの `CLAUDE.local.md` / `.claude/settings.local.json` は除く) に書いたら、書き込んだ file ごとに提案に添えた理由を次アクションに並べる — 後から入った人が setup 由来の記述を消してよいか判断できるようにするため (取り込み方は実行 project の運用に従う)。手順 4-3 のコマンドが失敗して判定できなかった env 群は未完了とし、次アクションに 4-3 で特定した原因の解消を書く。env 群を適用したら、次アクションに Claude Code の再起動を載せる (再起動するまで todolist tool は出ない)。書き先が `.claude/settings.local.json` なら、fresh worktree / fresh clone のセッションには届かないことも添える。
 
 ## 最小集合 (手順 4-4 で群ごとに入れるかを尋ねる)
 

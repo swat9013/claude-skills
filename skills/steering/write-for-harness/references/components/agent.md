@@ -21,10 +21,10 @@ inline subagent を agent 定義に切り出すのは、次の**どれか 1 つ*
 
 ## model と effort の置き場
 
-- **定義の frontmatter に `model` と `effort` を両方書く。** 既定値と同じでも書く — 既定はモデルごとに違い、書いていないと定義を読んでも深さが決まらない。選び方は [models](../models.md) の「`model:` frontmatter 選定基準」と「effort の使いどころ」。
+- **定義の frontmatter に `model` と `effort` を両方書く (例外は下の `model: inherit` の役割)。** 既定値と同じでも書く — 既定はモデルごとに違い、書いていないと定義を読んでも深さが決まらない。選び方は [models](../models.md) の「`model:` frontmatter 選定基準」と「effort の使いどころ」。
 - **呼び出し元は Agent tool の `model` / `effort` 引数を渡さない。** `model` 引数は frontmatter より優先される。渡すと定義に固定した値が呼び出し元ごとに書き換わり、深さの置き場が散る。
 - **環境変数 `CLAUDE_CODE_EFFORT_LEVEL` は frontmatter の `effort` より優先される。** 設定されている環境では、定義ごとに変えた effort が全部その値に揃う。
-- **`model: inherit` は、呼び出し元と同じ深さで作業を分担する役割に限る** (親セッションの実装を並列に分け持つ等)。この役割では `effort` を書かず、セッションの effort で動かす。
+- **`model: inherit` は、呼び出し元のセッションと同じ深さで動くこと自体が役割の要件であるものに限る。** この役割では `effort` を書かず、セッションの effort で動かす。並列に作業を分け持つ役割でも、役割に要る深さを定義の側で決められるなら、`model` と `effort` を固定する — inherit にすると、人が対話のために選んだ effort が並列の数だけ費用に掛かる。
 
 ## haiku に任せる条件
 

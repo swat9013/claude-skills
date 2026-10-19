@@ -5,7 +5,8 @@
 API と schema をここに固定する。
 
 ```
-lake ~/.claude/projects/<project>/*.jsonl   (正本)
+lake ~/.claude/projects/<project>/*.jsonl                        (正本・main)
+     ~/.claude/projects/<project>/<session>/subagents/**/*.jsonl  (正本・subagent)
   │  ingest.py — on-disk 形式を知る唯一の層 (+ adapter/transcript.py)
   ▼
 ~/.cache/claude-transcript-ops/store-v<N>.sqlite3   (0700)
@@ -30,12 +31,12 @@ mart meta に転記するだけでよい (実測: full ingest 16.9 秒 / 差分 
 (`~/.cache/claude-transcript-ops`) の順で決まる。テストは `tmp_path` を渡す
 (`tests/conftest.py` が全テストで既定を tmp へ差し替える)。
 
-store file 名は `store-v<N>-<lake digest>.sqlite3`。**1 lake = 1 store** —
-`transcripts_dir` は引数で切り替わるため、1 つの store を別 lake で共有すると
-「lake から消えた file の row を消す」規則が互いの row を消し合う。
+store file 名は `store-v<N>-<lake digest>.sqlite3` で、lake の digest が 1 lake = 1 store
+を実装する — 1 つの store を別 lake で共有すると「lake から消えた file の row を消す」規則が
+互いの row を消し合う (設計の正本は設計 doc の [不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査))。
 
 `SyncReport`: `ingested_files` / `unchanged_files` / `removed_files` /
-`unreadable_files` / `skipped_nested_files` / `records` / `broken_lines`。
+`unreadable_files` / `unrecognized_nested_files` / `records` / `broken_lines`。
 **`unreadable_files` と `broken_lines` は 0 でない値が出ること自体が観測劣化の
 シグナル**なので、mart meta へそのまま出す (silent skip の可視化)。
 
@@ -45,7 +46,7 @@ store file 名は `store-v<N>-<lake digest>.sqlite3`。**1 lake = 1 store** —
 
 | 表 | 単位 | 用途 |
 |---|---|---|
-| `file` | transcript 1 file | fingerprint `(mtime_ns, size_bytes)` / `broken_lines` |
+| `file` | transcript 1 file | fingerprint `(mtime_ns, size_bytes)` / `broken_lines` / `transcript_kind` (main / subagent。母集団の選択の機構) |
 | `unreadable_file` | 読めなかった file | 「存在しない」と「読めない」を分ける |
 | `record` (spine) | lake の 1 行 | 全 record type が 1 行入る (I4)。`ts_epoch` が窓判定の機構 |
 | `tool_use` | assistant の tool_use block | tool 実行 + **ペア済みの結果** |
@@ -97,15 +98,11 @@ projection を足すとき:
 `present.py` が組み立てている。どの mart も同じ数字を出すべきなので、#497 以降で
 2 つ目が要るとわかった時点で store の関数へ寄せる (SQL をコピーしない)。
 
-## 不変条件
+## 不変条件の実装の注記
 
-| | 内容 | 検査 |
-|---|---|---|
-| I1 | ingest の冪等 (file 単位の全置換) | `tests/test_store_ingest.py` |
-| I2 | 差分 sync == full rebuild | 同上 (canonical dump 比較) |
-| I3 | format isolation (query 層 SQL に生 key 名を出さない) | `scripts/gate/verify-query-format-isolation.py` |
-| I4 | 未知 record type も spine に入る | `tests/test_store_ingest.py` |
-| I5 | store は lake の純関数 (schema drift / 旧世代 / 削除痕跡を残さない) | `tests/test_transcript_store_lifecycle.py` |
+不変条件は I1 冪等 / I2 差分 sync == full rebuild / I3 format isolation / I4 未知の record も
+spine に入る / I5 store は lake の純関数。検査との対応の正本は設計 doc の
+[不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査)。以下は store がそれを守るための実装の注記。
 
 race 対策は検査ではなく**順序**で保証する: fingerprint は read の前に `stat` し、
 読込完了後にのみ記録する。読込中に伸びた file は fingerprint が合わず次回必ず再取得。
@@ -121,12 +118,19 @@ drop & rebuild は lock を握ったまま走るので、前方一致だと stor
 自分の lock file を巻き込み、unlink 済み inode を握った側が排他を失う。同じ理由で
 **旧世代の lock file は回収しない** (0 byte / 世代なので放置してよい)。
 
-削除は `PRAGMA secure_delete` 込みで行う。row を消しても内容は free page に残るため、
-lake から消えた transcript の手入力 prompt が cache file のバイト列に残留する
-(実測で確認済み)。**cache invariant を物理層まで通す**のがこの PRAGMA の役割。
+削除は `PRAGMA secure_delete` 込みで行う。row を消しても内容は free page に残るので、
+[cache invariant](../../../docs/design/transcript-observation/README.md#不変条件と検査) をこの PRAGMA で物理層まで通す。
 
-## 既知の観測範囲外
+## main と subagent
 
-`<project>/<session>/subagents/*.jsonl` (実測 789 file) は ingest しない。現行の
-観測範囲 (project 直下) を移行で広げないためで、件数は `SyncReport.skipped_nested_files`
-に出る。取り込みの是非は別 issue で判断する。
+`<project>/*.jsonl` は main、`<project>/<session>/subagents/` 配下は subagent で、subagent の
+record は親の `session_id` を持つ (session 単位の mart は `transcript_kind` で母集団を選ぶ)。
+意味の正本は設計 doc の [不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査)。実装の入口:
+
+- 置き場の判定は `ingest.transcript_kind_of` が正本。各 record の `transcript_kind` は
+  `file_id` から引く
+- 呼び出し側に母集団を選ばせる mart の helper は `marts/transcript_kind.py`
+- ad-hoc の `query` tool で mart と突き合わせるときは
+  `JOIN file f ... WHERE f.transcript_kind = 'main'` で揃える
+- どちらの置き場にも当たらない深い file は ingest せず、件数を
+  `SyncReport.unrecognized_nested_files` に出す (黙って落とさない)

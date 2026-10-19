@@ -12,12 +12,24 @@ slice に載せるのは契約逸脱の述語を評価できる最小限に絞�
 - session ごとの meta と、**store に 1 行も無かった session id の欠落一覧**
 
 **未観測と観測して空を返し分ける**: 見つからない id を error にしないのは、log に
-載った id の一部が lake に無い (subagent の入れ子 transcript / 別 lake / 書き出し前)
+載った id の一部が lake に無い (別 lake / 書き出し前)
 のは運用上ふつうに起きるからで、1 件の欠落で全体の観測を捨てさせない。代わりに
 `missing_session_ids` へ必ず出し、`sessions` に空の timeline で載る「観測して何も
 しなかった session」と混ぜない。
 
 出力: output_dir に sessions-<timestamp>-<id digest>.json を書き、**path と meta だけを返す**。
+
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. 未観測 id — error にせず `missing_session_ids` に出し、観測して空の session と混ぜない
+2. id の拒否 — 空・空白の session id は `SessionIdsRejected` で拒否する (fail-closed)
+3. 母集団 — 見るのは main session の transcript だけ (同じ session id を持つ subagent の
+   record は tool_use にも final_text にも混ぜない)
+4. 再掲の畳み込み — resume 等で同じ record (同 uuid) が別 file に再掲されても timeline を二重にしない
+5. tool_use の時系列 — session 順に tool 名 + 主要引数 + outcome を出す
+6. 止められた tool_use — permission / hook に止められた呼び出しを deny 文言の抜粋つきで出す
+7. 最終 text — text を持つ最後の assistant message の text を出す
+8. 出力の非上書き — 同じ秒に別 session の slice を書いても互いを上書きしない
 """
 
 from __future__ import annotations
@@ -58,8 +70,9 @@ FINAL_TEXT_SEPARATOR = "\n\n"
 PATTERN_TOOLS = ("Grep", "Glob")
 
 NOTES = [
-    "missing_session_ids は store (project 直下の transcript) に 1 行も無かった id。"
-    "subagent の入れ子 transcript は ingest 対象外なので、そこにしか無い id もここに出る",
+    "missing_session_ids は main session の transcript に 1 行も無かった id。"
+    "subagent の transcript は読まない — subagent の record は親 session の id を持つので、"
+    "混ぜると最終 text と tool_uses に subagent の分が入る",
     "sessions に載った session の tool_uses / denials が空なら、観測した上で"
     "該当が 0 件 (未観測ではない)",
     "outcome は permissions mart の refined 語彙 + deny_hook。deny_ で始まるものが"
@@ -193,7 +206,7 @@ def build(session_ids: list[str], transcripts_dir: Path,
             ],
             "store": {
                 **anomalies,
-                "skipped_nested_files": sync_report.skipped_nested_files,
+                "unrecognized_nested_files": sync_report.unrecognized_nested_files,
                 "synced_files": sync_report.ingested_files,
             },
             "notes": NOTES,

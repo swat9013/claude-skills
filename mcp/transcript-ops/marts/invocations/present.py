@@ -14,6 +14,19 @@ insufficient-data) の確定は SKILL.md 手順の LLM 段階、最終採否は�
 の出力契約)。抜粋も候補と関係なく全 unit 一律で max 3 件 (session 重複排除・新しい順)
 出す。
 
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. 数えるのは観測窓内の record だけ (窓外は除く)
+2. subagent transcript の呼出しは数えない (母集団は main session)
+3. 無関係な Read と、分母未収載の built-in slash は skill 呼出しに数えない
+4. 分母は skill 系と plugin 系が同じ源 (config) を読み、`select:Bash` のような誤
+   invoke の prefix を plugin 分母に生やさない
+5. 提示 (presented) と呼出しは表記が違っても (plugin の server 名と MCP tool 完全名)
+   join する
+6. rule は候補までで bucket を確定しない (`open_predicates` を残す)
+7. 編集のみの session も sessions に載せ、2 つの ts 欄は同じ表記で出す
+8. outcome は ingest が確定した base 語彙で、permissions mart と一致する
+
 出力: output_dir に mart-<timestamp>.json を書き、**path だけを返す** (mart 本体は
 context に載せない)。
 

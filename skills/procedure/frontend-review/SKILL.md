@@ -17,7 +17,7 @@ description: >-
 
 実装役が能動的に self-check するのは [references/tactics.md](references/tactics.md) の **[S] tactic のみ** (36 tactics 中 25 個)。実装が終わってから本 skill の「レビューする」へ進む。
 
-対象リポジトリに `ui-design` の成果物 (`docs/design/<name>/`) があるなら、実装前に `tokens.md` の semantic token を実装ファイルへ落とし、`components.md` の state 一覧を満たす。
+対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」が、実装する画面を縛る `ui-design` の成果物を案内しているなら、実装前に `tokens.md` の semantic token を実装ファイルへ落とし、`components.md` の state 一覧を満たす。
 
 ## レビューする
 
@@ -28,6 +28,8 @@ description: >-
    ```bash
    uv run ${CLAUDE_SKILL_DIR}/scripts/review-static.py <target-html> [<target-css>]
    ```
+
+   CSS を省くと HTML の link から集める。exit 2 (入力が読めない) なら stderr の path を確かめ、CSS を引数で明示して再実行する
 
 2. [references/checklist.md](references/checklist.md) を Read する
 3. 51 項目のうち Claude 主観 37 項目を Y/N 判定する

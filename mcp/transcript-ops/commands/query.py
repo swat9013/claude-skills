@@ -14,6 +14,15 @@ mart は「毎回同じ問いに同じ答えを返す観測契約」であり、
 - **行数 cap** つきで、結果は `/tmp` へ書いて **path だけを返す** (他 tool と同じ
   「大きく出して絞って読む」消費パターン。context に本体を載せない)
 
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. 接続は read-only で、書き込み文は実行できない
+2. 文は単一の SELECT / WITH だけで、それ以外は `QueryRejected` で拒否する
+3. 行数 cap を超えたら `meta.truncated_by_limit` で可視化し、結果は path だけを返す
+4. store の値を失敗文言・出力に載せない (TEXT で読めない値・SQLite が引用した値・BLOB の中身)
+5. 書き手が直せる失敗だけを `QueryFailed` に包み、store 側の失敗 (破損など) は包まず crash として上げる。
+   失敗の分類 (`FailureKind`) が、文言に載せる範囲と添える次の一手を決める (項目 4 の秘匿を担う)
+
 store の schema は `SELECT sql FROM sqlite_master` で引ける。列の意味は
 `store/schema.sql` が正本。
 
@@ -351,7 +360,7 @@ def run_query(sql: str, params: dict | list | None, limit: int,
             "columns": columns,
             "store": {
                 **anomalies,
-                "skipped_nested_files": sync_report.skipped_nested_files,
+                "unrecognized_nested_files": sync_report.unrecognized_nested_files,
                 "synced_files": sync_report.ingested_files,
             },
         },

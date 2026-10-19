@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""guard-write.py — PreToolUse / Write|Edit: file_path が機密パスなら deny する最終防衛線。
+"""guard-write.py — PreToolUse / Write|Edit: file_path が機密パスなら deny する。
+
+置く理由: backstop
+    Bash の redirect (`printf x > .env`) という抜け道はあるが、範囲の重なる `Edit()` deny は利用者の
+    global settings にしか無く plugin の配布先に届かないので、配布先ではこの hook が唯一の層になる
+    (docs/design/hooks/README.md「backstop と範囲が重なる guard」・ADR 0108)。
 
 fail-posture: **fail-closed** (#598 / ADR 0046)。payload を読めなかったとき (stdin が空 / JSON
 として不正 / tool_input が object でない) は判断保留 = 素通しにせず deny する。読み取り失敗を

@@ -21,6 +21,11 @@ CREATE TEMP TABLE IF NOT EXISTS scoped_event (
     input_excerpt        TEXT NOT NULL,
     input_keys           TEXT NOT NULL,
     session_id           TEXT NOT NULL,
+    -- subagent の実行なら transcript の path、main session なら空文字。subagent は
+    -- 親 session の id を持つので、session 内の並び (bypass 系列) はこの列でも区切る。
+    -- main を空文字に揃えるのは、resume で複数 file にまたがる main session の系列を
+    -- file ごとに割らないため
+    subagent_transcript  TEXT NOT NULL,
     ts                   TEXT NOT NULL,
     ts_epoch             REAL,
     cwd                  TEXT NOT NULL,
@@ -100,6 +105,9 @@ SELECT DISTINCT tool FROM scoped_event
 --
 -- 窓は `ts_epoch` で切る。`NULL` (ts 欠損) は保守的に窓内へ倒す — 件数は meta に
 -- 出すので、黙って増えることはない。
+--
+-- 母集団は `:transcript_kinds` (JSON 配列) の transcript だけ。既定は main で、
+-- subagent を含めるかは呼び出し側が選ぶ (`marts.transcript_kind`, #1456)。
 -- name: refined_event
 WITH refined AS (
     SELECT
@@ -116,6 +124,8 @@ WITH refined AS (
         tu.result_text  AS result_text,
         tu.denial_kind  AS raw_denial_kind,
         r.session_id    AS session_id,
+        CASE WHEN f.transcript_kind = 'subagent' THEN f.path ELSE '' END
+                        AS subagent_transcript,
         r.ts            AS ts,
         r.ts_epoch      AS ts_epoch,
         r.cwd           AS cwd,
@@ -133,7 +143,8 @@ WITH refined AS (
     FROM tool_use tu
     JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
     JOIN file f ON f.file_id = tu.file_id
-    WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+    WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+      AND f.transcript_kind IN (SELECT value FROM json_each(:transcript_kinds))
 )
 SELECT
     tool, command,
@@ -141,7 +152,8 @@ SELECT
     -- あり (Monitor 等)、区別しないと B 軸の 1 unit が引数ごとに割れる
     CASE WHEN tool = 'Bash' THEN command_head(command) ELSE '' END AS command_head,
     target_path, target_url,
-    input_excerpt, input_keys, session_id, ts, ts_epoch, cwd, outcome,
+    input_excerpt, input_keys, session_id, subagent_transcript, ts, ts_epoch, cwd,
+    outcome,
     CASE outcome
         WHEN 'deny_user-rejected' THEN 'user-rejected'
         WHEN 'deny_permission-rule' THEN 'permission-rule'
@@ -297,9 +309,12 @@ ORDER BY ev.tool, ev.command_head, e.entry_no
 
 -- deny 直後の同 tool 呼び出し (bypass 系列)。session 内の位置で lookahead を測り、
 -- 経過秒で打ち切る。**「意図の同一性」は判定しない** — 系列をそのまま人間に出す。
+-- 系列は (session, subagent の transcript) ごとに切る — subagent は親 session の id を
+-- 持つので、session だけで切ると別の agent の呼び出しが deny の直後として対になる。
 -- name: bypass_pairs
 WITH ordered AS (
-    SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts, seq) AS pos
+    SELECT *, row_number() OVER (PARTITION BY session_id, subagent_transcript
+                                 ORDER BY ts, seq) AS pos
     FROM scoped_event
 )
 SELECT
@@ -323,6 +338,7 @@ SELECT
 FROM ordered d
 JOIN ordered follow
      ON follow.session_id = d.session_id
+    AND follow.subagent_transcript = d.subagent_transcript
     AND follow.pos > d.pos
     AND follow.pos <= d.pos + :lookahead
     AND follow.tool = d.tool
@@ -352,6 +368,8 @@ ORDER BY denial_kind, denial_reason_label, ts DESC, seq
 -- command は 23 種しかなく、**行ごとに求めると全体の過半を占める** (per-row UDF も
 -- distinct 表との TEXT join も同じ 5.9 秒)。present 側で command ごとに 1 回だけ
 -- 求める。
+--
+-- 母集団は実行 (`refined_event`) と同じ `:transcript_kinds` で選ぶ。
 -- name: hook_firings
 SELECT hf.hook_name AS hook_name, hf.hook_event AS hook_event,
        hf.command AS command,
@@ -361,7 +379,8 @@ SELECT hf.hook_name AS hook_name, hf.hook_event AS hook_event,
 FROM hook_firing hf
 JOIN record r ON r.file_id = hf.file_id AND r.line_no = hf.line_no
 JOIN file f ON f.file_id = hf.file_id
-WHERE r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+  AND f.transcript_kind IN (SELECT value FROM json_each(:transcript_kinds))
 ORDER BY f.project_dir, f.path, hf.line_no
 
 -- 観測の劣化シグナル (`store_anomalies`) は `store.anomalies()` へ引き上げた

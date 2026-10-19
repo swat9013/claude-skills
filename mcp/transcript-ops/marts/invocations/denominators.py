@@ -6,6 +6,16 @@ cache に入れると staleness が混ざる (ADR 0031)。よって mart が実�
 汎用スキル制約により依存は Claude Code 標準ファイルのみ (installed_plugins.json /
 plugin manifest / ~/.claude/skills/ / 現 repo .claude/skills/ / ~/.claude.json /
 ~/.mcp.json)。swat-skills 固有資産 (tool-signatures.jsonl 等) には触らない。
+
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. plugin と個人 skill の見分けは manifest の有無で決める
+2. skill 分母は実体のある skill だけを持つ (manifest の str 形で phantom を生やさない /
+   SKILL.md の無い entry と skill 内入れ子の SKILL.md は数えない)
+3. 同梱 MCP server は登録済み plugin の namespace で 1 回だけ数える (未登録の repo は
+   project scope のまま)
+4. MCP 分母は `~/.claude.json` の global / project-entry / project-enabled を scope
+   付きで列挙する (値の検査)
 """
 
 from __future__ import annotations
@@ -195,7 +205,7 @@ def bundling_plugin_of(repo_root: Path, plugin_ids: Collection[str]) -> str | No
     """repo 自身が登録済み plugin の root なら、その plugin 名を返す。
 
     このとき repo の `.mcp.json` は plugin 同梱定義と project scope 定義の二役で
-    読まれる ([`docs/plugin-spec.md`](../../../../docs/plugin-spec.md) の
+    読まれる ([`docs/reference/plugin-spec.md`](../../../../docs/reference/plugin-spec.md) の
     「MCP server の同梱」)。分母を 2 経路に割ると invocation 実績は plugin 側の id に
     全部乗り、project 側が呼出 0 件の偽の未使用候補になる (#508 d)。
     """

@@ -13,8 +13,8 @@ tool 単位に保つ。
 
 構成: 観測契約を持つ tool (`scan_permissions` / `scan_prompts` /
 `select_candidates` / `scan_invocations` / `scan_overhead` / `slice_sessions`) は
-store への query (`marts/`)、`find_invocations` (直読み残置) と `query` (read-only ad-hoc) は
-`commands/`。
+store への query (`marts/`)、`find_invocations` (直読み残置) と `query` (read-only ad-hoc) と
+`sum_stage_usage` (監査した transcript 1 件の直読み) は `commands/`。
 
 **server は bucket を確定しない** — 決定的ルール (`marts/*/rules.py`) は評価するが、
 出すのは候補 (`bucket_candidate`) と導出過程 (`rule_fired` / `rule_inputs`) と
@@ -34,6 +34,15 @@ mart の `contract.notes`) にする (ADR 0031: context 常駐コストの削減
 **本 module が持つのは配線だけ** — tool 関数は commands / marts の `run()` へ 1 式で
 委譲する。手続きがここに溜まると、LLM 向け interface (docstring) の module に
 振る舞いが乗り、実装単体では検証できない合成が生まれる。
+
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. 登録する tool の顔ぶれは固定 (追加は消費者の実在を条件とする — これはレビューで見る。設計 doc の不変条件 (7))
+2. tool の返り値は path (または paths) + meta と、本文を含まない要約 (件数・index など) だけで、
+   mart / slice の本文 (candidates 等) を載せない
+3. commands / marts が投げる domain error はすべて `ANTICIPATED_ERRORS` に入り、文言が LLM へ届く
+4. 翻訳できない形 (async) の tool は登録の時点で拒否する
+5. repo を解決できないとき、全 repo へ黙って倒さず失敗する (他 project の prompt を載せない)
 
 配布・登録は plugin root の `.mcp.json`。server 名 `transcript-ops`、tool 完全名は
 `mcp__plugin_swat-skills_transcript-ops__<tool>`。
@@ -57,12 +66,14 @@ from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
 
 from commands import find_invocations as find_invocations_mod  # noqa: E402
 from commands import query as query_mod  # noqa: E402
+from commands import stage_usage as stage_usage_mod  # noqa: E402
 from store.lock import SyncLockTimeout  # noqa: E402
 from marts.invocations import present as invocations_mart  # noqa: E402
 from marts.overhead import present as overhead_mart  # noqa: E402
 from marts.permissions import present as permissions_mart  # noqa: E402
 from marts.prompts import present as prompts_mart  # noqa: E402
 from marts.sessions import present as sessions_slice  # noqa: E402
+from marts.transcript_kind import TranscriptKindRejected  # noqa: E402
 
 SERVER_NAME = "transcript-ops"
 SERVER_VERSION = "0.1.0"
@@ -93,7 +104,9 @@ ANTICIPATED_ERRORS = (
     sessions_slice.SessionIdsRejected,
     query_mod.QueryRejected,
     query_mod.QueryFailed,
+    stage_usage_mod.StageUsageRejected,
     SyncLockTimeout,
+    TranscriptKindRejected,
 )
 
 
@@ -134,6 +147,7 @@ def tool():
 def scan_permissions(
     section: str = "project",
     days: int = permissions_mart.DEFAULT_DAYS,
+    transcript_kind: str = "main",
     repo_root: str | None = None,
     output_dir: str = str(permissions_mart.DEFAULT_OUTPUT_DIR),
     transcripts_dir: str = str(permissions_mart.DEFAULT_TRANSCRIPTS_DIR),
@@ -147,6 +161,8 @@ def scan_permissions(
         section: project (cwd × 当該 repo 実績) / global (~/.claude/settings.json ×
             全 repo 実績) / all
         days: 観測窓 (日)。既定 30
+        transcript_kind: 数える transcript。main (main session だけ) / all
+            (subagent を含める)。既定 main
         repo_root: project section の起点。省略時は server プロセスの cwd
         output_dir: 出力先。既定 /tmp/inventory-permissions
         transcripts_dir: transcript lake。既定 ~/.claude/projects
@@ -162,6 +178,7 @@ def scan_permissions(
     return permissions_mart.run(
         section=section,
         days=days,
+        transcript_kind=transcript_kind,
         repo_root=repo_root,
         output_dir=output_dir,
         transcripts_dir=transcripts_dir,
@@ -209,6 +226,7 @@ def scan_invocations(
 @tool()
 def scan_prompts(
     days: int = prompts_mart.DEFAULT_DAYS,
+    transcript_kind: str = "main",
     output_dir: str = str(prompts_mart.DEFAULT_OUTPUT_DIR),
     transcripts_dir: str = str(prompts_mart.DEFAULT_TRANSCRIPTS_DIR),
     text_limit: int = prompts_mart.DEFAULT_TEXT_LIMIT,
@@ -218,6 +236,8 @@ def scan_prompts(
 
     Args:
         days: 観測窓 (日)。既定 30
+        transcript_kind: 数える transcript。main (main session だけ) / all
+            (subagent を含める)。既定 main
         output_dir: 出力先。既定 /tmp/inventory-values。分母の違う棚卸し
             (engineering-values) は別 dir に分ける
         transcripts_dir: transcript lake。既定 ~/.claude/projects
@@ -229,6 +249,7 @@ def scan_prompts(
     """
     return prompts_mart.run_scan_prompts(
         days=days,
+        transcript_kind=transcript_kind,
         output_dir=output_dir,
         transcripts_dir=transcripts_dir,
         text_limit=text_limit,
@@ -253,7 +274,8 @@ def select_candidates(
 
     Args:
         mart: provenance。`scan_prompts` が返した mart JSON の path を渡すと、
-            その観測窓 (`days` 相当) を再利用して候補を絞る。省略時は `days` から
+            その観測窓 (`days` 相当) と数える transcript (`transcript_kind`) を
+            再利用して候補を絞る。省略時は `days` から
             窓を作る (既定 30) — mart の事前生成は不要
         min_chars: 候補に含める text_chars の下限。既定 60
         repo: 完全一致で絞る repo 識別子
@@ -368,6 +390,33 @@ def slice_sessions(
 
 
 @tool()
+def sum_stage_usage(
+    transcript: str,
+    stages: list[dict[str, str]],
+    transcripts_dir: str = str(stage_usage_mod.DEFAULT_TRANSCRIPTS_DIR),
+    output_dir: str = str(stage_usage_mod.DEFAULT_OUTPUT_DIR),
+    now: str | None = None,
+) -> dict[str, Any]:
+    """transcript 1 件の工程ごとの所要 / subagent 数 / token を集計した slice を書き、path を返す。
+
+    Args:
+        transcript: 集計する transcript (.jsonl) の path。transcript lake の下に限る
+        stages: 工程の境界 `[{stage, from_uuid, to_uuid}, ...]`。uuid は工程の最初と
+            最後の record。見つからない uuid は error にせずその工程の `error` に出る
+        transcripts_dir: transcript lake。既定 ~/.claude/projects
+        output_dir: 出力先。既定 /tmp/skill-usage-audit
+        now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
+    """
+    return stage_usage_mod.run(
+        transcript=transcript,
+        stages=stages,
+        transcripts_dir=transcripts_dir,
+        output_dir=output_dir,
+        now=now,
+    )
+
+
+@tool()
 def query(
     sql: str,
     limit: int = query_mod.DEFAULT_ROW_LIMIT,
@@ -388,7 +437,8 @@ def query(
     **想定外の追加検査だけに使う。** 恒常的に必要になった集計は mart の分割出力 /
     derived view の拡張として提案する — ad-hoc query を手順に埋めると、観測契約を
     持たない集計が棚卸しの既定経路になる。schema は
-    `SELECT sql FROM sqlite_master` で引ける。
+    `SELECT sql FROM sqlite_master` で引ける。store は subagent の transcript も持つ
+    (`file.transcript_kind`)。mart と突き合わせるときは同じ母集団に絞る。
     """
     return query_mod.run(
         sql=sql,

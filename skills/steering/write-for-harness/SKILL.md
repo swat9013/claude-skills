@@ -12,7 +12,7 @@ description: CLAUDE.md / .claude/rules/ / SKILL.md 指示文 / hook 注入文 / 
 
 Inferential harness (CLAUDE.md / `.claude/rules/` / SKILL.md 指示文 / hook 注入文 / agent 定義) を書く手順。決定論的に動く Computational 側 (settings / permission / hook script / gate) は本 skill の対象外。Computational を書く規範は呼び出し元のフローに委ね、レビュー手順は `claude-config-review` が持つ。
 
-他の skill から承認済みの変更を書かせるときの呼び出し口 (渡す args・invoke の回数・反映を終えられなかったときの返し方) は、呼び出し元向けに `${CLAUDE_SKILL_DIR}/references/caller-contract.md` に置いてある。
+本 skill を呼び出すときの呼び出し口 (渡す args・invoke の回数・検証の範囲の宣言・反映を終えられなかったときの返し方) は、呼び出し元向けに `${CLAUDE_SKILL_DIR}/references/caller-contract.md` に置いてある。同じ file を同じ変更のまとまり (CL を切る運用ならその CL) でもう一度 invoke するときは、他の skill からでも自分の session から直接でも、invoke の前にこの契約の「検証の範囲」を Read して宣言を選ぶ — 本 skill は前の invoke を数えないので、宣言が無いと毎回 `全体` の検証が走る。
 
 ## 手順
 
@@ -72,10 +72,18 @@ component の責務 reference を Read する。
 
 ### 4. 検証 subagent と構造 reviewer を並列で起動する
 
-`Agent` tool で次の 2 つを同一 message 内で起動する。どちらも結果を受け取るだけの役割なので `name` を付けず、報告は各 subagent の最終メッセージで受け取る (SendMessage での報告は求めない)。model・effort・手順・返答の schema は agent 定義が持つので、Agent tool の `model` / `effort` 引数は渡さず、prompt には下の雛形の入力だけを渡す。
+呼び出し元が invoke 直前の同じ turn で検証の範囲を宣言していれば、それに従う。宣言が無ければ `全体` とする。
+
+| 宣言 | 起動するもの |
+|---|---|
+| `全体` | 検証 subagent と構造 reviewer の両方 (以下の手順どおり) |
+| `増分` | 検証 subagent だけ。prompt の末尾に「レビューするのは、次の行範囲と、その範囲が他の行と食い違いを生む箇所だけ: <この invoke で変更した行範囲>」を足す。手順 5 の報告に `構造レビュー省略: 呼び出し元の宣言 (増分)` と書く |
+| `省く` | どちらも起動せず、手順 5 へ進む。手順 5 の報告に `検証省略: 呼び出し元の宣言` と書く |
+
+起動するものは `Agent` tool で同一 message 内で起動する。どちらも結果を受け取るだけの役割なので `name` を付けず、報告は各 subagent の最終メッセージで受け取る (SendMessage での報告は求めない)。model・effort・手順・返答の schema は agent 定義が持つので、Agent tool の `model` / `effort` 引数は渡さず、prompt には下の雛形の入力だけを渡す。
 
 - **検証 subagent**: 書いた file の文面を component 別 reference に照らす。`subagent_type: swat-skills:harness-component-reviewer` で指名する
-- **構造 reviewer**: 書いた内容の**配置**が正しいかを harness 全体の中で見る。**対象が 1 ファイルでも常に 1 つ起動する**。`subagent_type: swat-skills:harness-structure-reviewer` で指名する
+- **構造 reviewer**: 書いた内容の**配置**が正しいかを harness 全体の中で見る。`全体` では、**対象が 1 ファイルでも常に 1 つ起動する**。`subagent_type: swat-skills:harness-structure-reviewer` で指名する
 
 名前が解決しないときは `general-purpose` で代替しない — 代替すると model・effort・tools が呼び出し元の値へ黙って戻り、指名した深さで見たように見える。2 つの結果は互いに独立しているので、解決した側の結果だけで手順 5 へ進む。解決しなかった側の結果を報告する位置 (検証 subagent なら findings、構造 reviewer なら `structural_proposals`) に、代わりに `<検証|構造>レビュー未実施: <error が挙げた available agents>` と次の手順 (swat-skills plugin の agent が読み込まれる状態にしてからレビューをやり直す) を書く。
 
@@ -104,7 +112,7 @@ component: <COMPONENT>
 reference が公式 docs の確認を求めていても、外部の確認を試みず reference に書かれた内容の範囲で判定する。
 ```
 
-`<COMPONENT>` / `<PATH_*>` / 各 `*_REF` は起動時に埋める。`<COMPONENT_REF>` と `<WRITING_REF>` は手順 3 で Read した component 別 reference と文面規範。`<MODEL_REF>` は手順 3 で決めた対象モデルの差分 file で、writing.md の表が 2 本を挙げるモデルでは両方を並べる。返答の前後に文が付いていたら外して JSON を読む。`findings` を持つ JSON が無いとき (`unread_refs` だけを返した・空) は起動し直さず、findings の位置に `検証レビュー未実施: <理由>` と次の手順を書く — 次の手順は、`unread_refs` なら「prompt に `${` が残っていないかを確かめ、`*_REF` を手順 3 で実際に Read した path で埋め直してやり直す」、それ以外は「検証 subagent だけをやり直す」。
+`<COMPONENT>` / `<PATH_*>` / 各 `*_REF` は起動時に埋める。`<COMPONENT_REF>` と `<WRITING_REF>` は手順 3 で Read した component 別 reference と文面規範。`<MODEL_REF>` は手順 3 で決めた対象モデルの差分 file で、writing.md の表が 2 本を挙げるモデルでは両方を並べる。返答で期待する JSON の鍵は `findings` で、未実施行は findings の位置に置く (返答の読み方とやり直しは下の「JSON が得られないとき」)。
 
 構造 reviewer の prompt (入力):
 
@@ -122,17 +130,29 @@ harness 全体一覧 (path + component):
 <INVENTORY>
 ```
 
-`<PATH_*>` と `<INVENTORY>` (一覧の全件) は起動時に埋める。返答の前後に文が付いていたら外して JSON を読む。`structural_proposals` を持つ JSON が無いとき (`unread_refs` だけを返した・空) は、構造 reviewer だけを 1 回やり直す — `unread_refs` なら、先に prompt に `${` が残っていないかを確かめ、参照 path を上の prompt どおりに埋め直す。やり直しても得られなければ起動し直さず、`structural_proposals` の位置に `構造レビュー未実施: <理由>` と次の手順 (`unread_refs` なら「挙がった path が実在するかを確かめてから構造 reviewer をやり直す」、それ以外は「構造 reviewer だけをやり直す」) を書く。
+`<PATH_*>` と `<INVENTORY>` (一覧の全件) は起動時に埋める。返答で期待する JSON の鍵は `structural_proposals` で、未実施行は `structural_proposals` の位置に置く (返答の読み方とやり直しは下の「JSON が得られないとき」)。
 
 **この SKILL.md をロードした時点で `${CLAUDE_SKILL_DIR}` は絶対 path へ置換済み**なので、どちらの prompt も本文に見えている path をそのまま写す — 変数表記を復元して渡すと subagent 側では展開されず、reference を 1 本も読めない (どちらの subagent も `unread_refs` を返して止まり、レビューは行われない)。送信前に prompt へ `${` が残っていないことを確かめる。
 
+**JSON が得られないとき** (検証 subagent と構造 reviewer に共通): 返答の前後に文が付いていたら外して JSON を読む。期待した鍵を持つ JSON が無いとき (`unread_refs` だけを返した・空) は、その subagent だけを 1 回までやり直す。`unread_refs` なら、やり直す前に挙がった path が実在するかを確かめる (`${` を含む path は、変数を本文に見えている絶対 path へ置き換えてから確かめる)。実在しなければ、起動し直しても同じ `unread_refs` が返るだけなので、やり直さない。実在するなら、prompt に `${` が残っていないかを確かめ、参照 path を起動時と同じ埋め方 (各 prompt の雛形とその直後の段落) で埋め直してからやり直す。やり直しても得られないときと、path が実在せずやり直さなかったときは、その subagent の結果の位置に `<検証|構造>レビュー未実施: <理由>` と次の手順を書く。次の手順は、path が実在しなかったなら「挙がった path の欠落か書き誤りを直してから、その subagent だけをやり直す」、やり直しても `unread_refs` が返ったなら「挙がった path を Read できるかと、prompt に `${` が残っていないかを確かめてから、その subagent だけをやり直す」、それ以外は「その subagent だけをやり直す」。
+
 ### 5. 指摘を反映して終える
 
-findings のうち採用したものを対象ファイルへ反映し、**反映後に diff を提示する** (呼び出し元が人間でも skill でも、反映を人間の目に載せる唯一の面がここになる)。採用しなかったものは理由付きで報告する。検証 subagent の返答の `unread_targets` に挙がった file は、未レビューとして別に挙げる — findings が 0 件でも、その file は検証を通っていない。
+findings を 1 件ずつ次の区分に分け、Act on だけを対象ファイルへ反映する。分けるのは本 skill を実行している session。範囲内は、手順 3 で診断した行と、変更が他の行と生んだ食い違いを指す。呼び出し元が invoke 直前の同じ turn で不採用と宣言した指摘 (同じ箇所に同じ reference の行を当てた指摘) は、範囲の内外を問わず Noted に置く。対応がはっきりしない指摘は Consider に置き、理由を添える。
+
+| 区分 | 当てる指摘 | 扱い |
+|---|---|---|
+| Act on | 範囲内の指摘で、reference の行を逐語で引ける規範違反 | 反映する |
+| Consider | 範囲内の指摘のうち Act on に当たらないもの (reference を引けない改善余地・info・誤検知か意図的な設計とみた指摘) | 反映せず、理由を添えて返す。直すかは呼び出し元が決める |
+| Noted | 範囲外の指摘と、不採用と宣言された指摘 | 反映せず、記録として返す |
+
+指摘はどれもこの 3 区分のどれかに置き、外したい指摘も Consider に理由を添えて置く — 指摘を落とせるのは反証だけで、本 skill は反証の工程を持たない。
+
+**反映後に diff を提示する** (呼び出し元が人間でも skill でも、反映を人間の目に載せる唯一の面がここになる)。検証 subagent と構造 reviewer の返答の `unread_targets` に挙がった file は、どちらのレビューで読めなかったかを添えて未レビューとして別に挙げる — findings や `structural_proposals` が 0 件でも、その file はそのレビューを通っていない。構造 reviewer の `unread_inputs` に挙がった file は、構造提案の判断材料を欠いた file として未レビューとは分けて挙げる。
 
 diff の提示に続けて、パッチごとに 1 行ずつ「種別・対象 file・対象 file の文字数の前後差」を書く (findings を反映した変更もパッチとして含め、反映の前後で `wc -m` を数える) — 人間が指示文の増え方を採否の材料にできるようにするため。追加には、どの既存概念にも吸収できなかった理由を添える。報告だけにしたパッチは前後差の代わりに案を書く (分割は切り出す範囲と leading word)。
 
-起動できなかった側と JSON を得られなかった側は、その結果の位置に手順 4 で決めた `<検証|構造>レビュー未実施:` 行を置く。`structural_proposals` は findings へ混ぜず別立てで報告する (severity と impact / migration_cost は別の評価軸で、採否の目安は `references/structure.md` の「impact / migration_cost の 2 軸」)。**検証は 1 ラウンドで終える** — 反映後に subagent を起動し直す再検証ループは回さない。
+起動できなかった側と JSON を得られなかった側は、手順 4 で書いた `<検証|構造>レビュー未実施:` 行をそのまま報告する (書式と置き場の正本は、JSON を得られなかった側は手順 4 の「JSON が得られないとき」、起動できなかった側は手順 4 の名前が解決しないときの段落)。`structural_proposals` は findings へ混ぜず別立てで報告し (severity と impact / migration_cost は別の評価軸)、提案ごとに `${CLAUDE_SKILL_DIR}/references/structure.md` の「impact / migration_cost の 2 軸」の採否の目安で採用候補かを添える — 構造 reviewer は目安で絞らずに全件返すので、採否はここで決める。**検証は 1 ラウンドで終える** — 反映後に subagent を起動し直す再検証ループは回さない。
 
 ## 根拠
 

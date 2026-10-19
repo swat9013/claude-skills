@@ -25,6 +25,16 @@
     check-ui-design.py <design-dir>
 
 Exit 0 = 違反なし / 1 = 違反あり or 検査不能 / 2 = 引数エラー。
+
+invariant は上の 1〜5 に次を足したもの (1 の両方向と 2 の 2 句は、それぞれ拒否テストを 1 本ずつ持つ):
+
+6. 画面 ID が許された文字種でなければ違反
+7. 画面 ID が重複したら違反
+8. component の行が 4 列でなければ違反
+9. 未知の component 種別は違反
+10. design-dir が無ければ検査不能で落とす
+11. README.md が無ければ検査不能で落とす
+12. `screens.md` に画面一覧の表が無ければ検査不能で落とす (何も突き合わせずに通さない)
 """
 
 from __future__ import annotations
@@ -55,10 +65,11 @@ HEADING = re.compile(r"^#{1,6}\s")
 TABLE_ROW = re.compile(r"^\s*\|(?P<body>.+)\|\s*$")
 SEPARATOR_ROW = re.compile(r"^[\s|:-]+$")
 SCREEN_ID = re.compile(r"^[A-Za-z0-9_.]+$")
-# `' uncovered:` 等のコメント行を除いた遷移行 / 状態宣言行 (check-statechart.py と同じ範囲)
+# `' uncovered:` 等のコメント行を除いた遷移行 / 状態宣言行 (check-statechart.py と同じ範囲。
+# 単一 file script どうしで import できないので写しを持ち、一致は tests/test_ui_design_statechart_contract.py が突合する)
 TRANSITION = re.compile(
     r"^\s*(?P<src>\[\*\]|[\w.]+)\s*"
-    r"-+(?:up|down|left|right|u|d|l|r)?-*>\s*"
+    r"(?P<arrow>-+(?:(?:up|down|left|right|u|d|l|r)|\[[^\]]*\])*-*>)\s*"
     r"(?P<dst>\[\*\]|[\w.]+)\s*"
     r"(?::\s*(?P<label>.+?))?\s*$"
 )

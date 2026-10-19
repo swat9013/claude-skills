@@ -1,4 +1,18 @@
 #!/bin/sh
+# guard-git.sh — PreToolUse / Bash(git:*): 取り返しのつかない git 操作を deny し、push 1 断片だけの
+# 呼び出しを allow する。
+#
+# 置く理由: backstop
+#     `reset --hard` と force push は、失った変更を戻せないので、抜け道があると承知のうえで
+#     止める (ADR 0108)。
+#     次の deny はどの置く理由にも当たらず、外すと決まっている (実装は各 issue で行う):
+#       - `clean -f` / checkout・restore による作業ツリーの復元 (#1288 の決定): stash や cp で同じ効果が
+#         出るうえ、守る対象 (agent が作っていない未 commit 変更) は worktree の隔離が構造で守るので、
+#         backstop として残す価値が往復の費用を上回らない
+#       - `branch -D` / `tag -d` / `push --delete` (ADR 0108。実装は #1752)
+#
+# Registration: hooks/hooks.json PreToolUse / Bash matcher / if: Bash(git:*)
+
 # stdin は jq 検査より先に読み切る。読まずに deny して先に exit すると書き手側が EPIPE を
 # 踏みうる。
 INPUT=$(cat)
@@ -37,7 +51,7 @@ COMMAND=$(printf '%s\n' "$INPUT" | jq -r 'if (.tool_input | type) != "object" th
 # git のグローバルオプション (`git -C <dir>` / `git -c <k>=<v>` / `--git-dir=` 等) は
 # subcommand の**前**に置ける。この形は 2 つの層を同時に素通りする:
 #   - permission rule: 照合はコマンド先頭からの prefix なので `Bash(git push --force:*)`
-#     のような deny に `git -C x push --force` は当たらない (docs/settings-knowledge.md の
+#     のような deny に `git -C x push --force` は当たらない (docs/reference/settings-knowledge.md の
 #     「permission rule の照合はコマンドの綴りに依存する」と同じ構造の穴)
 #   - 本 hook: 行頭アンカー判定 (`^git branch` / `^git push` 等) が前置で外れる
 # そこで判定用に前置を剥がした写し (SUBJECT) を作る。**原文 (COMMAND) は書き換えない** —
@@ -194,7 +208,7 @@ fi
 
 # force push deny は SUBJECT で判定する — `git -C x push --force` を届かせるため。
 # `--force-with-lease` は token 境界の都合で permission 層の deny を通過しており、lease
-# 保護があるため意図通りとして許容している (docs/settings-knowledge.md)。hook 側も同じ扱いにする。
+# 保護があるため意図通りとして許容している (docs/reference/settings-knowledge.md)。hook 側も同じ扱いにする。
 # 「これは git push か」の判定は本 file に 3 形あり、綴りが割れると片方だけ穴が空く。
 # 下の床判定と同じ token 境界へ揃える — リテラル 1 空白のままだと `git  push --force` が
 # 素通りし、逆に `git pushx --force` を force push として掴む。

@@ -13,6 +13,17 @@
 
 section: project (cwd × 当該 repo 実績) / global (`~/.claude/settings.json` ×
 全 repo 実績) / all。
+
+## invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. bucket を確定しない: rule 出力は候補・導出過程・未判定条件だけを持つ
+2. 不正な `transcript_kind` は store を読む前に拒否する (fail-closed)
+3. 観測窓は record の timestamp だけで判定し (file mtime で除外しない)、窓外の event を数えない
+4. project section は repo root 配下の event だけを数える
+5. 照合対象を持たない entry の 0 件は `unmatchable` とし、未使用 (revoke 候補) の証拠にしない
+6. `unmatchable` の entry は必ず `match_count == 0` を伴う
+7. bypass 系列は別 agent の呼び出しを対にしない
+8. contract は mart が emit する確度値と `unmatchable_reason` の閉じた語彙をすべて説明する
 """
 
 from __future__ import annotations
@@ -30,6 +41,7 @@ from typing import Any
 from adapter.transcript import resolve_now
 from artifacts import prepare_output_dir
 from marts import load_statements
+from marts import transcript_kind as transcript_kind_mod
 from store import ingest
 from store import store as store_mod
 
@@ -46,7 +58,8 @@ DEFAULT_DAYS = contract.DEFAULT_DAYS
 # `refined_event` の SELECT 列順。scoped_event への INSERT 列順と 1:1 で対応する。
 SCOPED_EVENT_COLUMNS = (
     "tool", "command", "command_head", "target_path", "target_url",
-    "input_excerpt", "input_keys", "session_id", "ts", "ts_epoch", "cwd",
+    "input_excerpt", "input_keys", "session_id", "subagent_transcript", "ts",
+    "ts_epoch", "cwd",
     "outcome", "denial_kind", "denial_reason_label",
 )
 
@@ -70,6 +83,8 @@ class Request:
 
     section: str = "project"
     days: int = DEFAULT_DAYS
+    # 数える transcript の種類 (`main` / `all`)。値の検査は `transcript_kinds()`
+    transcript_kind: str = transcript_kind_mod.DEFAULT
     repo_root: Path = dataclasses.field(default_factory=Path.cwd)
     transcripts_dir: Path = DEFAULT_TRANSCRIPTS_DIR
     global_settings: Path = DEFAULT_GLOBAL_SETTINGS
@@ -83,6 +98,10 @@ class Request:
 
     def sections(self) -> tuple[str, ...]:
         return ("project", "global") if self.section == "all" else (self.section,)
+
+    def transcript_kinds(self) -> str:
+        """SQL の `:transcript_kinds`。未知の値は store を開く前に止める。"""
+        return transcript_kind_mod.kinds_param(self.transcript_kind)
 
 
 # --- store への問い合わせ ----------------------------------------------------
@@ -106,7 +125,8 @@ def _scope_roots(section: str, repo_root: Path) -> str:
 
 
 def _load_scoped_events(conn: sqlite3.Connection, statements: dict[str, str],
-                        cutoff_epoch: float, scope_roots: str) -> list[str]:
+                        cutoff_epoch: float, scope_roots: str,
+                        transcript_kinds: str) -> list[str]:
     """section の実行を積み、**そこに現れた tool 名を返す**。
 
     戻り値を持つのは `_load_config_layer` の入力にするため (#916)。被覆表は
@@ -118,7 +138,8 @@ def _load_scoped_events(conn: sqlite3.Connection, statements: dict[str, str],
     conn.execute(
         f"INSERT INTO scoped_event ({', '.join(SCOPED_EVENT_COLUMNS)}) "
         + statements["refined_event"],
-        {"cutoff_epoch": cutoff_epoch, "scope_roots": scope_roots},
+        {"cutoff_epoch": cutoff_epoch, "scope_roots": scope_roots,
+         "transcript_kinds": transcript_kinds},
     )
     return [row["tool"] for row in conn.execute(statements["observed_tool"])]
 
@@ -869,8 +890,8 @@ def _summarize_settings_sources(
 
 def build_section(
         conn: sqlite3.Connection, statements: dict[str, str], request: Request,
-        section_name: str, cutoff_epoch: float,
-        split_epoch: float) -> tuple[dict, list[settings_mod.PermissionEntry]]:
+        section_name: str, cutoff_epoch: float, split_epoch: float,
+        transcript_kinds: str) -> tuple[dict, list[settings_mod.PermissionEntry]]:
     """section 1 つ分の集計と、その section の設定 entry (rule 評価の入力)。
 
     entry を返すのは、rule 評価が **mart 全体の総 event 数** (判定可能性) を要し、
@@ -880,7 +901,7 @@ def build_section(
         section_name, request.repo_root, request.global_settings)
     observed_tools = _load_scoped_events(
         conn, statements, cutoff_epoch,
-        _scope_roots(section_name, request.repo_root))
+        _scope_roots(section_name, request.repo_root), transcript_kinds)
 
     # global 層の突合を**先に**済ませる (#513)。順序が逆だと permission_entry の
     # 最終状態が global の entry になり、以降の A 軸集計・rule 評価が section の
@@ -937,6 +958,7 @@ def build(request: Request) -> dict:
     # meta にも出す (どこで切ったかが分からないと前後半の内訳を検証できない)
     midpoint = cutoff + (now - cutoff) / 2
     split_epoch = midpoint.timestamp()
+    transcript_kinds = request.transcript_kinds()
 
     conn, sync_report = ingest.open_synced(
         request.transcripts_dir, cache_dir=request.cache_dir, now=now)
@@ -951,10 +973,11 @@ def build(request: Request) -> dict:
         anomalies = store_mod.anomalies(conn)
         firings = [dict(row) for row in
                    conn.execute(statements["hook_firings"],
-                                {"cutoff_epoch": cutoff_epoch})]
+                                {"cutoff_epoch": cutoff_epoch,
+                                 "transcript_kinds": transcript_kinds})]
         built = {
             name: build_section(conn, statements, request, name, cutoff_epoch,
-                                split_epoch)
+                                split_epoch, transcript_kinds)
             for name in request.sections()
         }
     finally:
@@ -982,6 +1005,7 @@ def build(request: Request) -> dict:
                 "midpoint": _stamp(midpoint),
             },
             "section": request.section,
+            "transcript_kind": request.transcript_kind,
             "repo_root": str(request.repo_root.resolve()),
             "transcripts_dir": str(request.transcripts_dir),
             "global_settings": str(request.global_settings),
@@ -992,7 +1016,7 @@ def build(request: Request) -> dict:
             "sufficient_for_relative_judgment": sufficient,
             "store": {
                 **anomalies,
-                "skipped_nested_files": sync_report.skipped_nested_files,
+                "unrecognized_nested_files": sync_report.unrecognized_nested_files,
                 "synced_files": sync_report.ingested_files,
                 "unchanged_files": sync_report.unchanged_files,
                 "removed_files": sync_report.removed_files,
@@ -1069,6 +1093,7 @@ def emit(mart: dict, output_dir: Path) -> list[str]:
 def run(
     section: str = "project",
     days: int = DEFAULT_DAYS,
+    transcript_kind: str = transcript_kind_mod.DEFAULT,
     repo_root: str | None = None,
     output_dir: str = str(DEFAULT_OUTPUT_DIR),
     transcripts_dir: str = str(DEFAULT_TRANSCRIPTS_DIR),
@@ -1080,6 +1105,7 @@ def run(
     request = Request(
         section=section,
         days=days,
+        transcript_kind=transcript_kind,
         repo_root=Path(repo_root) if repo_root else Path.cwd(),
         output_dir=Path(output_dir),
         transcripts_dir=Path(transcripts_dir),
@@ -1094,6 +1120,7 @@ def run(
         "read_order": [entry["name"] for entry in contract.SPLIT_FILES],
         "meta": {
             "section": meta["section"],
+            "transcript_kind": meta["transcript_kind"],
             "repo_root": meta["repo_root"],
             "observation_window": meta["observation_window"],
             "total_events": meta["total_events"],
@@ -1125,6 +1152,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--section", choices=["project", "global", "all"],
                         default="project")
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS)
+    parser.add_argument("--transcript-kind", choices=transcript_kind_mod.CHOICES,
+                        default=transcript_kind_mod.DEFAULT)
     parser.add_argument("--transcripts-dir", type=Path,
                         default=DEFAULT_TRANSCRIPTS_DIR)
     parser.add_argument("--global-settings", type=Path,
@@ -1150,6 +1179,7 @@ def request_from_args(namespace: argparse.Namespace) -> Request:
     return Request(
         section=namespace.section,
         days=namespace.days,
+        transcript_kind=namespace.transcript_kind,
         repo_root=namespace.repo_root,
         transcripts_dir=namespace.transcripts_dir,
         global_settings=namespace.global_settings,

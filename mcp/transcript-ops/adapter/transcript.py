@@ -11,10 +11,13 @@ isolation)。形式知識が消費側にコピーされると、同じ record �
 `resolve_now` / `USER_REJECT_PATTERNS` / `session_id_of` / `extract_user_text`) +
 **repo 識別子の解決** +
 **tool 実行の outcome 判定** + **slash 呼出しの判定** + **user / assistant 以外の
-record type の正規化** (attachment / system / usage / hook)。permissions の 7 分類は
+record type の正規化** (attachment / system / usage / hook) + **subagent の配置と起動元の
+対応** (`message_id_of` / `subagent_launch_ids_of` / `subagent_files_of`)。permissions の 7 分類は
 base 語彙 (success / error / user-reject / unknown) の refinement として commands 側に
 置き、成否そのものの分岐を再導出させない。lake の folder の走査は持たない
-(store 経由の観測は `store/ingest.py` の `iter_lake_files` が歩く)。
+(store 経由の観測は `store/ingest.py` の `iter_lake_files` が歩く)。例外は
+`subagent_files_of` で、名指しした 1 transcript の隣にある `subagents/` dir だけを読む —
+subagent の配置と meta の field は形式知識なので、読む側に写させない。
 
 slash 判定 (`parse_slash_invocation` / `is_slash_expansion_record`) を丸ごとここに
 置くのは、outcome と同じ事故が起きていたため。述語が adapter と commands に割れて
@@ -37,6 +40,16 @@ mart を repo で絞る `select_candidates` が**同一の repo 表現**を出�
 (7 分類 vs 4 分類 vs 手入力 prompt 抽出) と観測窓判定 (`within_window` /
 `_within_window`) は各 tool の mart schema に属するので本 module へ上げない
 ([ADR 0013](../../../docs/adr/0013-intra-subsystem-implementation-sharing.md))。
+
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+1. git を起動できないこと (`GIT_UNAVAILABLE`) と repo でないこと (`NOT_A_REPO`) を混ぜない
+2. 実在しない cwd は祖先の repo に寄せず None にする
+3. outcome 判定は `is_error` を toolUseResult より優先する
+4. 判定材料が 1 つも無い record は success に丸めず unknown にする
+5. tool_result block が複数ある record の toolUseResult は、どの block の真値か決められないので None
+6. hook の欠けた exitCode / durationMs は 0 に丸めず None のまま保つ
+7. `USER_REJECT_PATTERNS` は lowercase (照合側が lower() した本文へ substring 検索する)
+8. usage は 4 field に正規化し、同じ turn の再掲である `iterations[]` を足さない
 """
 
 from __future__ import annotations
@@ -509,6 +522,87 @@ def usage_of(rec: dict) -> dict[str, int] | None:
         value = usage.get(key)
         out[key] = value if isinstance(value, int) else 0
     return out
+
+
+def message_id_of(rec: dict) -> str | None:
+    """assistant record の `message.id`。
+
+    1 つの応答は content block ごとに複数の record に分かれ、各 record が同じ
+    `message.id` の usage を重ねて持つ (前の record は書きかけの値)。usage を足す側は
+    この id ごとに file 順で最後の record だけを数える。
+    """
+    message = rec.get("message")
+    if not isinstance(message, dict):
+        return None
+    value = message.get("id")
+    return value if isinstance(value, str) and value else None
+
+
+SUBAGENT_LAUNCH_TOOLS = ("Task", "Agent")
+
+
+def subagent_launch_ids_of(rec: dict) -> list[str]:
+    """assistant record が subagent を起動した tool_use (`Task` / `Agent`) の id。"""
+    if rec.get("type") != "assistant":
+        return []
+    content = (rec.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    return [
+        block["id"] for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+        and block.get("name") in SUBAGENT_LAUNCH_TOOLS and isinstance(block.get("id"), str)
+    ]
+
+
+@dataclasses.dataclass(frozen=True)
+class SubagentFile:
+    """subagent 1 体の transcript と、起動元への対応 (`agent-<id>.meta.json`)。"""
+
+    agent_id: str
+    transcript: Path
+    tool_use_id: str | None
+    parent_agent_id: str | None
+    # meta を読めなかった体は False。起動元への対応が取れないので、数える側は黙って捨てずに
+    # 「対応不明」として扱う
+    meta_readable: bool = True
+
+
+def subagent_files_of(transcript: Path) -> list[SubagentFile] | None:
+    """主 transcript の subagent を列挙する。dir が無ければ None。
+
+    subagent の record は主 transcript に入らず、path から `.jsonl` を外した dir の
+    `subagents/agent-<id>.jsonl` に 1 体 1 file で残る。同じ dir の
+    `agent-<id>.meta.json` の `toolUseId` が起動した tool_use の id と一致し、入れ子の
+    subagent は `parentAgentId` で親の agent id を指す。meta が無いか読めない体は
+    `meta_readable=False` で返す (transcript だけ残った体も落とさない)。
+    """
+    subagents_dir = transcript.with_suffix("") / "subagents"
+    if not subagents_dir.is_dir():
+        return None
+    agent_ids = sorted(
+        {p.name[len("agent-"):-len(".meta.json")] for p in subagents_dir.glob("agent-*.meta.json")}
+        | {p.name[len("agent-"):-len(".jsonl")] for p in subagents_dir.glob("agent-*.jsonl")})
+    files = []
+    for agent_id in agent_ids:
+        meta_path = subagents_dir / f"agent-{agent_id}.meta.json"
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = None
+        if not isinstance(meta, dict):
+            files.append(SubagentFile(
+                agent_id=agent_id, transcript=subagents_dir / f"agent-{agent_id}.jsonl",
+                tool_use_id=None, parent_agent_id=None, meta_readable=False))
+            continue
+        tool_use_id, parent = meta.get("toolUseId"), meta.get("parentAgentId")
+        files.append(SubagentFile(
+            agent_id=agent_id,
+            transcript=subagents_dir / f"agent-{agent_id}.jsonl",
+            tool_use_id=tool_use_id if isinstance(tool_use_id, str) else None,
+            parent_agent_id=parent if isinstance(parent, str) and parent else None,
+        ))
+    return files
 
 
 def compact_boundary_of(rec: dict) -> dict | None:

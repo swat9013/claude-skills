@@ -44,6 +44,7 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 
 - `section` 省略時 `project`。`global` / `all` は上表の通り
 - 直近 30 日を集計 — 変更したければ `days` を渡す
+- 数えるのは main session の transcript だけ (`transcript_kind` 省略時 `main`)。subagent の tool 呼び出しも数えるときは `transcript_kind: "all"` を渡す
 - 返り値の `paths` が **読む順の分割ファイル一覧** (`/tmp/inventory-permissions/run-<timestamp>/` 配下)
 - **mart 本体は返らない**。返るのは path と件数 meta だけなので、中身は `paths` を Read する
 - 想定所要時間: 初回のみ transcript の取り込みに十数秒かかる。2 回目以降は差分だけを取り込むので 1 秒未満 + 集計時間
@@ -62,7 +63,7 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 - `30-bypass-samples.json` の代表系列は `refine` の証拠としてレポートに転記する。follow_up は同 tool の後続 call を全て拾うので、**first follow_up が success かつ input が似ている**系列だけを候補にし、低 gap の系列を優先する
 - `40-hooks.json` は **hook 軸** (下記「hook 観測の読み方」)。permission entry の bucket とは別枠で扱う
 
-標準フロー外の追加検査が要るときは `mcp__plugin_swat-skills_transcript-ops__query` に read-only SQL を投げる (単発に留める。恒常的に必要になった集計は tool の分割出力拡張として提案する)。
+標準フロー外の追加検査が要るときは `mcp__plugin_swat-skills_transcript-ops__query` に read-only SQL を投げる (単発に留める。恒常的に必要になった集計は tool の分割出力拡張として提案する)。store は subagent の実行も持つので、mart の数と突き合わせる query は `JOIN file f ON f.file_id = <表>.file_id` と `f.transcript_kind = 'main'` で mart と同じ母集団に絞る (`transcript_kind: "all"` で取った mart と突き合わせるなら絞らない)。
 
 **判定可能性の分岐**: `meta.sufficient_for_relative_judgment == false` なら**全単位を `insufficient-data`** としてレポートヘッダで宣言し、以下は informational として並べる (rule も同条件で発火しない)。
 
@@ -101,7 +102,7 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 **確度注記の義務**:
 - `hard_deny_share` を bucket 判定の根拠にする前に、その deny が **permission entry 由来か**を確かめる。guard hook 由来の deny も `deny_permission-rule` にラベルされ (`denial_kind` 空 + `outcome_base: error` に落ちる経路もある)、guard の deny メッセージは安定文字列なので `result_text` の署名で帰属が引ける。入力が汚染されているときは `axis_a_high_deny_share` / `compound_line_deny_miscount` の 0 件を「候補が無い」ではなく「入力が汚れている」と読む
 - outcome の `unknown` は**参考値**として扱い、bucket 判定は明示 outcome を主根拠にする (tool_result が transcript 末尾で truncate された / 別セッションに分割された / 未完了、のいずれでも unknown に落ちる)
-- `meta.store` の**事故由来**の劣化 (`broken_lines` / `unreadable_files`) が 0 でないうちは、revoke ではなく hold にする — observation が欠けており、未使用に見える entry が実際には使われていることがある。`skipped_nested_files` は subagent transcript を ingest しない設計由来で恒久的に非 0 なので hold の条件にせず、件数をレポートヘッダで宣言する (subagent 内だけで使われた entry が `match_count 0` に見えるリスクは受容済み)
+- `meta.store` の**事故由来**の劣化 (`broken_lines` / `unreadable_files`) が 0 でないうちは、revoke ではなく hold にする — observation が欠けており、未使用に見える entry が実際には使われていることがある。既定の `transcript_kind: main` は subagent の tool 呼び出しを数えないので、subagent 内だけで使われた entry も `match_count 0` に見える。revoke 候補を採る前に、`transcript_kind: "all"` で取り直した mart でその entry の `match_count` を確かめ、0 でなければ revoke にせず keep にする
 - `axis_a_high_deny_share` の `window_split.shifted: true` の entry は、**窓全体の `hard_deny_share` を bucket 判定の根拠にしない** (変更前後を混ぜた平均で、どちらの期間も表していない)。前半 / 後半の `hard_deny_share` を entry 表示に併記し、判定は変化後 (後半) の値で行う。`shifted: null` は判定不能 (どちらかの半分が薄い) で「窓内で一様」の証拠ではない — 前後半の件数を注記して informational へ落とす
 - `matcher_confidence: approx` の entry は「近似マッチ (glob / domain の wildcard) — 実 matcher と揺れる可能性」を **entry 表示に注記**し、revoke / keep の判定対象から外して informational へ置く (rule 側でも除外され `near_misses` に出る)
 - `matcher_confidence: unmatchable` の entry は **`match_count 0` を「未使用」と読まない** (読み方は mart の `contract.notes` が正本)。approx と同じく revoke / keep の判定対象から外し、**`unmatchable_reason` をそのまま**理由に添えて informational へ置く。所見には「どうすれば判定できるようになるか」を併記する — `input_column_empty` なら store に照合対象の列を足す、`param_rule` (`Tool(param:value)` 形で server が param の値を持たない) なら transcript を直接読む。**`param_rule` に `query` tool を使わない** — 値を持つ列が無く、`input_excerpt` は 200 字上限で Bash は `command` が先に入るため、長い command の呼び出しでは param が切り落とされて実在する呼び出しを 0 件と読む (この 0 を未使用と読むと #888 の偽陽性が戻る)
@@ -148,7 +149,7 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
 
 `/tmp/inventory-permissions/report-<timestamp>.md` に mart と並置で書く。以下の**固定 schema**:
 
-1. **ヘッダ**: 観測窓 / 総 event 数 / distinct sessions / section / 判定可能性 / matcher confidence 内訳 / 観測の劣化 (`meta.store` の 0 でない項目を事故由来 (`broken_lines` / `unreadable_files`) と設計由来 (`skipped_nested_files` — subagent transcript を ingest しない設計のため恒久的に非 0) に分けて宣言する。`skipped_nested_files` は必ず件数を書き、事故由来がすべて 0 なら「事故由来の劣化なし」と明記) / 分母の欠落 (`meta.settings_denominator` の `read: false` 行を reason ごとに宣言する。`unparsed` / `not_a_settings_layer` が在れば必ず書く)
+1. **ヘッダ**: 観測窓 / 総 event 数 / distinct sessions / section / 判定可能性 / matcher confidence 内訳 / 数えた transcript (`meta.transcript_kind`) / 観測の劣化 (`meta.store` の 0 でない項目を宣言する。`broken_lines` / `unreadable_files` は事故由来、`unrecognized_nested_files` は main とも subagent とも決められない置き場の transcript で、取り込まれていない。事故由来がすべて 0 なら「事故由来の劣化なし」と明記) / 分母の欠落 (`meta.settings_denominator` の `read: false` 行を reason ごとに宣言する。`unparsed` / `not_a_settings_layer` が在れば必ず書く)
 2. **候補 section** (bucket 別に列挙):
     - 単位: `entry` (A 軸候補) or `tool + command_head` (B 軸候補) or `session_id + denied_at` (bypass)
     - match_count / outcome_breakdown (A 軸) or count / outcomes (B 軸)
@@ -182,7 +183,8 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
 観測窓: 2026-06-17 〜 2026-07-17 (30 日) / 総 event 14,449 / distinct sessions 580 / section project
 判定可能性: sufficient (総数 >= 30)
 matcher confidence: exact 105 / approx 14
-観測の劣化: 事故由来の劣化なし / skipped_nested_files 754 (設計由来 — subagent transcript は観測範囲外)
+数えた transcript: main
+観測の劣化: 事故由来の劣化なし
 
 ## revoke
 

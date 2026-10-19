@@ -22,21 +22,21 @@
 状態機械の未定義遷移は、図の見た目からは「描き忘れ」と「設計判断としての未定義」が区別できない。`statechart.puml` に対して同梱 script を走らせ、全組合せを機械列挙して**未定義の組合せに理由の宣言を要求する**:
 
 ```bash
-uv run ${CLAUDE_SKILL_DIR}/scripts/check-statechart.py docs/design/<name>/statechart.puml
+uv run ${CLAUDE_SKILL_DIR}/scripts/check-statechart.py <置き場>/statechart.puml
 ```
 
-- exit 0 = 全組合せが「遷移あり」か「理由つき uncovered 宣言」で説明されている
-- exit 1 の出力は組合せを名指しする。**定義漏れなら遷移を足し、意図した未定義なら `' uncovered: <state> x <event> — <理由>` を statechart.puml に足す**。理由を書けない組合せは定義漏れの側
-- 宣言が残骸化した場合 (遷移を後から足した・改名した) も同じ script が落とすので、状態機械を変えたら再実行する
+検査する項目・記法・exit code の正本は script の `--help`。
 
-到達不能状態と初期遷移の欠落も同時に検査される。
+- exit 0 = 違反なし
+- exit 1 の出力は違反か検査不能を名指しする。**未定義の組合せ (`[statechart uncovered]`) は、定義漏れなら遷移を足し、意図した未定義なら `' uncovered: <state> x <event> — <理由>` を statechart.puml に足す**。理由を書けない組合せは定義漏れの側。**自分以外へ出ていく遷移 (ラベル無しの自動遷移を含む) が無い状態 (`[statechart dead end]`) は、図全体の終わりにあたる状態なら `State --> [*]` で final state と宣言し、そうでなければ遷移を足す**。final state を 1 つでも宣言すると全状態に final state へ届くことが要求されるので、終わりの無い状態機械では行き止まりにも遷移を足す側で直す。**final state へ届かない状態 (`[statechart no termination]`) は、届く遷移を足す**。**同じ状態・同じイベント (イベント無しの自動遷移を含む) で遷移先が分かれる遷移 (`[statechart nondeterministic]`) は、guard で排他に分けるか、遷移を 1 本にする**。検査不能 (`[statechart empty]` など) なら、図を `--help` の対応記法の範囲で書き直す
+- 宣言が残骸化した場合 (遷移を後から足した・改名した) も同じ script が落とすので、状態機械を変えたら再実行する。残骸の宣言は消すか、改名後の名前に直す
 
 ## 段 3: 不変条件の反例探索 (opt-in)
 
 集約の不変条件 (「同一 issue の非終端実体は 0..1」のような、状態機械単体では表現できない制約) が 3 つ以上あるなら、Hypothesis の RuleBasedStateMachine で反例探索を足す価値がある。手書きシナリオが 2〜3 本の遷移列を固定で確かめるのに対し、こちらは遷移列を自動生成して不変条件の破れを探す。
 
 - 実装は不要 — 型も value object も持たない 50 行程度の Python で、遷移を `@rule`、不変条件を `@invariant` として書く
-- 置き場は設計ディレクトリ配下 (`docs/design/<name>/model_test.py` 等)。設計段階のモデル検証であり、実装のテストではない
+- 置き場は設計ディレクトリ配下 (`<置き場>/model_test.py` 等)。設計段階のモデル検証であり、実装のテストではない
 - 実行: `uv run --with pytest --with hypothesis pytest <file>`
 - 骨格:
 

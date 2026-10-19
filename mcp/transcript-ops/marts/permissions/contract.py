@@ -211,9 +211,8 @@ HOOK_OBSERVABILITY = {
         " — 無出力の PostToolUse hook は attachment を残さないので、1 回分の所要を transcript から"
         "求められない (hook 段 = Pre + Post の和は lab で測る)。non_global は user settings に"
         "だけ登録された hook と設定に紐づかない firing を除いた max。"
-        "母集団は main session の transcript だけで、"
-        "subagent の tool 呼び出しは含まない (store は subagents/ 配下を取り込まない — "
-        "store meta の skipped_nested_files)",
+        "母集団は meta.transcript_kind が選んだ transcript (下の META_NOTES の "
+        "transcript_kind の注記)",
     ],
 }
 
@@ -353,8 +352,13 @@ META_NOTES = (
     "**rule_candidates の rule_inputs は view の収載条件に届かない entry にも "
     "hard_deny_share を載せる** (near-miss 行を含む) ので、view に該当行が無ければ "
     "20-axis-a.json の outcome_breakdown_early / _late を直接見る。",
-    "store.broken_lines / store.unreadable_files / store.skipped_nested_files が 0 でなければ"
-    "観測が劣化している (件数だけ出す。判断は読み手)。",
+    "store.broken_lines / store.unreadable_files / store.unrecognized_nested_files が "
+    "0 でなければ観測が劣化している (件数だけ出す。判断は読み手)。",
+    "母集団 (実行・hook の fire とも) は meta.transcript_kind が選ぶ。**既定 main は "
+    "main session の transcript だけを数え、subagent の tool 呼び出しを含まない** — "
+    "subagent の中でだけ使われた entry は match_count 0 に見えるので、revoke 判定の前に "
+    "transcript_kind: all で取り直して確かめられる。all で数えた subagent の実行は "
+    "親 session の id で数える (subagent ごとの session は立たない)。",
 )
 
 

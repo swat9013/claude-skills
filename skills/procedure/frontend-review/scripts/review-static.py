@@ -16,7 +16,12 @@ Output:
 
 Exit codes:
     0 — 検査完了 (findings 有無に関わらず)
-    2 — 入力エラー (ファイル不在 / parse fail)
+    2 — 入力エラー (ファイル不在 / parse fail。CSS 引数を省いたときに <link rel="stylesheet"> の
+        ローカル href (host を持たず、scheme が無いか file) が指す file の不在も含む)
+
+invariant:
+    1. rule ごとに、その違反を finding として出す (rule 数は CHECKED_RULES が申告し、テストは tests/fixtures/red_flags/ の fixture 数と突き合わせる)
+    2. 引数で渡した入力か、link から集めたローカルの CSS が読めなければ exit 2 で止まり、findings の JSON を出さない
 """
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from bs4 import BeautifulSoup
 import tinycss2
@@ -582,6 +588,30 @@ def run_all_checks(html: BeautifulSoup, css: list[tuple[Path, list[Any]]], html_
     return findings
 
 
+def linked_local_css_paths(html: BeautifulSoup, html_path: Path) -> list[Path]:
+    """<link rel="stylesheet"> のうちローカルの href を path にする (重複は 1 つに畳む)。
+
+    netloc を持つ href (//host/...) と file 以外の scheme (http(s): / data: 等) はリモートとして外す。
+    query と fragment は落とし、percent-encoding は戻す。相対 path は HTML の親 dir 基準、
+    `/` で始まる path と file: URL は filesystem の絶対 path として扱う。rel は大文字小文字を区別しない。
+    """
+    paths: list[Path] = []
+    for link in html.find_all("link"):
+        rels = link.get("rel") or []
+        if "stylesheet" not in (r.lower() for r in rels):
+            continue
+        href = link.get("href")
+        if not href:
+            continue
+        parts = urlsplit(href)
+        if parts.netloc or parts.scheme not in ("", "file"):
+            continue
+        path = html_path.parent / unquote(parts.path)
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
 def main(argv: list[str]) -> int:
     try:
         args = parse_args(argv)
@@ -593,12 +623,13 @@ def main(argv: list[str]) -> int:
         if args.css:
             css_paths = args.css
         else:
-            css_paths = [
-                args.html.parent / link.get("href")
-                for link in html.find_all("link", rel="stylesheet")
-                if link.get("href") and not link.get("href").startswith("http")
-            ]
-            css_paths = [p for p in css_paths if p.exists()]
+            css_paths = linked_local_css_paths(html, args.html)
+            missing = [p for p in css_paths if not p.is_file()]
+            if missing:
+                for p in missing:
+                    print(f"error: linked CSS file not found: {p}", file=sys.stderr)
+                print("hint: CSS の path を引数で明示して再実行する", file=sys.stderr)
+                return 2
 
         css = load_css_rules(css_paths, html, args.html)
         findings = run_all_checks(html, css, args.html)

@@ -11,6 +11,19 @@ hunk を読んで決める判定なので本 script は持たない。
 
 止まる巡も exit 0 で JSON を返す (`stop` が埋まる)。exit 非 0 は git 自体が動かないなど、
 JSON を組めなかったときだけ。
+
+invariant (破ると巡を止める・exit 非 0 にする条件):
+
+1. head が HEAD で、tracked な未 commit の変更があれば `未 commit` で止まる (差分が空の判定より先)
+2. 解決した範囲の差分が空なら `その他: 差分が空` で止まる (再レビューで前巡の head から増分が無いだけのときは止まらず `増分なし:` を注記する)
+3. 渡された範囲が解決しなければ止まり、reviewed を `未解決: <要求>` にする
+4. 起点 branch を決められなければ止まり、detail で base= を促す — remote が無い / remote が複数あり
+   branch.<b>.remote・checkout.defaultRemote・origin のどれでも決められない / `<remote>/HEAD` が無い / 起点 ref が commit に解決しない。
+   origin へ倒したときは推定として注記に残す
+5. HEAD が commit を指さなければ止まる
+6. 前巡の出力 file が読めなければ止まる
+7. 前巡が再レビュー `要` なのに reviewed 行の SHA が無ければ止まる
+8. git 自体が動かなければ exit 非 0 で、stderr の 1 行目に git のエラーを出す
 """
 
 from __future__ import annotations
@@ -24,11 +37,12 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 停止理由の token。review-stage の SKILL.md の停止テンプレートと突き合わせる
+# 停止理由の token。playbook はこの値で commit して呼び直すか止まるかを分ける。SKILL.md の
+# 停止テンプレートとも playbook とも機械では照合しない — 食い違っても playbook は「user へ報告して
+# 止まる」側へ倒れ、取り消せない被害が無いため
 # (`reviewer 未起動` は reviewer を立てる側が出すので本 script は出さない)
 STOP_UNCOMMITTED = "未 commit"
 STOP_OTHER = "その他"
-STOP_TOKENS = (STOP_UNCOMMITTED, STOP_OTHER)
 
 STAGES = ("docs", "軽量", "標準")
 

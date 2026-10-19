@@ -6,6 +6,12 @@ staleness が混ざる (ADR 0031)。よって mart が実行のたびに読み�
 汎用スキル制約により依存は Claude Code 標準ファイルのみ
 (`~/.claude/settings.json` / `<repo>/.claude/settings(.local).json` /
 install 済み plugin の `hooks/hooks.json`)。swat-skills 固有の hook 資産には触らない。
+
+## invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. sandbox の `excludedCommands` は `sandbox` と `permissions.sandbox` の両位置から読む
+   (片方だけでは黙って 0 件になる)
+2. worktree の project 層は親 clone の `settings.local.json` も分母に含める
 """
 
 from __future__ import annotations

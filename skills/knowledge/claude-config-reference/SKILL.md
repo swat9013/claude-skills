@@ -18,4 +18,4 @@ Inferential 側 (CLAUDE.md / rules / SKILL.md 指示文 / hook 注入文 / agent
 | コンポーネント | [hook](references/hook.md) | hook の登録・script を新設 / 変更する前、hook をどの event に置くか判断するとき |
 | 共通 | [sources](references/sources.md) | 仕様が不明・古い・矛盾しているとき、公式のベストプラクティスと照らすとき (一次情報源とエスカレーション順) |
 
-プロジェクト固有の価値観文書 (プロジェクト直下の `GLOSSARY.md` / `CONTEXT.md` / CLAUDE.md / ADR 等) があれば併用し、食い違ったらプロジェクト側を優先する。
+プロジェクト固有の価値観文書 (CLAUDE.md と、対象 repo の `docs/agents/domain.md` が案内する用語集・ADR) があれば併用し、食い違ったらプロジェクト側を優先する。

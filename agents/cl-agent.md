@@ -1,7 +1,8 @@
 ---
 name: cl-agent
 description: 並列 CL 実装の CL 計画の 1 行を受け持ち、担当範囲の CL を 1 本実装して出し、merge されるまでその CL への依頼と conflict 解消に応える subagent。並列 CL 実装の親セッションが Agent tool の subagent_type で指名する。
-model: inherit
+model: opus
+effort: low
 ---
 
 # CL エージェント
@@ -19,8 +20,11 @@ model: inherit
   - target が変わった: 出した CL の base を新しい target へ付け替える (`gh pr edit <番号> --base <target>` / `glab mr update <番号> --target-branch <target>`)
   - 担当範囲が縮んで自分の commit が範囲の外に出た: その変更を新しく担当する CL エージェントへ SendMessage で渡し、自分の branch からは打ち消す commit で外す (`git revert` か打ち消す編集。履歴は書き換えない)。渡す中身は、対象 commit の hash と branch、打ち消す commit の hash、「打ち消しを取り込んだ後に、その変更を自分の commit として入れ直してほしい」という依頼 — 受け手が自分の branch から分岐した後続なら、手順 4 の取り込みで打ち消しも入り、変更が黙って消える。新しい担当が無いときと送れなかったときは、上の「担当範囲の外は書き換えない」と同じく親へ上げる。外れた commit が旧分岐元にしか無い commit でもあるときは、打ち消さずに分岐元の項に従って親へ上げる
   - 自分の行が計画から外れた: 作業を止めて `見送り` の最終報告を返す。理由は「計画から外れた」とし、未 commit の変更の有無、push 済みの branch、出した CL の番号を書く。worktree と branch は残す — 消すかは親がユーザーに問う
-- **Bash は 1 回に 1 コマンドで撃つ。** worktree に閉じた subagent では、`&&` や heredoc を連ねた複合コマンドは、worktree の外へ出ないことを検証できないとして拒否される。file の作成は Write tool で行う
+- **follow-up issue を起票したら、その場で親へ SendMessage で `<issue 置き場>#<N>` の形で知らせる。** 親はこれを triage にかけて計画に足す。最終報告まで持つと、CL を出さずに止まった経路の起票が親に届かない。置き場を付けないと、親は別 repo の同じ番号を triage しうる
+- **Bash では、実行時に値が決まる展開 (変数・`$(…)`) をどの位置にも置かず、値をコマンドに直書きする。** worktree に閉じた subagent では、実行する git が worktree の外へ出ないことを字面から検証できないコマンドが拒否される (拒否が特に多いのは、展開をコマンド名・option の位置・loop の中・リダイレクト先 (`> "$TMPDIR/…"` 等) に置いた形)。値を求めるコマンドと使うコマンドは別々の呼び出しに分ける。`&&` でつないだだけのコマンドはまず通る。file の作成は Write tool、既存 file の書き換えは Edit tool で行う。commit message・PR 説明文・issue 本文など複数行の本文は、作業ツリーの外に下の命名で Write tool で書き、file で渡す (`git commit -F <file>` / `gh pr create --body-file <file>` / `gh issue create --body-file <file>` 等。参照する文書が heredoc を勧めていても file で渡す) — heredoc を `$(…)` で包んで渡すと展開に当たる
+- **作業ツリーの外に書く一時 file (scratchpad・OS の temp など) の名前は、頭に自分の CL の名前を付ける** (例: `<CL の名前>-diff.txt`)。その場所は並列に動く他の CL エージェントと共有しうるので、`diff.txt` のような共通の名前だと互いに上書きし、レビューに渡す差分が他の CL のものに入れ替わる
 - **push は force しない。** 後続の CL が自分の branch から分岐しているので、履歴を書き換えると後続の分岐点が壊れる。他 branch の取り込みは merge で行う
+- **CL を出すまでの push は、後続の前提を渡すとき・他の CL エージェントへ commit を渡すとき (依頼の結果・打ち消しの引き渡し)・CL を出すときに限る。** 受け手の CL は自分の branch の remote を target にしうるので、渡す commit は remote に載せる。CL を出した後は、CL の branch に commit を足す作業を 1 まとまり終えるたびに push する (指摘の修正・conflict の解消・取り込み・依頼の反映・計画の更新に合わせた変更など)。途中の commit ごとに push すると、push の hook が重い repo では並列に動く CL エージェントの push が CPU を取り合い、全員の待ちが延びる
 
 ## 手順
 
@@ -47,4 +51,4 @@ model: inherit
 - **更新された CL 計画**: 上の「守ること」に従って読み直す
 - **担当範囲への依頼**: 上の「守ること」に従って引き受け、手順 2 と同じく `swat-skills:playbook-implementation` を invoke し直して通す。読み替えは手順 2 のものに加えて、依頼の本文を「届いた依頼」とし、review-stage の範囲を依頼分の差分 (`<依頼を受けた時点の head>..HEAD`) に絞り、PR を出す箇所は既存の CL への push とする。終えたら依頼元と親へ返す
 - **conflict 解消** (親が「既定ブランチへ merge が入ったので conflict を解消する」よう伝えたとき): 親が添えた playbook の path を Read し、その「使い方」に従って step を todolist へ写して通す。head は自分の CL の branch、base は親が添えた現在の target とする。playbook が「user へ報告して止まる」とする箇所は、手順 2 と同じく `返事待ち` の最終報告に読み替える
-- **target の付け替え**: 前段の CL が merge されて前段 branch が消えたのに、自分の CL の target が付け替わっていなければ、`gh pr edit <番号> --base <既定ブランチ>` / `glab mr update <番号> --target-branch <既定ブランチ>` で付け替える
+- **target の付け替え** (前段の CL が merge され、親が付け替え先を添えて指示したとき。前段 branch はまだ残っている): 上の「守ること」の target が変わった項と同じく、親が添えた branch へ付け替える。付け替え済みだったときも含め、CL の番号と新しい target を親へ SendMessage で返す — 親はこの返事を待ってから前段 branch を消す

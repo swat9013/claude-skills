@@ -7,6 +7,20 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-worktree-escape.py"
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/inject-least-code.py"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/inject-least-code.py"
           }
         ]
       }
@@ -41,14 +55,6 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-pipe-execute.py"
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-destructive.py"
-          },
-          {
-            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/allow-tmp-delete.py"
           },
           {
@@ -58,7 +64,7 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-chmod-x.py",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/allow-chmod-x.py",
             "if": "Bash(chmod:*)"
           }
         ]

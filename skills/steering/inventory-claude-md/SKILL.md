@@ -90,7 +90,7 @@ observation の schema は script docstring 参照。以下の順に組み立て
 
 - 「同じ概念の言い直し / 散らばった定義」は、診断表ではパッチが「残す」の行の但し書き (統合) に書かれている。但し書きに当たる行を先に merge にし、残りの「残す」の行を keep-inline にする。上の対応に無いそれ以外の行は、bucket を自分で割り当てず informational に理由付きで落とす
 - move-to-lint と、参照切れ・陳腐化による delete は診断表の外 (決定的検査への置換と、参照の実在) で判定する
-- **no-op の delete 候補は micro-test で確かめたものだけを出す**: 候補の行ごとに、その行が効くはずの場面を 1 つ組み、「その行あり / なし」の 2 本の subagent に同じ場面を渡して振る舞いを比べる。比べ方は手順 2-1。振る舞いが変わらなかった行だけを delete に載せ、変わった行は診断表の他の行で分類し直す。micro-test を回せなかった行は delete に載せず、informational に「no-op の疑い・未検証」と書く
+- **no-op の delete 候補は micro-test で確かめたものだけを出す**: 候補の行ごとに手順 2-1 の micro-test にかける。振る舞いが変わらなかった行だけを delete に載せ、変わった行は診断表の他の行で分類し直す。micro-test を回せなかった行と手順 2-1 の上限から外れた行は、delete に載せず informational に「no-op の疑い・未検証」と書く
 
 **bucket 割当ての制約 (script との責務分担)**:
 
@@ -124,12 +124,10 @@ observation の schema は script docstring 参照。以下の順に組み立て
 
 #### 2-1. no-op の micro-test
 
-no-op の疑いがある行 1 つにつき、Agent tool で subagent を 2 本、同一 message で起動する。かける行は 1 回の棚卸しで **est_tokens 降順の上位 5 行まで**とし、外れた行は informational に「no-op の疑い・未検証」と書く。
+手順 2 の着手前に Read した patches.md の「no-op の micro-test」の手順で比べる。かける行は 1 回の棚卸しで **est_tokens 降順の上位 5 行まで**とする。
 
-- **subagent の種類は、CLAUDE.md 系を自動で読まないもの** (built-in の `Explore` など) にし、Agent tool の `model` 引数でこのセッションと同じモデルを指定する。CLAUDE.md 系を自動で読む subagent では、「なし」側にも対象の行が cwd から載ってしまい、比べる対照が成り立たない。軽いモデルで比べても、その行を実際に読むモデルにとって no-op だという証拠にならない。両側は同じ種類・同じモデルにそろえる
-- **prompt は 2 本とも同じ場面と同じ問い** (「この指示文の下で、次の場面をどう進めるか」) にし、違いは埋め込む指示文だけにする: 「あり」側は対象 file の本文、「なし」側はその本文から対象の行を除いたもの
-- **場面は、その行が効くなら振る舞いが分かれるもの**にする。どちらの側でも同じ答えになる場面では、変わらなかったことが no-op の証拠にならない
-- 2 本の答えが取る行動で一致したら「変わらない」と判定し、場面・両側の答えの要旨・試行数 (「1 場面・各 1 回」など) をレポートの証拠欄に書く
+- **対象が CLAUDE.md 系なので、正本の subagent の種類を CLAUDE.md 系を自動で読む種類に替えると、「なし」側にも対象の行が cwd から載り、比べる対照が成り立たない**
+- 「変わらない」と判定した行は、場面・両側の答えの要旨・試行数 (「1 場面・各 1 回」など) をレポートの証拠欄に書く
 
 ### 3. Markdown レポート組み立て
 
@@ -158,7 +156,7 @@ no-op の疑いがある行 1 つにつき、Agent tool で subagent を 2 本�
 |---|---|
 | keep-inline | 変更なし |
 | rewrite / delete / merge | 対象 file (`<repo>/CLAUDE.md` / `<repo>/CLAUDE.local.md` / `.claude/rules/<topic>.md`) を編集 (書き換え / 削除 / 統合)。merge が file をまたぐなら、統合先 (書き換え) と削除側 (削除) の file を別々に編集する |
-| move-to-path-scoped | 新 `.claude/rules/<slug>.md` を作成し `paths:` frontmatter を宣言 (追加) + 元 file の対象行を削除 (削除。or 索引 stub 残置)。詳細は `write-for-harness/references/components/rules.md` を参照 |
+| move-to-path-scoped | 置き先を `write-for-harness/references/components/rules.md` のチェックリストの「分ける順」で決め、同じ `paths:` で同じ関心の既存 rules があればそこへ追記 (追加)、無ければ新 `.claude/rules/<topic>.md` を作成して `paths:` frontmatter を宣言 (追加)。どちらでも元 file の対象行を削除 (削除) |
 | move-to-skill | repo 内の既存 skill なら、対象 skill の SKILL.md へ移す (パッチ種別は `write-for-harness` が選ぶ) + 元 file の対象行を削除 (削除)。新規 skill (と repo の外の skill) なら別 skill として起票し、本 skill では反映しない。詳細は `write-for-harness/references/components/skill.md` を参照 |
 | move-to-lint | gate/hook の要件文まで書き、実装は別セッション。本 skill は配線しない |
 

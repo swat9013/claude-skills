@@ -28,7 +28,14 @@ CREATE TABLE IF NOT EXISTS file (
     -- JSON として解釈できなかった行数。0 でない値が出ること自体が観測の劣化シグナル
     -- なので、黙って skip せず file 単位で数える (silent skip の可視化)
     broken_lines INTEGER NOT NULL,
-    ingested_at  TEXT NOT NULL
+    ingested_at  TEXT NOT NULL,
+    -- v6 (#1456): transcript の種類。`<project>/*.jsonl` は 'main'、
+    -- `<project>/<session>/subagents/` 配下は 'subagent' (置き場の判定は
+    -- `ingest.transcript_kind_of`)。**subagent の record は親 session の session_id を
+    -- 持つ**ので、session 単位で数える mart はこの列で母集団を選ぶ (混ぜると distinct
+    -- sessions や最終 text が化ける)。置き場で決まる file 単位の値なので、record へ
+    -- 写さず file に 1 つだけ持つ (各 record は file_id から引く)
+    transcript_kind TEXT NOT NULL CHECK (transcript_kind IN ('main', 'subagent'))
 );
 
 -- 読めなかった file。**存在しない file と読めない file を同じ「0 件」に潰さない**。

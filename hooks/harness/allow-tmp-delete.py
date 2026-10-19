@@ -7,8 +7,8 @@ permission フロー (settings の ask / auto mode classifier) に委ねる。pa
 持たない (ADR 0077 の基準で削除)。
 
 承認ルート: /tmp /private/tmp $HOME/.claude/tmp <cwd>/tmp の各「配下」(ルート自体は対象外)。
-recursive 削除 (-rf) 可。glob/変数/置換/quote/未知 flag/tmp 外混在/.. 脱出/ルート自体/
-改行で続けた 2 行目 は素通し。
+recursive 削除 (-rf) 可。`PLAIN_COMMAND_CHARS` の外の文字 (glob/brace 展開/zsh の `=cmd`・`(...)`・
+extended_glob/変数/置換/quote)・語中の `~`/未知 flag/tmp 外混在/.. 脱出/ルート自体/改行で続けた 2 行目 は素通し。
 
 受理する rm の綴り (リテラル一致のみ): `rm` / `/bin/rm` / `/usr/bin/rm`。それぞれ先頭に単一
 token `command` を伴ってよい。allow は「その実行ファイルを承認なしで起動する」決定なので、
@@ -21,6 +21,12 @@ hooks.json 側の `if` gate は付けない。gate は token 境界照合のた�
 判定は shell の意味論に揃える: 語の分割は空白・tab・改行だけ、
 path の解決は rm が実際に辿る物理的な解決 (`..` は直前の symlink を解決した先の親。字面で畳まない。
 末尾 `/` 付きの target は最後の component の symlink も辿った先の dir で判定する)。
+
+invariant:
+    1. 承認ルートの配下に物理的に解決できない target (ルート自体・`..` 脱出・symlink を辿って
+       外へ出る形・存在しない末尾 `/` 付き target・home 自体・`~user`・cwd の無い相対 path) は allow しない
+    2. 受理する綴り以外の rm (`sudo` / `env` / `\\rm` / 任意 path の rm / rmtrash / find -delete) は allow しない
+    3. `PLAIN_COMMAND_CHARS` の外の文字と語中の `~` (shell 構文: glob / brace 展開 / zsh の `=cmd`・glob qualifier `(...)` / 変数 / 置換 / quote)・未知 flag・改行で続けた 2 行目・target 無しは allow しない
 
 Registration: hooks/hooks.json PreToolUse / Bash matcher (`if` 無し)
 """
@@ -36,7 +42,6 @@ from _prelude import (  # noqa: E402
     allow,
     continues_on_another_line,
     decide,
-    matches_any_line,
     passthrough,
     read_payload_or_pass,
     read_stdin_text,
@@ -44,9 +49,14 @@ from _prelude import (  # noqa: E402
     tool_input_text,
 )
 
-# 連結 (`|` `&` `;`) / リダイレクト / 変数展開・コマンド置換 / glob / quote / backslash を
-# 含むなら素通しする。tokenize を単純な空白分割に留めるための前提
-UNSUPPORTED_SHELL_SYNTAX = re.compile(r"[|&;<>$`*?\[\"'\\]")
+# allow してよい command に現れる文字。連結・リダイレクト・変数展開・置換・glob (zsh の
+# `setopt extended_glob` 下の `^` `#` を含む)・brace 展開・`=cmd`・quote・backslash を表す文字は
+# すべて外にある。拒否する文字を列挙すると漏れがそのまま承認なしの経路になるので、許す文字を
+# 列挙する (allow-chmod-x の PLAIN_COMMAND_CHARS と同じ方式。#2000)。`~` は語頭の tilde 展開
+# だけを受理し、語中の `~` (extended_glob の除外) は `has_unsupported_syntax` で落とす
+PLAIN_COMMAND_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./+,:@%~- \t\n"
+)
 LEADING_SPACE = re.compile(r"^\s+")
 WORD_SEPARATOR = re.compile(r"[ \t\n]+")
 RM_SPELLINGS = frozenset({"rm", "/bin/rm", "/usr/bin/rm"})
@@ -54,9 +64,16 @@ KNOWN_LONG_FLAGS = frozenset({"--recursive", "--force", "--verbose", "--interact
 SHORT_FLAG_CLUSTER = re.compile(r"^-[rRfivd]+$")
 
 
+def has_unsupported_syntax(command: str) -> bool:
+    """許す文字の外の文字か、語頭以外の `~` を含むなら True。"""
+    if any(char not in PLAIN_COMMAND_CHARS for char in command):
+        return True
+    return any("~" in word[1:] for word in WORD_SEPARATOR.split(command))
+
+
 def rm_targets(command: str) -> list[str] | None:
     """受理する綴りの rm なら削除対象の語を返す。受理できない形なら None。"""
-    if matches_any_line(UNSUPPORTED_SHELL_SYNTAX, command):
+    if has_unsupported_syntax(command):
         return None
     # `sed 's/^[[:space:]]*//'` と同じく各行の行頭の空白を落としてから、IFS (空白・tab・改行) で分割する
     trimmed = substitute_lines(LEADING_SPACE, "", command)

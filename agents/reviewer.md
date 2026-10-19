@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: レビュー skill の reviewer 工程を担う subagent。観点・対象・報告形式は呼び出し元の prompt が渡し、model と effort は本定義が固定する。レビュー skill から Agent tool の subagent_type で指名する。
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob
 model: opus
 effort: high
 ---

@@ -58,6 +58,11 @@ from adapter.transcript import (
 from . import lock
 from . import store as store_mod
 
+# subagent の transcript の置き場 (project dir から見て `<session>/<この名前>/` の下)。
+# workflow から起きた subagent はさらに `workflows/<run>/` の下へ入るので、この dir の
+# 下は深さを問わず subagent とする (`transcript_kind_of`)
+SUBAGENT_DIR_NAME = "subagents"
+
 # tool 入力の抜粋上限。**原型復元用ではない** — 復元が要るなら lake を読む。
 # 生 input を丸ごと持つと Write / Edit の file 全文が store に入る。
 INPUT_EXCERPT_LIMIT = 200
@@ -93,36 +98,52 @@ class SyncReport:
     unchanged_files: int = 0
     removed_files: int = 0
     unreadable_files: int = 0
-    # `<project>/<session>/subagents/*.jsonl` 等、1 階層目より深い位置にある
-    # transcript。現行の観測範囲 (project 直下) を広げないため ingest しないが、
+    # 1 階層目より深く、subagent の置き場 (`transcript_kind_of`) にも当たらない
+    # transcript。main とも subagent とも決められないので ingest しないが、
     # **黙って落とさず件数を出す** (silent skip の可視化)
-    skipped_nested_files: int = 0
+    unrecognized_nested_files: int = 0
     records: int = 0
     broken_lines: int = 0
 
 
-def iter_lake_files(transcripts_dir: Path) -> Iterator[tuple[str, Path]]:
-    """観測対象の transcript を (project_dir 名, path) で yield する。
+def transcript_kind_of(relative: Path) -> str | None:
+    """project dir からの相対 path → `file.transcript_kind`。置き場が分からなければ None。
 
-    lake の dir 名エンコードは lossy なので directory 名から cwd を復元しない。
-    scope 絞りは record の cwd で行う。
+    `<project>/*.jsonl` は main、`<project>/<session>/subagents/` の下は subagent。
+    **判定を変えたら `store.STORE_VERSION` を上げる** — 種類は file を取り込むときにだけ
+    書くので、fingerprint が変わらない file には新しい判定が届かない (schema digest は
+    schema.sql しか見ない)。
     """
+    parts = relative.parts
+    if len(parts) == 1:
+        return "main"
+    if len(parts) >= 3 and parts[1] == SUBAGENT_DIR_NAME:
+        return "subagent"
+    return None
+
+
+def _walk_lake(transcripts_dir: Path) -> Iterator[tuple[str, Path, str | None]]:
+    """lake の transcript を 1 回の走査で (project_dir 名, path, 種類か None) にする。"""
     if not transcripts_dir.is_dir():
         return
     for project_dir in sorted(transcripts_dir.iterdir()):
         if not project_dir.is_dir():
             continue
-        for jsonl in sorted(project_dir.glob("*.jsonl")):
-            yield project_dir.name, jsonl
+        for jsonl in sorted(project_dir.rglob("*.jsonl")):
+            yield (project_dir.name, jsonl,
+                   transcript_kind_of(jsonl.relative_to(project_dir)))
 
 
-def count_nested_files(transcripts_dir: Path) -> int:
-    """1 階層目より深い transcript の数 (観測対象外だが件数は出す)。"""
-    if not transcripts_dir.is_dir():
-        return 0
-    total = len(list(transcripts_dir.glob("*/**/*.jsonl")))
-    direct = len(list(transcripts_dir.glob("*/*.jsonl")))
-    return total - direct
+def iter_lake_files(transcripts_dir: Path) -> Iterator[tuple[str, Path, str]]:
+    """観測対象の transcript を (project_dir 名, path, transcript_kind) で yield する。
+
+    置き場が main とも subagent とも決まらない file は返さない (`sync` は数える)。
+    lake の dir 名エンコードは lossy なので directory 名から cwd を復元しない。
+    scope 絞りは record の cwd で行う。
+    """
+    for project_dir, jsonl, kind in _walk_lake(transcripts_dir):
+        if kind is not None:
+            yield project_dir, jsonl, kind
 
 
 def sync(conn: sqlite3.Connection, transcripts_dir: Path,
@@ -134,7 +155,7 @@ def sync(conn: sqlite3.Connection, transcripts_dir: Path,
     経路を塞ぐ (ADR 0031)。
     """
     stamp = _stamp(now or dt.datetime.now(dt.timezone.utc))
-    report = SyncReport(skipped_nested_files=count_nested_files(transcripts_dir))
+    report = SyncReport()
     # 「読めなかった」は今回の観測結果として作り直す (前回読めなかった file が
     # 今回読めた場合に古い row が残らないように)
     conn.execute("DELETE FROM unreadable_file")
@@ -147,7 +168,10 @@ def sync(conn: sqlite3.Connection, transcripts_dir: Path,
     }
     seen: set[str] = set()
 
-    for project_dir, jsonl in iter_lake_files(transcripts_dir):
+    for project_dir, jsonl, transcript_kind in _walk_lake(transcripts_dir):
+        if transcript_kind is None:
+            report.unrecognized_nested_files += 1
+            continue
         key = str(jsonl)
         seen.add(key)
         try:
@@ -162,7 +186,8 @@ def sync(conn: sqlite3.Connection, transcripts_dir: Path,
         if existing is not None and (existing[1], existing[2]) == fingerprint:
             report.unchanged_files += 1
             continue
-        outcome = _ingest_file(conn, jsonl, project_dir, fingerprint, stamp)
+        outcome = _ingest_file(conn, jsonl, project_dir, transcript_kind,
+                               fingerprint, stamp)
         if outcome is None:
             report.unreadable_files += 1
             continue
@@ -206,7 +231,8 @@ def _forget_file(conn: sqlite3.Connection, file_id: int) -> None:
 
 
 def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
-                 fingerprint: tuple[int, int], stamp: str) -> tuple[int, int] | None:
+                 transcript_kind: str, fingerprint: tuple[int, int],
+                 stamp: str) -> tuple[int, int] | None:
     """1 file を全置換で取り込む。読めなければ None。"""
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fp:
@@ -220,9 +246,10 @@ def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
     if row is None:
         cur = conn.execute(
             "INSERT INTO file (path, project_dir, mtime_ns, size_bytes, "
-            "record_count, broken_lines, ingested_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "record_count, broken_lines, ingested_at, transcript_kind) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (str(path), project_dir, fingerprint[0], fingerprint[1],
-             len(rows.records), rows.broken_lines, stamp),
+             len(rows.records), rows.broken_lines, stamp, transcript_kind),
         )
         file_id = int(cur.lastrowid)
     else:
@@ -230,9 +257,10 @@ def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
         _delete_projection_rows(conn, file_id)
         conn.execute(
             "UPDATE file SET project_dir = ?, mtime_ns = ?, size_bytes = ?, "
-            "record_count = ?, broken_lines = ?, ingested_at = ? WHERE file_id = ?",
+            "record_count = ?, broken_lines = ?, ingested_at = ?, "
+            "transcript_kind = ? WHERE file_id = ?",
             (project_dir, fingerprint[0], fingerprint[1], len(rows.records),
-             rows.broken_lines, stamp, file_id),
+             rows.broken_lines, stamp, transcript_kind, file_id),
         )
 
     conn.executemany(

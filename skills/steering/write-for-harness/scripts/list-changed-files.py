@@ -20,6 +20,14 @@ write-for-harness と claude-config-review の手順 1 が引数なしで呼び�
 列挙が欠けるとき (起点 branch が無い・merge-base が無い・削除された file がある) は、欠けた範囲と読み手への指示を
 stderr へ 1 件 1 行で出して exit 0 で続ける。読み手への指示を stderr の行に持たせるので、呼び出し側の手順には
 扱いを書かなくてよい。git が動かない (repo の外など) ときは stderr へ 1 行出して exit 1。
+
+invariant:
+
+1. 削除された file は列挙に出さず、外したことを stderr へ 1 行出す
+2. 起点 branch か merge-base が無ければ branch diff を省いたことを stderr へ出し、作業ツリーの変更は出す
+3. git が動かなければ exit 1
+4. 追跡先の local branch を起点にできず既定ブランチへ戻ったときは、そのことを stderr へ出す
+   (既定ブランチも解決できないときは 2 の告知だけを出す)
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 ---
 name: ready-for-agent-review
-description: issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・AI 委任範囲の未閉鎖・規範同士の衝突を反証済みの修正提案として issue ごとに返す (issue を N 件まとめて受け、tracker へは書き込まない). Use when「着手可 (ready-for-agent) にする前に issue を規範と照合する」「深掘りした issue を着手可にする」「issue 番号を渡して本文を再レビューする」.
+description: issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・AI 委任範囲の未閉鎖・規範同士の衝突を反証済みの修正提案として issue ごとに返す (issue を N 件まとめて受け、tracker へは書き込まない). Use when「着手可 (`ready-for-agent`) にする前に issue を規範と照合する」「深掘りした issue を着手可 (`ready-for-agent`) にする」「issue 番号を渡して本文を再レビューする」.
 user-invocable: true
 ---
 
@@ -10,7 +10,7 @@ issue N 件 (1 件以上) の本文と triage コメントを、対象 repo の�
 
 - **自分の保証**: tracker への書き込み (label 操作・コメント投稿・本文編集) はゼロ。提案をどう反映するか (本文を書き換えるか、label を動かすか) は呼び出し元の手順が決める — 人間の承認を通す呼び出し元も、AFK 境界の内側で自分で反映する呼び出し元もある。follow-up issue の文案を起票するかとその手順も呼び出し元が決める
 - **やらないこと**: 優先順位で決まらない規範同士の衝突と AFK 境界の外の衝突の裁定 (どちらも深掘り対話に回す。境界と優先順位は手順 3 の ③)、triage の分類そのもの、実装差分のレビュー
-- 入口は 3 つ: triage 手順からの invoke、深掘り (対話) で論点を確定した後・着手可にする前の invoke、人が issue 番号を渡して行う再レビュー。どの入口でも手順は同じで、triage 以外の入口は N=1 で呼んでよい
+- 入口は 3 つ: triage 手順からの invoke、深掘り (対話) で論点を確定した後・`ready-for-agent` にする前の invoke、人が issue 番号を渡して行う再レビュー。どの入口でも手順は同じで、triage 以外の入口は N=1 で呼んでよい
 - **対象 repo** とは、issue の変更が入る repo (cwd の repo) を指す。issue 置き場とは別の repo のことがある。規範は対象 repo から読み、issue 置き場は issue の取得だけに使う
 
 ## 1. issue を読む
@@ -37,7 +37,7 @@ issue ごとに `gh issue view <N> -R <issue 置き場> --json title,body,labels
 
 - 対象 repo の `.claude/rules/*.md` のうち、frontmatter `paths` がその path に一致するもの (`paths` を持たない rules は全 path に一致するものとして読む)
 - その path が harness の指示文 (CLAUDE.md / `.claude/rules/` / SKILL.md / hook 注入文 / agent 定義 — `.claude/agents/*.md` と plugin root の `agents/*.md`) なら、`${CLAUDE_SKILL_DIR}/../../steering/write-for-harness/references/components/` の該当 1 本 (`claude-md.md` / `rules.md` / `skill.md` / `hook-inject.md` / `agent.md`)。各 component の責務定義は、issue が置き場を指定するときの適合基準になる
-- 対象 repo の ADR 置き場 (`docs/adr/` 等) を、path・component 名・issue の主題語で grep して当たった ADR。status が Superseded / Deprecated のものは根拠にしない
+- 対象 repo の `docs/agents/domain.md` が案内する ADR の置き場を、path・component 名・issue の主題語で grep して当たった ADR (案内が無ければ ADR は読まない)。status が Superseded / Deprecated のものは根拠にしない
 
 ## 3. 3 軸で候補を出す
 
@@ -86,7 +86,7 @@ prompt は下の雛形で入力だけを渡す。出典 file は、`${CLAUDE_SKI
 
 ## 5. 提案を返す
 
-入力の issue ごとに次の形のブロックを並べた markdown を返して終える。深掘り対話への回し先は、対象 repo の `docs/agents/triage-labels.md` に深掘り待ちの label があればその綴りで書く。そのファイルが無いか label の宣言を読み取れなければ label を提案せず、「深掘り対話が要る」と書く (読み取れなかったときは「triage-labels.md の宣言を読み取れず」と添える)。
+入力の issue ごとに次の形のブロックを並べた markdown を返して終える。深掘り対話への回し先は、対象 repo の `docs/agents/triage-labels.md` の表 (Repo-local labels の表を含む) で `needs-grilling` に当たる label があれば、その綴りで書く。そのファイルが無いか label の宣言を読み取れなければ label を提案せず、「深掘り対話が要る」と書く (読み取れなかったときは「triage-labels.md の宣言を読み取れず」と添える)。
 
 ```markdown
 ## ready-for-agent-review: #<N>
@@ -101,7 +101,7 @@ issue 置き場: <置き場> (<呼び出し元の指定 / 宣言 / 宣言が指�
 - issue 側: <出典 (本文 / コメントの author と日時 / 書き換え案 (未反映))> — 「<逐語引用>」
 - 規範: <file:line> — 「<逐語引用>」 (軸 ③ では衝突する 2 本をそれぞれ)
 - 修正案: <issue 本文の書き換え案 (書き換える箇所と書き換え後の文面。指摘が書き換え案 (未反映) から出たときは、その書き換え案の差し替え文面)。軸 ③ を裁定したときは勝った規範に合わせる書き換え案 (issue がすでに勝った規範に沿っていれば「なし」)>
-- 深掘り (軸 ③ を裁定しないとき、修正案の行の代わりに): <深掘り待ち label の綴り、または「深掘り対話が要る」> (<優先順位で決まらない / AFK 境界の外 — 当たった条件>)
+- 深掘り (軸 ③ を裁定しないとき、修正案の行の代わりに): <`needs-grilling` の綴り、または「深掘り対話が要る」> (<優先順位で決まらない / AFK 境界の外 — 当たった条件>)
 - 裁定 (軸 ③ を裁定したときだけ): <勝った規範の file:line> > <負けた規範の file:line> (<個別 > 一般 / 新しい決定記録 > 古い決定記録>)
 - follow-up issue の文案 (軸 ③ を裁定したときだけ): タイトル「<負けた規範をどう直すか>」/ 本文「<発端の issue 番号、裁定とその根拠、負けた規範の file:line と直し方、`## 範囲` の節 (変更してよい file = 負けた規範の file。範囲外で見つけた指摘の扱い = 手順 2 で読んだ規範に issue 起票の規則があればその文面、無ければ「別の issue に切り出す」)>」
 

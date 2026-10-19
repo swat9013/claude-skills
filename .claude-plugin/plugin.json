@@ -45,7 +45,7 @@
     "./skills/util/backlog-triage",
     "./skills/util/issue-triage",
     "./skills/util/ready-for-agent-review",
-    "./skills/procedure/stacked-implement",
+    "./skills/util/stacked-implement",
     "./skills/third/domain-modeling",
     "./skills/third/grilling",
     "./skills/third/pr",

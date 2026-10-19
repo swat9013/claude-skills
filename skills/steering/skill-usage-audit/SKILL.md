@@ -55,7 +55,15 @@ transcript 1 件 = subagent 1 体で、`subagent_type: swat-skills:transcript-au
 - 手順 1 の監査基準 checklist
 - 対象 skill の手順の一覧 — 手順 1 で Read した SKILL.md の手順を番号と見出し (見出しの無い手順は先頭文) で並べたもの。監査 subagent はこれを工程の単位にするので、全 subagent に同じものを渡す (transcript ごとの消費を同じ区切りで突き合わせるため)
 
-報告の項目・定量値の拾い方・transcript の読み方は agent 定義が持つので、prompt に書き写さない (写すと 2 箇所の指示が食い違ったときにどちらが効くか決まらない)。
+報告の項目・工程の境界の決め方・transcript の読み方は agent 定義が持つので、prompt に書き写さない (写すと 2 箇所の指示が食い違ったときにどちらが効くか決まらない)。
+
+監査 subagent は Bash を持たず、集計しない。報告が届いた transcript ごとに、報告の「工程ごとの境界」を `stages` (`[{"stage": <工程名>, "from_uuid": <最初の record>, "to_uuid": <最後の record>}, ...]`) にし、`transcript` (絶対 path) と `stages` を引数に渡して `mcp__plugin_swat-skills_transcript-ops__sum_stage_usage` を呼び、返り値の `path` を Read する。監査 subagent が「境界不明」とした工程は `stages` から外す (形の崩れた要素があると tool が呼出全体を拒否し、境界の分かる工程まで計測できなくなる)。工程ごとの値は次のように手順 4 以降の消費として使う。
+
+- 所要は `duration_seconds`、subagent 数は `subagents.count`、token 概算は `tokens` (input + output + cache_creation)、cache read は `cache_read_input_tokens` を別掲、subagent の token は `subagents.tokens`
+- `null` の値・`error` を持つ工程・監査 subagent が「境界不明」とした工程・tool が error を返した transcript の全工程は「計測不能」と理由 (`error` / `reason` と `unmatched_tool_use_ids`) で書く — 0 と書くと、消費が無かった工程と区別できない
+- `sum_stage_usage` を呼べない (tool が見つからない・MCP server に繋がらない) ときは、全 transcript の消費を「計測不能」と書き、swat-skills plugin を `sum_stage_usage` を持つ版にしてから再実行するよう報告に添える。逸脱の監査はそのまま進める
+- transcript ごとの消費は工程の値の合計にする。計測不能の工程があれば部分和と書き、その工程名を添える。`meta.unresolved_agent_ids` が空でなければ、起動元に辿れない subagent の消費がどの工程にも入っていないので、subagent の token も部分和と書いて agent id を添える
+- 報告の実行日時が「不明」なら `sum_stage_usage` の返り値の `meta.mtime` で補い、file の mtime で代用したと書く。tool が error を返して補えないときは不明のまま、手順 4 の版差分は現行版で評価する
 
 `swat-skills:transcript-auditor` の名前が解決しないときは、`general-purpose` で代わりに起こさない — 代わりに起こすと model・effort・tools が呼出元の値へ黙って戻り、指名した深さで監査したように見える。手順 4 以降はすべて監査 subagent の報告に依存するので、次の 3 つを返して終了する: 停止理由 (Agent tool の error が挙げた available agents)・手順 1 の checklist と手順 2 の slice の path・次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから再実行する)。
 
@@ -77,11 +85,11 @@ transcript 1 件 = subagent 1 体で、`subagent_type: swat-skills:transcript-au
 git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 ```
 
-各 transcript の実行日時 (監査 subagent の報告にある呼出時の実行日時) と突合して実行時点の版を特定し、旧版準拠の挙動を現行仕様違反と誤判定しない。旧版本文が要るときは `git -C ... show <hash>:<path>` で取得する。log が空 (未 commit の新設 skill 等) なら版差分確認は skip し、現行版のみで評価する。現行版で是正済みの逸脱は「是正の実証」として記録するに留める。
+各 transcript の実行日時 (監査 subagent の報告にある呼出時の実行日時。不明なら手順 3 で補った mtime) と突合して実行時点の版を特定し、旧版準拠の挙動を現行仕様違反と誤判定しない。旧版本文が要るときは `git -C ... show <hash>:<path>` で取得する。log が空 (未 commit の新設 skill 等) なら版差分確認は skip し、現行版のみで評価する。現行版で是正済みの逸脱は「是正の実証」として記録するに留める。
 
 #### 最適化候補
 
-逸脱の 3 分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。監査 subagent の報告にある工程ごとの消費と手戻りを突合し、次の形に当たる工程を候補にする:
+逸脱の 3 分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。手順 3 で `sum_stage_usage` から得た工程ごとの消費と、監査 subagent の報告にある手戻りを突合し、次の形に当たる工程を候補にする:
 
 - 指摘数・対象数に比例して subagent が増える委譲
 - 差分に絞れる工程での全量再走査
@@ -94,7 +102,7 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 ### 5. 改善の適用
 
-- (a) あり、または (b) のうち記述強化で抑止できるものあり → `swat-skills:write-for-harness` を invoke (5-1) → **証拠に紐づく最小差分**で `<repo-root>` の SKILL.md を編集 → 対象 repo の gate 検証。変更の届け方は対象 repo の運用に従う。**成果物は対象 SKILL.md の差分のみ** — executor 側の挙動改善 (rules 化・hook 化) と対象 skill の再設計は、この監査報告を入力とする別ループへ送る
+- (a) あり、または (b) のうち記述強化で抑止できるものあり → git の状態を控える (5-2) → `swat-skills:write-for-harness` を invoke し、委譲先が**証拠に紐づく最小差分**で `<repo-root>` の SKILL.md を編集する (5-1) → 変更 path を照合 (5-2) → 対象 repo の gate 検証。変更の届け方は対象 repo の運用に従う。**成果物は対象 SKILL.md の差分のみ** — executor 側の挙動改善 (rules 化・hook 化) と対象 skill の再設計は、この監査報告を入力とする別ループへ送る
 - それ以外 (逸脱ゼロ / (c) のみ / (b) だが記述強化で抑止不能) → SKILL.md を編集せず監査報告のみで終了 (改善しない根拠を明記)
 
 #### 5-1. `write-for-harness` への委譲
@@ -111,6 +119,20 @@ invoke の直前に、監査の証拠と次の制約を宣言する (委譲先�
 - **採るのは監査の証拠に紐づく最小差分だけ。** 委譲先の findings は重要度で絞らず全件出る建て付けなので、監査で観測していない指摘は採らない
 - **構造提案 (`structural_proposals`) と、配置を変えるパッチ (外出し・分割) は反映しない。** 配置・統廃合は対象 skill の再設計にあたるので、報告フォーマットの 4 に載せて別ループへ送る
 
+#### 5-2. 委譲後の変更 path の照合
+
+委譲先が `<skill-path>` の外を書き換えたか (外出し・分割で別 file を作る・変える) は委譲先から返らない。変更された path が `<skill-path>` だけかを git の事実で確かめる (同じ file の中の差分が最小か・証拠に紐づくかは path では確かめられないので、この照合の外にある)。監査セッションの cwd は任意で反映先は `<repo-root>` なので、git はすべて `git -C <repo-root>` で撃ち、控えと照合を同じ `<repo-root>` に対して行う:
+
+1. invoke の直前に `git -C <repo-root> rev-parse HEAD` と `git -C <repo-root> status --porcelain --untracked-files=all` の出力を控え、status に載っていた path ごとに `git -C <repo-root> hash-object <path>` の値も控える
+2. 戻ったら (反映を完了したかを問わず) `git -C <repo-root> diff --name-only <控えた HEAD>` と `git -C <repo-root> status --porcelain --untracked-files=all` の path を合わせる。控えた status に載っていた path は、`git hash-object` の値が控えと変わっていない (file が消えていない) ものだけを除く — 元から未 commit の変更があった file への範囲外の書き込みを見逃さないため。`--untracked-files=all` は、新規ディレクトリの中の file が `?? <dir>/` に畳まれて許可 path と一致しなくなるのを防ぐ
+3. 残った path を `<skill-path>` (repo 相対。git の出力も repo root 相対なので、args に渡した絶対 path ではなくこちらと比べる) と比べる。それ以外の path は新規 file も含めて対象外とする
+
+対象外の path が 1 本でもあれば、gate 検証へ進まずそこで止める。委譲先が意図して書いた変更か事故かを本 skill は判定できないので、対象外の path は元に戻さず判断を人間へ返す:
+
+- 対象外の path の一覧を逐語で報告する
+- 改善候補を**判定済み・未反映**として報告フォーマットの 4 に残す
+- 「次に人間が行う手順」を添える: 対象外の path の差分を確認して残すか破棄するかを決める。`<skill-path>` に委譲先の差分が出ていれば、それも残すか破棄するかを決める (残したまま再 invoke すると同じ差分を二重に書く)。決めた後に未反映の候補で `write-for-harness` を再 invoke する
+
 ## 報告フォーマット (完了条件)
 
 以下 5 点を user に提示したら完了:
@@ -118,6 +140,6 @@ invoke の直前に、監査の証拠と次の制約を宣言する (委譲先�
 1. 監査基準 (目的 / 成功条件 / 制約) の整理
 2. transcript ごとの判定サマリ表 (環境・判定・主要逸脱・消費 (所要 / subagent 数 / token 概算))
 3. 逸脱リスト (severity・原因分類つき)
-4. 適用した改善の差分と、反映しなかった案 (構造提案と、委譲先が報告に回したパッチ。改善なしの場合はその根拠)
+4. 適用した改善の差分と、反映しなかった案 (構造提案と、委譲先が報告に回したパッチ。改善なしの場合はその根拠)。5-2 の照合で止めたときは、対象外の path の一覧と次に人間が行う手順
 5. 最適化候補 (仕様どおりだが高コストな工程。実測値つき。候補が無ければその判断根拠)
 

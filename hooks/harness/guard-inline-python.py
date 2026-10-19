@@ -3,6 +3,8 @@
 
 file 名の `python` は、python / perl / ruby / node の inline も見ていた頃の名残。
 
+置く理由: 抜け道を塞ぐ
+
 Why: permission rule は `bash -c "…"` の中身を検査しない。`-c` の文字列に包めば
 permissions.deny の entry (`git push --force` 等) を迂回できるので、本 deny は
 **抜け道を塞ぐ側**にある (ADR 0077)。

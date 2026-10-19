@@ -15,6 +15,20 @@ herdr の socket connect は sandbox 内から通らないため、本 script �
 
 前提が 1 つでも欠けたら**どの target も起動せずに** exit 1 で止める (fail-closed)。
 半分起動した状態で止めると、次の実行で何が残骸かを人が判別できなくなる。
+
+invariant:
+
+1. 前提が 1 つでも欠けたら、どの target も起動せずに exit 1 で止める
+2. 稼働中の pane が同じ label を持つ target は起動しない (`already_running`)
+3. 自 pane に target の label が残っていたら起動しない (`self_pane_stale_label`)
+4. 割った pane で agent が立たなければ (待ちの上限まで待って)、その pane を畳んで起動失敗にする
+5. 未知の target は前提の不備と別の欄 (`arg_error`) で止め、どの target も起動しない
+6. rename / run が失敗したら割った pane を畳み、畳めなかったときはそのことを起動失敗の detail に載せる
+7. `pane split` の応答から pane_id を読めなければ、run を撃たずに起動失敗にする
+8. 一度 agent が立った pane は、後の周回で agent が一瞬欠けても畳まない (稼働中の session を閉じない)
+9. agent の検出中に herdr が落ちても、起動済みの pane を `launched` に載せて `settle_error` を出す
+10. herdr が時間内に応答しなければ、例外を漏らさず `LauncherError` で理由を運ぶ
+11. 起動前の pane の走査で herdr が落ちたら、どの target も起動せず `launch_error` で止める
 """
 
 from __future__ import annotations

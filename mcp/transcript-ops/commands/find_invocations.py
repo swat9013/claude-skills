@@ -22,6 +22,16 @@
 出力: output_dir に invocations-<timestamp>.json を書き、**path だけを返す**
 (slice 本体は context に載せない)。
 
+invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
+
+1. 呼出しは record 構造の 2 channel (`skill_tool` / `command`) だけで数える
+2. 実呼出しでないマーカー (queue-operation / local_command echo / 本文の引用) は
+   計上せず、理由別の件数を `meta.excluded` に残す
+3. skill 名は完全一致で照合する (`adr` の監査に `adr-review` を混ぜない)。plugin
+   prefix は呼出し側・引数側どちらにあっても無視する
+4. 監査の単位は main session。subagent transcript は対象に入れない
+5. 読めない file・壊れた行で scan を止めない (fail-soft)
+
 `parse_args` / `main(argv)` を残してあるのは、slice schema を固定するテストが CLI
 形の entrypoint を通して観測契約を検査しているため。tool 側の入口は `run()`。
 """
@@ -398,8 +408,12 @@ def collect(args: argparse.Namespace) -> dict:
     scanned = 0
 
     # lake の走査 (どの file が観測対象か) は store を使う tool と同じ 1 箇所に寄せる。
-    # 写しを持つと観測範囲の変更が片側にしか効かず、監査する file 集合が黙ってずれる
-    for _project_dir, jsonl in iter_lake_files(args.transcripts_dir):
+    # 写しを持つと観測範囲の変更が片側にしか効かず、監査する file 集合が黙ってずれる。
+    # 監査の単位は main session の transcript で、subagent の消費は名指しした
+    # transcript から `sum_stage_usage` が辿るので、subagent の file は数えない (#1456)
+    for _project_dir, jsonl, transcript_kind in iter_lake_files(args.transcripts_dir):
+        if transcript_kind != "main":
+            continue
         scanned += 1
         invocations, file_excluded, anchor = extract_invocations(jsonl, args.skill)
         excluded.update(file_excluded)

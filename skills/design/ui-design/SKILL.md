@@ -18,7 +18,7 @@ description: >-
 
 ## 1. 置き場を決める
 
-- 既定は `docs/design/<name>/`。対象リポジトリに設計ドキュメントの置き場が既にあるならそちらに従う
+- 既存の設計の置き場は、対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」が案内するものだけを見る。新しく作る設計は、既存の設計の置き場と同じ並び (案内が無ければ `docs/design/<name>/`) に作る。以降の手順と `references/` の `<置き場>` は、ここで決めた置き場を指す
 - `<name>` は設計対象の名前 (kebab-case)。既存ディレクトリと重複したら、それが同じ対象の旧設計か別対象かをユーザーに確かめる — 同じ対象なら「5. 既存設計を更新する」の側
 - 同じ対象の `sud-design` 成果物 (`usecases.md` / `domain.puml`) が既にあれば Read して入力にする。**無くても進める** — ユースケースは本 skill が画面インベントリの段で聞き出す
 
@@ -92,19 +92,19 @@ README / screens.md / navigation.puml / components.md / tokens.md の 5 成果�
    - 成果物間の相互参照を検査する:
 
      ```bash
-     uv run ${CLAUDE_SKILL_DIR}/scripts/check-ui-design.py docs/design/<name>/
+     uv run ${CLAUDE_SKILL_DIR}/scripts/check-ui-design.py <置き場>/
      ```
 
-   - 画面遷移の網羅を検査する (`navigation.puml` を持つ設計のみ)。exit 0 になるまで、遷移の追加か理由つき uncovered 宣言で埋める:
+   - 画面遷移の網羅を検査する (`navigation.puml` を持つ設計のみ)。exit 0 になるまで、[verification.md](references/verification.md) 段 3 (画面遷移の網羅検査) の直し方で直す:
 
      ```bash
-     uv run ${CLAUDE_SKILL_DIR}/../sud-design/scripts/check-statechart.py docs/design/<name>/navigation.puml
+     uv run ${CLAUDE_SKILL_DIR}/../sud-design/scripts/check-statechart.py <置き場>/navigation.puml
      ```
 
 3. `.puml` を描画する。対象リポジトリに PlantUML の描画 gate (再描画コマンド) があればその生成側を使い、無ければ:
 
    ```bash
-   uv run ${CLAUDE_SKILL_DIR}/../sud-design/scripts/render-puml.py docs/design/<name>/
+   uv run ${CLAUDE_SKILL_DIR}/../sud-design/scripts/render-puml.py <置き場>/
    ```
 
    `.svg` は `.puml` と必ず対で更新する (source だけ直すと README が古い図を貼り続ける)
@@ -114,8 +114,8 @@ README / screens.md / navigation.puml / components.md / tokens.md の 5 成果�
 
 **agent が自動でロードする UI 設計ドキュメントの形式は存在しない** (2026-09 時点。Figma / Storybook / shadcn / DESIGN.md を含む first-party 成果物のいずれも「読ませるのは利用者の仕事」と一次資料が明言する)。したがって届ける経路は明示的に作る:
 
-1. `docs/design/<name>/README.md` を索引として置く (「3.」で作る)
-2. 対象リポジトリの `CLAUDE.md` / `AGENTS.md` へ**索引 1 行の追記を提案する**。文面は例えば「UI 実装時は `docs/design/<name>/README.md` を先に読む」。**提案までで、追記するかはユーザーが決める** — 書かなくても本 skill の成果物は成立する
+1. `<置き場>/README.md` を索引として置く (「3.」で作る)
+2. 新しく作った置き場を、対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」の entry (置き場・縛る対象・索引) に足す。縛る対象 (画面を実装する path) はユーザーに確かめ、節が無ければ節ごと足す — 実装とレビューの読み手は、この節が案内する設計 doc だけを読む
 
 ## 5. 既存設計を更新する
 
