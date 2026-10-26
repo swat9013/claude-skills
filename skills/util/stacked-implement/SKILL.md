@@ -70,10 +70,10 @@ CL エージェントの最終報告の 1 行目は、次の 3 つの形のど�
 
 5. **CL エージェントを起動して中継する。** 依存先の無い行の CL エージェントを 1 つの message にまとめて起動する。Agent tool で `subagent_type: swat-skills:cl-agent` を指名し、`name` に行の名前、`isolation: "worktree"` を付ける。CL エージェントの最終報告は完了通知で届く。起動の戻りに出た worktree の絶対 path を、行の名前と並べて応答テキストに書く (手順 7 の片付けで使う。会話の圧縮や再開の後も読めるように残す)。
 
-   prompt には次を入れる: CL 計画の全行、自分の行の名前、分岐元と target の branch 名 (依存先が複数なら、merge で取り込む残りの前段 branch も)、issue 参照の書き方、依頼の原文 (issue 本文 — 複数の issue をまとめた行ならその全部 — か、分割計画 file・仕様 file のうちその行に当たる部分を逐語で)、親の宛先 `main`、上の「最終報告の 1 行目」の表。`swat-skills:cl-agent` が解決しないときは、起動せずにその旨と、swat-skills plugin の agent が読み込まれる状態にしてから呼び直す手順を報告して止まる — 汎用の agent では CL エージェントの手順が届かない。
+   prompt には次を入れる: CL 計画の全行、自分の行の名前、分岐元と target の branch 名 (依存先が複数なら、merge で取り込む残りの前段 branch も)、issue 参照の書き方、依頼の原文 (issue 本文 — 複数の issue をまとめた行ならその全部 — か、分割計画 file・仕様 file のうちその行に当たる部分を逐語で)、親の宛先 `main`、上の「最終報告の 1 行目」の表、後続の前提の知らせの書式 (1 行目を `後続の前提: <branch> <commit>` にする)。`swat-skills:cl-agent` が解決しないときは、起動せずにその旨と、swat-skills plugin の agent が読み込まれる状態にしてから呼び直す手順を報告して止まる — 汎用の agent では CL エージェントの手順が届かない。
 
    起動した後は、届いた通知ごとに次のとおり中継する。
-   - **後続の前提の push**: 前段から branch 名と commit が届いたら、その前段に依存する行の CL エージェントを起動する。依存先が複数ある行は、全部の依存先から届いてから起動する。後続が起動済みなら、前段 branch の更新を取り込むよう後続へ SendMessage で伝える
+   - **後続の前提の push**: 前段から後続の前提の知らせ (1 行目が `後続の前提:` で始まるもの) が届いたら、その前段に依存する行の CL エージェントを起動する。依存先が複数ある行は、全部の依存先から届いてから起動する。後続が起動済みなら、前段 branch の更新を取り込むよう後続へ SendMessage で伝える。前段のそれ以外の push は後続へ伝えない — 後続のレビューは前段 branch を base にして自分の差分だけを読むので、取り込まなくても範囲は変わらず、伝えるたびに後続が再開して費用が掛かる。取り込まなかった前段の更新との conflict は、前段の merge 後に手順 7 の「merged の CL を target にしている open の CL」と「open で conflict している CL」の項で解消させる
    - **届かなかった依頼**: 宛先の CL エージェントがまだ起動していなければ、その依頼を手元に持ち、起動するときの prompt に加える。終了していれば SendMessage で再開させて渡す
    - **どの担当範囲にも載らない変更**: 変更が既存の行 (CL を出した行を含む) のどれかと同じ理由で変わり、その行の変更と合わせて 1 CL に収まるなら、親がその行に含めると決め、依頼元と含める先の CL エージェントへ返す — 1 CL に収まるかは CL の自己完結の判定で決まるので、ユーザーに問うと中継が人待ちで止まる。含める先から、CL が merged か closed の行は除く (含めても変更は既定ブランチに届かない)。新しい行が要るとき、または含め方が設計の方針の選択になるときだけ、推奨を付けてユーザーに問う。行を足したとき、または既存の行の担当範囲を広げたときは、次項の計画の修正として扱う
    - **計画の修正** (ユーザーの割り込み、または前項で行を足したか既存の行の担当範囲を広げたとき): 直した計画を手順 4 の形で提示し直し、起動済みの全 CL エージェントへ SendMessage で送る。足した行は、依存先の条件を満たしていればこの手順の形で起動する。外した行は見送りとし、その CL エージェントに作業を止めるよう伝える。外した行に push 済みの branch や出した CL があれば、残すか消すかをユーザーに問う
@@ -97,6 +97,6 @@ CL エージェントの最終報告の 1 行目は、次の 3 つの形のど�
    - **merged か closed の CL**: 手順 5 で書き残した worktree を片付ける。`git worktree unlock <worktree の絶対 path>` → `git worktree remove <worktree の絶対 path>` → その CL の branch と、worktree 作成時に作られた branch を `git branch -d` で消す。`-d` が「not fully merged」で拒否した branch (squash merge した CL や、closed の CL) は強制せず、残したことをユーザーに報告する。`git -C` で他の worktree を指すと、worktree に閉じたセッションでは拒否されるので、worktree は絶対 path で渡す
    - **既定ブランチへ merged になった CL を前提に、triage で停止した follow-up issue**: 手順 5 の follow-up issue の項と同じく triage にかけ直す
 
-   SendMessage で CL エージェントが再開しないとき (このセッションが一度閉じられた後など) は、その CL の worktree に未 commit の変更が無いことを確かめて、worktree だけを片付ける (`git worktree unlock` → `git worktree remove`。CL の branch は残す)。そのうえで新しい CL エージェントを起動し、prompt には CL 計画の行・CL の番号・既存の branch 名・頼む作業を入れる。
+   SendMessage で CL エージェントが再開しないとき (このセッションが一度閉じられた後など) は、その CL の worktree に未 commit の変更が無いことを確かめて、worktree だけを片付ける (`git worktree unlock` → `git worktree remove`。CL の branch は残す)。そのうえで新しい CL エージェントを起動し、prompt には CL 計画の行・CL の番号・既存の branch 名・頼む作業と、手順 5 の後続の前提の知らせの書式を入れる。
 
    全 CL が merged か closed になり、triage の subagent が残っていなければ終える。
