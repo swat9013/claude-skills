@@ -12,11 +12,13 @@ isolation)。形式知識が消費側にコピーされると、同じ record �
 **repo 識別子の解決** +
 **tool 実行の outcome 判定** + **slash 呼出しの判定** + **user / assistant 以外の
 record type の正規化** (attachment / system / usage / hook) + **subagent の配置と起動元の
-対応** (`message_id_of` / `subagent_launch_ids_of` / `subagent_files_of`)。permissions の 7 分類は
+対応** (`is_subagent_transcript` / `is_workflow_journal` / `session_file_kind` / `workflow_run_id_of` /
+`message_id_of` / `subagent_launch_ids_of` / `workflow_launch_ids_of` / `workflow_run_of` /
+`subagent_files_of` / `workflow_run_dir_exists` / `unrecognized_subagent_files_of`)。permissions の 7 分類は
 base 語彙 (success / error / user-reject / unknown) の refinement として commands 側に
 置き、成否そのものの分岐を再導出させない。lake の folder の走査は持たない
 (store 経由の観測は `store/ingest.py` の `iter_lake_files` が歩く)。例外は
-`subagent_files_of` で、名指しした 1 transcript の隣にある `subagents/` dir だけを読む —
+`subagent_files_of` などで、名指しした 1 transcript の隣にある session dir の下だけを読む —
 subagent の配置と meta の field は形式知識なので、読む側に写させない。
 
 slash 判定 (`parse_slash_invocation` / `is_slash_expansion_record`) を丸ごとここに
@@ -541,8 +543,8 @@ def message_id_of(rec: dict) -> str | None:
 SUBAGENT_LAUNCH_TOOLS = ("Task", "Agent")
 
 
-def subagent_launch_ids_of(rec: dict) -> list[str]:
-    """assistant record が subagent を起動した tool_use (`Task` / `Agent`) の id。"""
+def _tool_use_ids_of(rec: dict, names: tuple[str, ...]) -> list[str]:
+    """assistant record の tool_use block のうち、tool 名が names に入るものの id。"""
     if rec.get("type") != "assistant":
         return []
     content = (rec.get("message") or {}).get("content")
@@ -551,8 +553,116 @@ def subagent_launch_ids_of(rec: dict) -> list[str]:
     return [
         block["id"] for block in content
         if isinstance(block, dict) and block.get("type") == "tool_use"
-        and block.get("name") in SUBAGENT_LAUNCH_TOOLS and isinstance(block.get("id"), str)
+        and block.get("name") in names and isinstance(block.get("id"), str)
     ]
+
+
+def subagent_launch_ids_of(rec: dict) -> list[str]:
+    """assistant record が subagent を起動した tool_use (`Task` / `Agent`) の id。"""
+    return _tool_use_ids_of(rec, SUBAGENT_LAUNCH_TOOLS)
+
+
+# subagent の transcript の置き場 (session dir から見て `<この名前>/` の下)
+SUBAGENT_DIR_NAME = "subagents"
+# workflow から起きた subagent は `subagents/<この名前>/<run>/` の下に入る
+SUBAGENT_WORKFLOW_DIR_NAME = "workflows"
+
+
+def is_subagent_transcript(relative: Path) -> bool:
+    """session dir からの相対 path が subagent の transcript か。
+
+    subagent の transcript は `subagents/agent-<id>.jsonl` と、workflow が起こした
+    `subagents/workflows/<run>/agent-<id>.jsonl` の 2 つの置き場にだけある。それ以外
+    (workflow の進行ログ `journal.jsonl`・それより深い file など) は transcript でない。
+    **何が subagent の transcript かはこの述語だけが決める** — lake を走査する取り込みと
+    名指しした transcript の subagent を列挙する経路が同じ答えを出すため。
+    """
+    parts = relative.parts
+    placed = (len(parts) == 2 and parts[0] == SUBAGENT_DIR_NAME) or _in_workflow_run_dir(parts)
+    return placed and _agent_id_of_transcript_name(parts[-1]) is not None
+
+
+def _in_workflow_run_dir(parts: tuple[str, ...]) -> bool:
+    """session dir からの相対 path の parts が `subagents/workflows/<run>/` の直下の file か。"""
+    return len(parts) == 4 and parts[0] == SUBAGENT_DIR_NAME and parts[1] == SUBAGENT_WORKFLOW_DIR_NAME
+
+
+def _agent_id_of_transcript_name(name: str) -> str | None:
+    """`agent-<id>.jsonl` の `<id>`。形が違うか id が空なら None。"""
+    if not (name.startswith("agent-") and name.endswith(".jsonl")):
+        return None
+    return name[len("agent-"):-len(".jsonl")] or None
+
+
+# workflow の進行ログの file 名 (`subagents/workflows/<run>/` の直下に置かれる)
+WORKFLOW_JOURNAL_NAME = "journal.jsonl"
+
+
+def is_workflow_journal(relative: Path) -> bool:
+    """session dir からの相対 path が workflow の進行ログ (transcript でないと分かっている file) か。
+
+    進行ログは `launched` / `started` / `result` の記録で、観測の欠けではない。未知の置き場の
+    file (形式の変化の兆候) と分けて数えられるよう、既知の非 transcript として識別する。
+    """
+    parts = relative.parts
+    return _in_workflow_run_dir(parts) and parts[3] == WORKFLOW_JOURNAL_NAME
+
+
+# session dir の下の file の分類 (`session_file_kind` の答え)
+SUBAGENT_TRANSCRIPT = "subagent_transcript"
+WORKFLOW_JOURNAL = "workflow_journal"
+UNRECOGNIZED_FILE = "unrecognized"
+
+
+def session_file_kind(relative: Path) -> str:
+    """session dir からの相対 path を subagent の transcript・workflow の進行ログ・
+    置き場の判定に当たらない file のどれかに分ける。
+
+    何が subagent の transcript かは `is_subagent_transcript` が決め、この関数はその答えに
+    進行ログと未知の file の区別を足す。lake を走査する取り込みと
+    `unrecognized_subagent_files_of` はこの答えを数えるだけで、自分では分けない —
+    分類が 2 か所に分かれると、片方だけ変わったときに件数が食い違う。
+    """
+    if is_subagent_transcript(relative):
+        return SUBAGENT_TRANSCRIPT
+    if is_workflow_journal(relative):
+        return WORKFLOW_JOURNAL
+    return UNRECOGNIZED_FILE
+
+
+def workflow_run_id_of(relative: Path) -> str | None:
+    """session dir からの相対 path が workflow の体の transcript なら、その run の id (`<run>`)。"""
+    parts = relative.parts
+    if is_subagent_transcript(relative) and parts[1] == SUBAGENT_WORKFLOW_DIR_NAME:
+        return parts[2]
+    return None
+
+
+WORKFLOW_LAUNCH_TOOLS = ("Workflow",)
+
+
+def workflow_launch_ids_of(rec: dict) -> list[str]:
+    """assistant record が workflow を起動した tool_use (`Workflow`) の id。"""
+    return _tool_use_ids_of(rec, WORKFLOW_LAUNCH_TOOLS)
+
+
+def workflow_run_of(rec: dict) -> tuple[str, str] | None:
+    """`Workflow` の結果の user record から (起動した tool_use の id, run の id)。
+
+    workflow の subagent の meta は起動した tool_use の id を持たない。対応は、結果の
+    `toolUseResult.runId` が `subagents/workflows/<run>/` の dir 名と一致することで取る。
+    """
+    if rec.get("type") != "user":
+        return None
+    content = (rec.get("message") or {}).get("content")
+    blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"] \
+        if isinstance(content, list) else []
+    result = tool_use_result_of(rec, blocks)
+    run_id = result.get("runId") if isinstance(result, dict) else None
+    tool_use_id = blocks[0].get("tool_use_id") if blocks else None
+    if isinstance(run_id, str) and run_id and isinstance(tool_use_id, str):
+        return tool_use_id, run_id
+    return None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -566,43 +676,80 @@ class SubagentFile:
     # meta を読めなかった体は False。起動元への対応が取れないので、数える側は黙って捨てずに
     # 「対応不明」として扱う
     meta_readable: bool = True
+    # workflow が起こした体は、置き場の `subagents/workflows/<run>/` の run の id を持つ
+    # (meta に tool_use の id が無いので、起動元へはこの id で対応を取る)
+    workflow_run_id: str | None = None
 
 
 def subagent_files_of(transcript: Path) -> list[SubagentFile] | None:
     """主 transcript の subagent を列挙する。dir が無ければ None。
 
-    subagent の record は主 transcript に入らず、path から `.jsonl` を外した dir の
-    `subagents/agent-<id>.jsonl` に 1 体 1 file で残る。同じ dir の
+    subagent の record は主 transcript に入らず、path から `.jsonl` を外した session dir の
+    `subagents/` の下に 1 体 1 file で残る。どの file が subagent の transcript かは
+    `is_subagent_transcript` が決める (直下と workflow の run の dir)。transcript の隣の
     `agent-<id>.meta.json` の `toolUseId` が起動した tool_use の id と一致し、入れ子の
     subagent は `parentAgentId` で親の agent id を指す。meta が無いか読めない体は
     `meta_readable=False` で返す (transcript だけ残った体も落とさない)。
     """
-    subagents_dir = transcript.with_suffix("") / "subagents"
+    session_dir = transcript.with_suffix("")
+    subagents_dir = session_dir / SUBAGENT_DIR_NAME
     if not subagents_dir.is_dir():
         return None
-    agent_ids = sorted(
-        {p.name[len("agent-"):-len(".meta.json")] for p in subagents_dir.glob("agent-*.meta.json")}
-        | {p.name[len("agent-"):-len(".jsonl")] for p in subagents_dir.glob("agent-*.jsonl")})
+    # meta だけ残った体も、transcript があるはずの path で置き場を判定する
+    candidates = set(subagents_dir.rglob("agent-*.jsonl")) | {
+        p.with_name(p.name[:-len(".meta.json")] + ".jsonl")
+        for p in subagents_dir.rglob("agent-*.meta.json")}
     files = []
-    for agent_id in agent_ids:
-        meta_path = subagents_dir / f"agent-{agent_id}.meta.json"
+    for path in sorted(candidates):
+        relative = path.relative_to(session_dir)
+        if not is_subagent_transcript(relative):
+            continue
+        agent_id = _agent_id_of_transcript_name(path.name)
+        run_id = workflow_run_id_of(relative)
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = json.loads(path.with_suffix(".meta.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             meta = None
         if not isinstance(meta, dict):
             files.append(SubagentFile(
-                agent_id=agent_id, transcript=subagents_dir / f"agent-{agent_id}.jsonl",
-                tool_use_id=None, parent_agent_id=None, meta_readable=False))
+                agent_id=agent_id, transcript=path, tool_use_id=None, parent_agent_id=None,
+                meta_readable=False, workflow_run_id=run_id))
             continue
         tool_use_id, parent = meta.get("toolUseId"), meta.get("parentAgentId")
         files.append(SubagentFile(
             agent_id=agent_id,
-            transcript=subagents_dir / f"agent-{agent_id}.jsonl",
+            transcript=path,
             tool_use_id=tool_use_id if isinstance(tool_use_id, str) else None,
             parent_agent_id=parent if isinstance(parent, str) and parent else None,
+            workflow_run_id=run_id,
         ))
     return files
+
+
+def workflow_run_dir_exists(transcript: Path, run_id: str) -> bool:
+    """主 transcript の workflow の run の dir (`subagents/workflows/<run>/`) があるか。
+
+    起動の後に体を 1 体も起こさなかった run も dir (進行ログ) を残すので、体が 0 体の run と
+    dir ごと無い run (体が失われたか、まだ置かれていない) を分けられる。
+    """
+    return (transcript.with_suffix("") / SUBAGENT_DIR_NAME / SUBAGENT_WORKFLOW_DIR_NAME / run_id).is_dir()
+
+
+def unrecognized_subagent_files_of(transcript: Path) -> int:
+    """主 transcript の session dir の下の jsonl のうち、subagent の transcript にも workflow の
+    進行ログにも当たらない file の数。
+
+    `subagent_files_of` は置き場に当たらない file を列挙しないので、形式が変わって置き場が
+    増えたとき、その体は黙って数えから外れる。件数で見えるよう、取り込みの
+    `unrecognized_nested_files` と同じ範囲 (session dir の下全体) で、同じ `session_file_kind`
+    の答えを数える。
+    """
+    session_dir = transcript.with_suffix("")
+    if not session_dir.is_dir():
+        return 0
+    return sum(
+        1 for p in session_dir.rglob("*.jsonl")
+        if session_file_kind(p.relative_to(session_dir)) == UNRECOGNIZED_FILE)
 
 
 def compact_boundary_of(rec: dict) -> dict | None:

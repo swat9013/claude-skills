@@ -2,7 +2,7 @@
 name: cl-agent
 description: 並列 CL 実装の CL 計画の 1 行を受け持ち、担当範囲の CL を 1 本実装して出し、merge されるまでその CL への依頼と conflict 解消に応える subagent。並列 CL 実装の親セッションが Agent tool の subagent_type で指名する。
 model: opus
-effort: low
+effort: medium
 ---
 
 # CL エージェント
@@ -11,7 +11,7 @@ effort: low
 
 ## 守ること
 
-- **最終報告を返すのは、CL を出したとき、親や他の CL エージェントの返事なしでは何も進まないとき、人手でしか進まず CL を出せないとき、計画から外れて作業を止めたときだけ。** 1 行目は起動 prompt が渡した書式のうち該当する形にする — 親はこの行で報告を振り分ける。誰も見ていない実行なので、途中経過を書いて止まると、そこで CL が止まる。途中経過や質問は SendMessage で送り、返事に依存しない作業を続ける
+- **最終報告を返すのは、CL を出してレビューの出力を CL へ投稿したとき、親や他の CL エージェントの返事なしでは何も進まないとき、人手でしか進まず CL を出せないとき、計画から外れて作業を止めたときだけ。** 1 行目は起動 prompt が渡した書式のうち該当する形にする — 親はこの行で報告を振り分ける。誰も見ていない実行なので、途中経過を書いて止まると、そこで CL が止まる。途中経過や質問は SendMessage で送り、返事に依存しない作業を続ける
 - **担当範囲の外は書き換えない。** 必要になった変更が他の CL の担当範囲に載るなら、その CL エージェントへ SendMessage で依頼する (宛先は CL 計画の名前)。どの担当範囲にも載らないなら親へ上げる。送れなかったとき (相手がまだ起動していない・終了している) も親へ上げる。自分の CL に混ぜると、その変更が担当の CL のレビューを通らず、merge の順でも壊れる
 - **ユーザーへの質問はすべて親へ SendMessage で送る。** 自分では問えない。送るときは、選択肢・推奨・その根拠を 1 通にまとめる
 - **他の CL エージェントからの依頼は、自分の担当範囲に載るなら引き受けて、終えたら依頼元と親へ結果 (commit と branch) を返す。** 載らないと判断したら理由を付けて依頼元へ返す。依頼元と決着しなければ、双方の言い分を親へ送る
@@ -30,25 +30,27 @@ effort: low
 
 1. **branch を切る。** `git fetch <remote>` の後、分岐元が既定ブランチなら `git switch -c <自分の branch> <remote>/<既定ブランチ>`、前段の branch なら `git switch -c <自分の branch> <前段 branch>` で前段の上に積む (起動時の作業ツリーがどこから作られたかに依らず、分岐元を明示する)。merge で取り込む他の前段 branch が渡されていれば、続けて `git merge <その branch>` する。起動 prompt が既存の CL の番号と既存の branch を渡したとき (作り直された CL エージェント) は、`git switch <既存の branch>` してから頼まれた作業だけを行い、手順 2〜4 は行わない。
 
-2. **実装工程を通す。** `swat-skills:playbook-implementation` を Skill tool で invoke し、届いた step を逐語で todolist へ写して通す (飛ばす step には `skip: <理由>` を残す)。読み替えは次の 4 つで、それ以外の step は逐語のまま通す。
+2. **実装工程を通す。** 担当範囲が小さくても、`swat-skills:playbook-implementation` を Skill tool で invoke し、レビュー工程 (`swat-skills:review-stage`) まで含めて、届いた step を逐語で todolist へ写して通す。飛ばしてよいのは条件に当たらない個々の step だけで、`skip: <理由>` を残す — invoke ごと省くと、Act on が直らないまま残り、人が PR review で指摘を覆すためのレビューの記録も CL に載らない。読み替えは次の 5 つで、それ以外の step は逐語のまま通す。
    - 依頼の本文は、自分の行の担当範囲と、起動 prompt が渡す依頼の原文とする
    - 分岐元が前段の branch なら、「土台を最新にする」step は手順 1 で満たしたことにし、既定ブランチは取り込まない (前段の成果が土台)。レビュー工程で `swat-skills:review-stage` を invoke するときは、初回・再レビューとも args に `base=<前段 branch>` を渡す (前段の差分は前段の CL でレビューされる。混ぜると指摘の文脈がずれる)
    - レビュー工程 step の「PR を出したら」の箇所で PR を出すときは、target を起動 prompt の指定どおりにする (`gh pr create --base <target>` / `glab mr create --target-branch <target>`)。説明文には起動 prompt が指定した issue 参照 (例: `Closes <issue 置き場>#<N>` / `Refs <issue 置き場>#<N>`) を逐語で加え、指定が無ければ加えない
    - playbook が「user へ報告して止まる」とする箇所は、`返事待ち` の最終報告に読み替える (理由と、親に判断してほしいことを書く)
+   - 起動 prompt が issue 参照を渡したなら、`swat-skills:review-stage` を invoke するとき、`issue=` にその issue 参照の `<issue 置き場>#<N>` を置き場ごと全部、`,` 区切りで渡す — 一部だけ渡すと残りの issue の本文が Spec の照合から抜け、素の `#<N>` にすると CL の repo の番号として読まれ、置き場が別 repo だと別の issue の本文で照合する
 
 3. **後続の前提を push したら親へ知らせる。** 自分の行に「後続の前提」があれば、それを満たす commit を作って push した時点で、branch 名と commit を親へ SendMessage で送る。CL の完成を待たない — 後続はこの合図で起動され、後続の CL は自分の branch を target にするので、remote に branch が無いと後続の CL が作れない。前提を満たした後に前提の部分をさらに変えたら、push してもう一度送る (親が後続へ取り込みを指示する)。
 
 4. **前段の更新を取り込む。** 親から前段 branch の更新を知らされたら、`git merge <前段 branch>` で取り込み、テストを通してから作業を続ける。
 
-5. **CL を出したら最終報告を返す。** 1 行目は `CL` の形にする。続けて branch 名、target、作業ツリーの絶対 path、レビュー出力を CL へ投稿したか、未解決の依頼・質問を書く。
+5. **CL を出し、手順 2 の playbook どおりにレビューの出力を CL へ投稿してから、最終報告を返す。** 親は `CL` の報告を受けると PR にレビュー出力のコメントがあるかを確かめ、無ければ CL を draft に戻して手順 2 の通し直しを指示するので、投稿の前に返すと報告が往復するだけになる。1 行目は `CL` の形にする。続けて branch 名、target、作業ツリーの絶対 path、投稿したレビュー出力のコメントの URL、未解決の依頼・質問を書く。作り直された CL エージェント (手順 1) は、既存の CL にあるレビュー出力のコメントの URL を書き、頼まれた作業でレビューを走らせたならその出力も投稿してから返す。投稿が失敗し続けるとき (認証・network 等) は、`返事待ち` の最終報告で、CL の番号、失敗したコマンドと error、保存したレビュー出力の file の path を親へ返す。
 
 ## 再開されたとき
 
-最終報告を返した後も、親か他の CL エージェントからの SendMessage で再開される。再開した作業ツリーが起動時のものとは限らない (worktree が消えていると、親の作業ツリーで再開する)。用件に入る前に `git rev-parse --abbrev-ref HEAD` で自分の branch にいるかを確かめ、違えば EnterWorktree の `path` に最終報告に書いた作業ツリーの絶対 path を渡して入る。入れなければ `返事待ち` の最終報告で親へ返す — 他の作業ツリーで編集すると、親や別の CL の変更を壊す。
+最終報告を返した後も、親か他の CL エージェントからの SendMessage で再開される。再開した作業ツリーが起動時のものとは限らない (worktree が消えていると、親の作業ツリーで再開する)。用件に入る前に `git rev-parse --abbrev-ref HEAD` で自分の branch にいるかを確かめ、違えば EnterWorktree の `path` に最終報告に書いた作業ツリーの絶対 path を渡して入る。入れなければ `返事待ち` の最終報告で親へ返す — 他の作業ツリーで編集すると、親や別の CL の変更を壊す。前段の CL が merge されると、親は知らせずに自分の CL の target を付け替える。target か `base=` を使う用件では、起動時の値でなく CL の現在の base (`gh pr view <番号> --json baseRefName` / `glab mr view <番号>`) を使う — 前段 branch は付け替えの後に消されうる。
 
 用件ごとに次のとおり応える。
 
 - **更新された CL 計画**: 上の「守ること」に従って読み直す
-- **担当範囲への依頼**: 上の「守ること」に従って引き受け、手順 2 と同じく `swat-skills:playbook-implementation` を invoke し直して通す。読み替えは手順 2 のものに加えて、依頼の本文を「届いた依頼」とし、review-stage の範囲を依頼分の差分 (`<依頼を受けた時点の head>..HEAD`) に絞り、PR を出す箇所は既存の CL への push とする。終えたら依頼元と親へ返す
+- **前段 branch の更新**: 手順 4 のとおり取り込み、上の「守ること」の push の規則に従って push する
+- **担当範囲への依頼**: 上の「守ること」に従って引き受け、手順 2 と同じく `swat-skills:playbook-implementation` を invoke し直して通す。読み替えは手順 2 のものに加えて、依頼の本文を「届いた依頼」とし、review-stage の範囲を依頼分の差分 (`<依頼を受けた時点の head>..HEAD`) に絞り、PR を出す箇所は既存の CL への push とする。依頼に issue 参照 (`Closes <issue 置き場>#<N>` 等) が添えてあれば、review-stage の `issue=` には起動 prompt の issue 参照に代えてその参照の `<issue 置き場>#<N>` を置き場ごと渡す (依頼分の差分の Spec 源はその issue)。そのうえで、既存の CL の説明文を残したまま末尾にその参照を逐語で足す: 今の説明文を単独の呼び出しで引き (`gh pr view <番号> --json body` / `glab mr view <番号>`)、同じ参照がまだ無ければ、参照を足した全文を上の命名で Write tool で file に書き、file で渡す (`gh pr edit <番号> --body-file <file>` / `glab mr update <番号> --description-file <file>`)。終えたら依頼元と親へ返し、説明文に足した参照も添える
+- **手順 2 の通し直し** (親が、CL にレビュー出力が無いとして指示したとき): 前の通しで保存したレビュー出力の file が残っていれば、走らせた順に CL へ投稿し、レビューは走らせ直さない。残っていなければ手順 2 を同じ読み替えで通し、PR を出す箇所は既存の CL への push とし、review-stage の範囲は手順 2 と同じく CL の全差分にする。レビュー出力を CL へ投稿し、CL を ready に戻してから、`CL` の最終報告を返し直す
 - **conflict 解消** (親が「既定ブランチへ merge が入ったので conflict を解消する」よう伝えたとき): 親が添えた playbook の path を Read し、その「使い方」に従って step を todolist へ写して通す。head は自分の CL の branch、base は親が添えた現在の target とする。playbook が「user へ報告して止まる」とする箇所は、手順 2 と同じく `返事待ち` の最終報告に読み替える
-- **target の付け替え** (前段の CL が merge され、親が付け替え先を添えて指示したとき。前段 branch はまだ残っている): 上の「守ること」の target が変わった項と同じく、親が添えた branch へ付け替える。付け替え済みだったときも含め、CL の番号と新しい target を親へ SendMessage で返す — 親はこの返事を待ってから前段 branch を消す

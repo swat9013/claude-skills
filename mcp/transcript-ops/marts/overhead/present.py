@@ -114,7 +114,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                    help="mart 出力先。default /tmp/inventory-claude-md")
     p.add_argument("--now", type=str, default=None,
-                   help="ISO timestamp。窓の起点を固定 (テスト・再現用)")
+                   help="ISO timestamp。窓の終端を固定 (テスト・再現用)")
     p.add_argument("--stdout-mart", action="store_true",
                    help="ファイルに書かず mart JSON を stdout に出す (テスト用)")
     return p.parse_args(argv)
@@ -192,10 +192,11 @@ class OverheadObservation:
 # --- store への問い合わせ ------------------------------------------------------
 
 def collect_from_store(conn: sqlite3.Connection, statements: dict[str, str],
-                       cutoff_epoch: float) -> OverheadObservation:
+                       cutoff_epoch: float,
+                       now_epoch: float) -> OverheadObservation:
     """query.sql の結果を `OverheadObservation` へ畳み込む。"""
     observation = OverheadObservation()
-    params = {"cutoff_epoch": cutoff_epoch}
+    params = {"cutoff_epoch": cutoff_epoch, "now_epoch": now_epoch}
 
     for row in conn.execute(statements["static_source_costs"], params):
         source = SOURCE_BY_ATTACHMENT_TYPE.get(row["attachment_type"])
@@ -423,7 +424,8 @@ def collect(args: argparse.Namespace) -> dict:
     try:
         udf.register(conn)
         statements = load_statements(QUERY_PATH)
-        observation = collect_from_store(conn, statements, cutoff_epoch)
+        observation = collect_from_store(conn, statements, cutoff_epoch,
+                                         now.timestamp())
     finally:
         conn.close()
 

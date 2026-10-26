@@ -26,11 +26,17 @@ args に plugin prefix (`swat-skills:` 等) が付いていれば除去し、**�
 - **vendor 配置の skill** (上流 repo から取り込んだもの。上流 diff 最小化のため SKILL.md を編集しない)。swat-skills では `skills/third/` 配下
 - **SKILL.md 単独編集が片肺更新になる skill** — 「正本 → SKILL.md へ蒸留」のような 2 段更新規約を持つもの。swat-skills では `principle-index` が該当し (一覧は leaf の frontmatter からの生成物)、直すのは leaf 側
 
-解決した SKILL.md を Read し、以下を checklist 化して user に提示する (提示は報告のみで、承認待ちはしない。完了条件 1 はこの提示を指す):
+`<skill-path>` に適用される設計 doc を、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」で決める。置き場の宣言は `<repo-root>` のものを読む。当たる設計 doc が無ければ、報告の 1 に「設計 doc なし」と書く。
+
+解決した SKILL.md と当たった設計 doc を Read し、以下を checklist 化する。設計 doc からは保証・不変条件を同じ 3 項目へ足す:
 
 - **目的**: skill が何を成果物とするか
 - **成功条件**: 完了条件・報告要件 (明示されていなければ手順の終端から導出)
 - **制約条件**: 実行順序・除外規則・禁止事項・責務境界 (「やらないこと」)
+
+checklist の各項目には出所 (SKILL.md / 設計 doc) を付け、SKILL.md と設計 doc が同じ点で食い違う項目は食い違いとして控える — 出所が無いと、SKILL.md どおりに動いて設計 doc に反した挙動を手順 4 で見分けられない。できた checklist を user に提示する (提示は報告のみで、承認待ちはしない。完了条件 1 はこの提示を指す)。
+
+checklist とは別に、設計 doc のうち対象 skill の決定に添えてある見直し条件 (観測する量・閾値・超えたら見直す判断) を、手順 4 で照らすために控える。
 
 この checklist が手順 3 の監査基準になる。曖昧で checklist 化できない項目は、それ自体を「記述起因の欠陥候補」として記録する。
 
@@ -62,7 +68,7 @@ transcript 1 件 = subagent 1 体で、`subagent_type: swat-skills:transcript-au
 - 所要は `duration_seconds`、subagent 数は `subagents.count`、token 概算は `tokens` (input + output + cache_creation)、cache read は `cache_read_input_tokens` を別掲、subagent の token は `subagents.tokens`
 - `null` の値・`error` を持つ工程・監査 subagent が「境界不明」とした工程・tool が error を返した transcript の全工程は「計測不能」と理由 (`error` / `reason` と `unmatched_tool_use_ids`) で書く — 0 と書くと、消費が無かった工程と区別できない
 - `sum_stage_usage` を呼べない (tool が見つからない・MCP server に繋がらない) ときは、全 transcript の消費を「計測不能」と書き、swat-skills plugin を `sum_stage_usage` を持つ版にしてから再実行するよう報告に添える。逸脱の監査はそのまま進める
-- transcript ごとの消費は工程の値の合計にする。計測不能の工程があれば部分和と書き、その工程名を添える。`meta.unresolved_agent_ids` が空でなければ、起動元に辿れない subagent の消費がどの工程にも入っていないので、subagent の token も部分和と書いて agent id を添える
+- transcript ごとの消費は工程の値の合計にする。計測不能の工程があれば部分和と書き、その工程名を添える。`meta.unresolved_agent_ids` が空でなければ、起動元に辿れない subagent の消費がどの工程にも入っていないので、subagent 数と subagent の token も部分和と書いて agent id を添える。`meta.unrecognized_nested_files` が 0 でなければ、transcript の path から `.jsonl` を外した dir の下で subagent の transcript にも workflow の進行ログにも当たらない jsonl があり、数えから外れた subagent がいる可能性があるので、同じく部分和と書いてその件数を添える (両方に当たれば両方を添える)
 - 報告の実行日時が「不明」なら `sum_stage_usage` の返り値の `meta.mtime` で補い、file の mtime で代用したと書く。tool が error を返して補えないときは不明のまま、手順 4 の版差分は現行版で評価する
 
 `swat-skills:transcript-auditor` の名前が解決しないときは、`general-purpose` で代わりに起こさない — 代わりに起こすと model・effort・tools が呼出元の値へ黙って戻り、指名した深さで監査したように見える。手順 4 以降はすべて監査 subagent の報告に依存するので、次の 3 つを返して終了する: 停止理由 (Agent tool の error が挙げた available agents)・手順 1 の checklist と手順 2 の slice の path・次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから再実行する)。
@@ -71,13 +77,14 @@ transcript 1 件 = subagent 1 体で、`subagent_type: swat-skills:transcript-au
 
 手順 3 で起動した全 subagent の終了 (完了またはエラー) が届いてから判定に入る。報告を返さずに終わった subagent (エラーで終わった・項目が欠けた・呼出が見つからず監査不能と返した) の transcript は、「報告なし」か欠けた項目を明記した上で残りで判定する — 欠落を伏せると、その transcript の逸脱が無かったことになる。
 
-全報告を突合し、逸脱ごとに原因を 3 分類する:
+全報告を突合し、逸脱ごとに原因を 4 分類する:
 
 | 分類 | 例 | 扱い |
 |---|---|---|
 | (a) skill 記述起因 | 手順の曖昧さ・落とし穴が手順に書かれていない・template のバグ | **改善対象** |
 | (b) executor の不遵守 | 警告を読んだ上で禁止パターンを実行 | 記述強化 (警告文 → NG/OK code block 化等) で抑止できる場合のみ改善対象 |
 | (c) 外的要因 | user の中断・pivot、同一セッション内の別 skill の所作 | 逸脱に計上しない。是非の評価も書かず、判定は対象 skill の挙動に閉じる |
+| (d) 設計 doc と SKILL.md の食い違い | SKILL.md と設計 doc が同じ点で食い違い、SKILL.md どおりに動いて設計 doc に反した (手順 1 で控えたものか、手順 3・4 で初めて見つかったものかを問わない) | 改善対象にしない。SKILL.md を直さず、方針の変更として報告に載せる — 設計 doc と SKILL.md のどちらを直すかは人が決める |
 
 判定前に**版差分を確認する** (監査セッションの cwd は任意なので `-C` で repo を明示する):
 
@@ -89,7 +96,7 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 #### 最適化候補
 
-逸脱の 3 分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。手順 3 で `sum_stage_usage` から得た工程ごとの消費と、監査 subagent の報告にある手戻りを突合し、次の形に当たる工程を候補にする:
+逸脱の原因分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。手順 3 で `sum_stage_usage` から得た工程ごとの消費と、監査 subagent の報告にある手戻りを突合し、次の形に当たる工程を候補にする:
 
 - 指摘数・対象数に比例して subagent が増える委譲
 - 差分に絞れる工程での全量再走査
@@ -98,12 +105,14 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 候補には消費の実測値 (所要 / subagent 数 / token 概算) を添える — 実測の無い候補は次の改善ループで順位を付けられない。候補が出なかったときは、消費構造のどこを見てそう判断したかを書く。
 
+手順 1 で控えた見直し条件は、最適化候補の有無にかかわらず 1 件ずつ照らす。見直し条件が観測する量を、手順 3 の工程ごとの消費か監査 subagent の報告から取って閾値と比べ、超えたかを書く。観測した量が閾値を超えた見直し条件は、それが当たる工程を最適化候補に加える。どちらからも取れない量は「計測不能」と理由を書く。照らすのはこの監査の値だけにする — 過去の値は持たず、改善の前後は次の監査が同じ見直し条件に照らして比べる。
+
 **最適化候補は手順 5 の改善対象に入れない。** 工程の作り替えは対象 skill の再設計にあたるので、報告に載せて別ループへ送る。
 
 ### 5. 改善の適用
 
 - (a) あり、または (b) のうち記述強化で抑止できるものあり → git の状態を控える (5-2) → `swat-skills:write-for-harness` を invoke し、委譲先が**証拠に紐づく最小差分**で `<repo-root>` の SKILL.md を編集する (5-1) → 変更 path を照合 (5-2) → 対象 repo の gate 検証。変更の届け方は対象 repo の運用に従う。**成果物は対象 SKILL.md の差分のみ** — executor 側の挙動改善 (rules 化・hook 化) と対象 skill の再設計は、この監査報告を入力とする別ループへ送る
-- それ以外 (逸脱ゼロ / (c) のみ / (b) だが記述強化で抑止不能) → SKILL.md を編集せず監査報告のみで終了 (改善しない根拠を明記)
+- それ以外 (逸脱ゼロ / (c)・(d) のみ / (b) だが記述強化で抑止不能) → SKILL.md を編集せず監査報告のみで終了 (改善しない根拠を明記)
 
 #### 5-1. `write-for-harness` への委譲
 
@@ -121,25 +130,19 @@ invoke の直前に、監査の証拠と次の制約を宣言する (委譲先�
 
 #### 5-2. 委譲後の変更 path の照合
 
-委譲先が `<skill-path>` の外を書き換えたか (外出し・分割で別 file を作る・変える) は委譲先から返らない。変更された path が `<skill-path>` だけかを git の事実で確かめる (同じ file の中の差分が最小か・証拠に紐づくかは path では確かめられないので、この照合の外にある)。監査セッションの cwd は任意で反映先は `<repo-root>` なので、git はすべて `git -C <repo-root>` で撃ち、控えと照合を同じ `<repo-root>` に対して行う:
+5-1 で Read した契約の「委譲後の変更 path の照合」節の手順で、invoke ごとに照合する。この skill での値は次のとおり:
 
-1. invoke の直前に `git -C <repo-root> rev-parse HEAD` と `git -C <repo-root> status --porcelain --untracked-files=all` の出力を控え、status に載っていた path ごとに `git -C <repo-root> hash-object <path>` の値も控える
-2. 戻ったら (反映を完了したかを問わず) `git -C <repo-root> diff --name-only <控えた HEAD>` と `git -C <repo-root> status --porcelain --untracked-files=all` の path を合わせる。控えた status に載っていた path は、`git hash-object` の値が控えと変わっていない (file が消えていない) ものだけを除く — 元から未 commit の変更があった file への範囲外の書き込みを見逃さないため。`--untracked-files=all` は、新規ディレクトリの中の file が `?? <dir>/` に畳まれて許可 path と一致しなくなるのを防ぐ
-3. 残った path を `<skill-path>` (repo 相対。git の出力も repo root 相対なので、args に渡した絶対 path ではなくこちらと比べる) と比べる。それ以外の path は新規 file も含めて対象外とする
-
-対象外の path が 1 本でもあれば、gate 検証へ進まずそこで止める。委譲先が意図して書いた変更か事故かを本 skill は判定できないので、対象外の path は元に戻さず判断を人間へ返す:
-
-- 対象外の path の一覧を逐語で報告する
-- 改善候補を**判定済み・未反映**として報告フォーマットの 4 に残す
-- 「次に人間が行う手順」を添える: 対象外の path の差分を確認して残すか破棄するかを決める。`<skill-path>` に委譲先の差分が出ていれば、それも残すか破棄するかを決める (残したまま再 invoke すると同じ差分を二重に書く)。決めた後に未反映の候補で `write-for-harness` を再 invoke する
+- **repo**: 監査セッションの cwd は任意で反映先は `<repo-root>` なので、git はすべて `git -C <repo-root>` で撃つ
+- **許可 path**: `<skill-path>` (repo 相対) の 1 本
+- **止めたとき**: gate 検証へ進まない。記録先は報告フォーマットの 4 で、契約が残させるものを残す (本 skill では改善候補を**判定済み・未反映**と呼ぶ)
 
 ## 報告フォーマット (完了条件)
 
 以下 5 点を user に提示したら完了:
 
-1. 監査基準 (目的 / 成功条件 / 制約) の整理
+1. 監査基準 (目的 / 成功条件 / 制約) の整理と、照らした設計 doc の path (無ければ「設計 doc なし」の 1 行)
 2. transcript ごとの判定サマリ表 (環境・判定・主要逸脱・消費 (所要 / subagent 数 / token 概算))
-3. 逸脱リスト (severity・原因分類つき)
+3. 逸脱リスト (severity・原因分類つき。(d) は設計 doc と SKILL.md の該当箇所を並べ、どちらを直すかは人が決めると添える)
 4. 適用した改善の差分と、反映しなかった案 (構造提案と、委譲先が報告に回したパッチ。改善なしの場合はその根拠)。5-2 の照合で止めたときは、対象外の path の一覧と次に人間が行う手順
-5. 最適化候補 (仕様どおりだが高コストな工程。実測値つき。候補が無ければその判断根拠)
+5. 最適化候補 (仕様どおりだが高コストな工程。実測値つき。候補が無ければその判断根拠) と、見直し条件ごとの照合 (観測した値・閾値・超えたか。計測不能なら理由)
 

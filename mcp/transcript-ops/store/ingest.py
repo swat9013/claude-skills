@@ -32,6 +32,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterator
@@ -48,8 +49,12 @@ from adapter.transcript import (
     memory_injection_of,
     parse_slash_invocation,
     PRESENTED_NAME_FIELDS,
+    session_file_kind,
     session_id_of,
     STATIC_PAYLOAD_FIELDS,
+    SUBAGENT_TRANSCRIPT,
+    UNRECOGNIZED_FILE,
+    WORKFLOW_JOURNAL,
     tool_use_result_of,
     truncate,
     usage_of,
@@ -57,11 +62,6 @@ from adapter.transcript import (
 
 from . import lock
 from . import store as store_mod
-
-# subagent の transcript の置き場 (project dir から見て `<session>/<この名前>/` の下)。
-# workflow から起きた subagent はさらに `workflows/<run>/` の下へ入るので、この dir の
-# 下は深さを問わず subagent とする (`transcript_kind_of`)
-SUBAGENT_DIR_NAME = "subagents"
 
 # tool 入力の抜粋上限。**原型復元用ではない** — 復元が要るなら lake を読む。
 # 生 input を丸ごと持つと Write / Edit の file 全文が store に入る。
@@ -98,40 +98,70 @@ class SyncReport:
     unchanged_files: int = 0
     removed_files: int = 0
     unreadable_files: int = 0
-    # 1 階層目より深く、subagent の置き場 (`transcript_kind_of`) にも当たらない
-    # transcript。main とも subagent とも決められないので ingest しないが、
+    # 1 階層目より深く、adapter の `session_file_kind` が置き場の判定に当たらないとした
+    # file。main とも subagent とも決められない (形式が変わって置き場が
+    # 増えた兆候になる) ので ingest しないが、
     # **黙って落とさず件数を出す** (silent skip の可視化)
     unrecognized_nested_files: int = 0
+    # transcript でないと分かっている file (`session_file_kind` が workflow の進行ログとした file)。
+    # 観測の欠けではないので `unrecognized_nested_files` と分け、劣化シグナルに混ぜない
+    workflow_journal_files: int = 0
     records: int = 0
     broken_lines: int = 0
 
 
-def transcript_kind_of(relative: Path) -> str | None:
-    """project dir からの相対 path → `file.transcript_kind`。置き場が分からなければ None。
+MAIN_TRANSCRIPT = "main"
 
-    `<project>/*.jsonl` は main、`<project>/<session>/subagents/` の下は subagent。
-    **判定を変えたら `store.STORE_VERSION` を上げる** — 種類は file を取り込むときにだけ
-    書くので、fingerprint が変わらない file には新しい判定が届かない (schema digest は
-    schema.sql しか見ない)。
+# adapter は分類だけを返し、分類ごとの扱いは次の 2 つの表が持つ。どちらにも無い分類を
+# 黙って未知の file に数えると既知の file を劣化シグナルに混ぜるので、`stored_transcript_kind`
+# が止める。
+# 取り込む分類 → `file.transcript_kind` に書く値。
+# **取り込み済みの file に書く値が変わる変更 (main と subagent の入れ替わり) は
+# `store.STORE_VERSION` を上げる** — 種類は file を取り込むときにだけ書くので、fingerprint が
+# 変わらない file には新しい値が届かない (schema digest は schema.sql しか見ない)。取り込まない
+# 分類へ外れる file は `sync` が lake に無いものとして row を消し、新しく取り込む側へ入る file は
+# 既存の row を持たないので、どちらも上げずに済む
+STORED_TRANSCRIPT_KINDS = {MAIN_TRANSCRIPT: "main", SUBAGENT_TRANSCRIPT: "subagent"}
+# 取り込まない分類 → `sync` が数える先 (`SyncReport` の field)
+SKIPPED_KIND_COUNTERS = {
+    WORKFLOW_JOURNAL: "workflow_journal_files",
+    UNRECOGNIZED_FILE: "unrecognized_nested_files",
+}
+
+
+def lake_file_kind(relative: Path) -> str:
+    """project dir からの相対 path の分類。
+
+    `<project>/*.jsonl` は main。`<session>/` の下は adapter の `session_file_kind` の答え
+    (subagent の transcript・workflow の進行ログ・置き場の判定に当たらない file) をそのまま
+    返す — 分類の正本は adapter にあり、ここは分岐を持たない。
     """
     parts = relative.parts
     if len(parts) == 1:
-        return "main"
-    if len(parts) >= 3 and parts[1] == SUBAGENT_DIR_NAME:
-        return "subagent"
-    return None
+        return MAIN_TRANSCRIPT
+    return session_file_kind(Path(*parts[1:]))
 
 
-def _walk_lake(transcripts_dir: Path) -> Iterator[tuple[str, Path, str | None]]:
-    """lake の transcript を 1 回の走査で (project_dir 名, path, 種類か None) にする。"""
+def stored_transcript_kind(kind: str) -> str | None:
+    """`lake_file_kind` の答え → `file.transcript_kind` に書く値。取り込まない分類なら None。
+
+    `STORED_TRANSCRIPT_KINDS` にも `SKIPPED_KIND_COUNTERS` にも無い答え (adapter に足した分類を
+    ここへ反映し忘れた) は KeyError で止める。
+    """
+    if kind in SKIPPED_KIND_COUNTERS:
+        return None
+    return STORED_TRANSCRIPT_KINDS[kind]
+
+
+def _walk_lake(transcripts_dir: Path) -> Iterator[tuple[str, Path, Path]]:
+    """lake の jsonl を 1 回の走査で (project_dir 名, path, project dir からの相対 path) にする。"""
     if not transcripts_dir.is_dir():
         return
     for project_dir in sorted(transcripts_dir.iterdir()):
         if not project_dir.is_dir():
             continue
         for jsonl in sorted(project_dir.rglob("*.jsonl")):
-            yield (project_dir.name, jsonl,
-                   transcript_kind_of(jsonl.relative_to(project_dir)))
+            yield project_dir.name, jsonl, jsonl.relative_to(project_dir)
 
 
 def iter_lake_files(transcripts_dir: Path) -> Iterator[tuple[str, Path, str]]:
@@ -141,9 +171,10 @@ def iter_lake_files(transcripts_dir: Path) -> Iterator[tuple[str, Path, str]]:
     lake の dir 名エンコードは lossy なので directory 名から cwd を復元しない。
     scope 絞りは record の cwd で行う。
     """
-    for project_dir, jsonl, kind in _walk_lake(transcripts_dir):
-        if kind is not None:
-            yield project_dir, jsonl, kind
+    for project_dir, jsonl, relative in _walk_lake(transcripts_dir):
+        transcript_kind = stored_transcript_kind(lake_file_kind(relative))
+        if transcript_kind is not None:
+            yield project_dir, jsonl, transcript_kind
 
 
 def sync(conn: sqlite3.Connection, transcripts_dir: Path,
@@ -168,27 +199,41 @@ def sync(conn: sqlite3.Connection, transcripts_dir: Path,
     }
     seen: set[str] = set()
 
-    for project_dir, jsonl, transcript_kind in _walk_lake(transcripts_dir):
+    for project_dir, jsonl, relative in _walk_lake(transcripts_dir):
+        kind = lake_file_kind(relative)
+        transcript_kind = stored_transcript_kind(kind)
         if transcript_kind is None:
-            report.unrecognized_nested_files += 1
+            counter = SKIPPED_KIND_COUNTERS[kind]
+            setattr(report, counter, getattr(report, counter) + 1)
             continue
         key = str(jsonl)
         seen.add(key)
+        existing = known.get(key)
         try:
             # fingerprint は read の**前**に採る (docstring の順序保証)
             stat = jsonl.stat()
         except OSError as exc:
-            _note_unreadable(conn, jsonl, project_dir, f"stat: {exc.strerror}", stamp)
+            _note_unreadable(conn, jsonl, project_dir, transcript_kind,
+                             f"stat: {exc.strerror}", stamp)
+            _forget_stale(conn, existing)
             report.unreadable_files += 1
             continue
         fingerprint = (stat.st_mtime_ns, stat.st_size)
-        existing = known.get(key)
         if existing is not None and (existing[1], existing[2]) == fingerprint:
+            # 権限だけが変わった file は fingerprint が変わらないので、読めるかを
+            # 別に確かめる (読めないまま unchanged に数えると前回の row が残る)
+            if not os.access(jsonl, os.R_OK):
+                _note_unreadable(conn, jsonl, project_dir, transcript_kind,
+                                 "read: Permission denied", stamp)
+                _forget_stale(conn, existing)
+                report.unreadable_files += 1
+                continue
             report.unchanged_files += 1
             continue
         outcome = _ingest_file(conn, jsonl, project_dir, transcript_kind,
                                fingerprint, stamp)
         if outcome is None:
+            _forget_stale(conn, existing)
             report.unreadable_files += 1
             continue
         report.ingested_files += 1
@@ -204,12 +249,14 @@ def sync(conn: sqlite3.Connection, transcripts_dir: Path,
 
 
 def _note_unreadable(conn: sqlite3.Connection, path: Path, project_dir: str,
-                     reason: str, stamp: str) -> None:
+                     transcript_kind: str, reason: str, stamp: str) -> None:
     conn.execute(
-        "INSERT INTO unreadable_file (path, project_dir, reason, observed_at) "
-        "VALUES (?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET "
-        "reason = excluded.reason, observed_at = excluded.observed_at",
-        (str(path), project_dir, reason, stamp),
+        "INSERT INTO unreadable_file "
+        "(path, project_dir, reason, observed_at, transcript_kind) "
+        "VALUES (?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET "
+        "reason = excluded.reason, observed_at = excluded.observed_at, "
+        "transcript_kind = excluded.transcript_kind",
+        (str(path), project_dir, reason, stamp, transcript_kind),
     )
 
 
@@ -230,6 +277,17 @@ def _forget_file(conn: sqlite3.Connection, file_id: int) -> None:
     conn.execute("DELETE FROM file WHERE file_id = ?", (file_id,))
 
 
+def _forget_stale(conn: sqlite3.Connection,
+                  existing: tuple[int, int, int] | None) -> None:
+    """読めなくなった file の前回の row を消す。
+
+    full rebuild では読めない file は row を持たないので、残すと I2 が破れる
+    (古い record が mart に数えられ、同じ file が読めない file としても数えられる)。
+    """
+    if existing is not None:
+        _forget_file(conn, existing[0])
+
+
 def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
                  transcript_kind: str, fingerprint: tuple[int, int],
                  stamp: str) -> tuple[int, int] | None:
@@ -238,7 +296,8 @@ def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
         with path.open("r", encoding="utf-8", errors="replace") as fp:
             lines = fp.readlines()
     except OSError as exc:
-        _note_unreadable(conn, path, project_dir, f"read: {exc.strerror}", stamp)
+        _note_unreadable(conn, path, project_dir, transcript_kind,
+                         f"read: {exc.strerror}", stamp)
         return None
 
     rows = _parse_lines(lines)
@@ -326,11 +385,6 @@ def _ingest_file(conn: sqlite3.Connection, path: Path, project_dir: str,
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         [(file_id, *c) for c in rows.compact_boundaries],
     )
-    conn.executemany(
-        "INSERT INTO assistant_text (file_id, line_no, block_no, text) "
-        "VALUES (?, ?, ?, ?)",
-        [(file_id, *a) for a in rows.assistant_texts],
-    )
     return len(rows.records), rows.broken_lines
 
 
@@ -375,7 +429,6 @@ class _ParsedFile:
     static_payloads: list[tuple] = dataclasses.field(default_factory=list)
     memory_injections: list[tuple] = dataclasses.field(default_factory=list)
     compact_boundaries: list[tuple] = dataclasses.field(default_factory=list)
-    assistant_texts: list[tuple] = dataclasses.field(default_factory=list)
     broken_lines: int = 0
 
 
@@ -418,7 +471,6 @@ def _parse_lines(lines: list[str]) -> _ParsedFile:
         if record_type == "assistant":
             _collect_tool_uses(rec, line_no, parsed, pending)
             _collect_assistant_turn(rec, line_no, parsed)
-            _collect_assistant_texts(rec, line_no, parsed)
         elif record_type == "user":
             _resolve_tool_results(rec, parsed, pending)
             _collect_user_events(rec, line_no, parsed)
@@ -523,19 +575,6 @@ def _collect_assistant_turn(rec: dict, line_no: int, parsed: _ParsedFile) -> Non
         usage.get("cache_creation_input_tokens", 0),
         usage.get("cache_read_input_tokens", 0),
     ))
-
-
-def _collect_assistant_texts(rec: dict, line_no: int, parsed: _ParsedFile) -> None:
-    """assistant turn の text block を全文で 1 block = 1 行にする (空 text は除く)。"""
-    content = (rec.get("message") or {}).get("content")
-    if not isinstance(content, list):
-        return
-    for block_no, block in enumerate(content):
-        if not isinstance(block, dict) or block.get("type") != "text":
-            continue
-        text = block.get("text")
-        if isinstance(text, str) and text:
-            parsed.assistant_texts.append((line_no, block_no, text))
 
 
 def _collect_user_events(rec: dict, line_no: int, parsed: _ParsedFile) -> None:

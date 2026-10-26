@@ -8,7 +8,7 @@ description: project の CLAUDE.md 系 (root / `CLAUDE.local.md` / サブディ�
 
 project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.md` + サブディレクトリ CLAUDE.md + `.claude/rules/*.md`) を、静的に観測し **行単位で 7 bucket の候補**を LLM に提示させ、判定は人間に残す棚卸し skill。
 
-4 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は文章の具体化のみ**):
+4 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は文章の具体化のみ、反映は承認分だけ**。本 skill の観測は `open_predicates` を出さないので、`open_predicates` の解釈の工程は無く、bucket の判定基準を当てはめる解釈は LLM が担う):
 
 1. **決定的観測**: `scripts/scan-claude-md.py` が対象ファイル群を走査し、observation JSON を出力する
 2. **LLM 具体化 (このメインコンテキスト)**: JSON を読み、行単位で bucket 候補と根拠、提案文面を組み立てる。**判定はしない**
@@ -144,7 +144,7 @@ observation の schema は script docstring 参照。以下の順に組み立て
 3. **informational**: bucket vocabulary の**どれにも該当しない**行の一覧と理由 (bucket vocabulary の適用先が不明な行 / 用途不明な行)。**汎用性が高く見える行もここに落とす** — 「(参考) global 昇格の余地あり — 判定は chezmoi 側で人間実施」と書き、bucket 候補としては出さない (global は本 skill の機能外)
 4. **観測範囲外 (人間確認へ回す)**: 参照実在検査が fail-safe で判断不能だった行 (`exists: null`) / inline code span の path 参照 / observation JSON の穴 / **観測境界の外にある file** (サブディレクトリの `CLAUDE.local.md` 等、存在しても JSON に出ないもの)。**bucket 判定の証拠として使わない**行をここに集める
 5. **meta 観測**: CLAUDE.md / `CLAUDE.local.md` 自体の物理計測 (行数 / 見出し階層 / @import 数)。observation JSON の `meta.root_meta` と `meta.local_meta` を**それぞれ転記**する (`meta` は root と local の 2 本立てで、subdirs / rules は含まない)。**`status = "missing"` の側は数値を転記せず「(無し)」と書く** — `summarize_meta` は不在時に全項目 0 を返すので、そのまま載せると「存在するが 0 行」と読めてしまう。閾値 enforce はしない — 「参考値」として提示のみ
-6. **summary 表**: 番号 × bucket × 対象 × scope × 採否。「3 と 7 だけ採用」と言える形。scope 列で `project` と `project-local` を区別する (適用手順が分岐するため)。採否列は手順 5・6 の結果 (反映済み / 見送り / 承認済み・未反映 / 未判定 (打ち切り) / 問わない bucket は `-`) を、手順 6 を終えた時点で書き込む。承認済み・未反映の候補は、候補 section に「停止理由」の行を足し、`write-for-harness` が返した文を逐語で書く
+6. **summary 表**: 番号 × bucket × 対象 × scope × 採否。「3 と 7 だけ採用」と言える形。scope 列で `project` と `project-local` を区別する (適用手順が分岐するため)。採否列は手順 5・6 の結果 (反映済み / 見送り / 承認済み・未反映 / 未判定 (打ち切り) / 問わない bucket は `-`) を、手順 6 を終えた時点で書き込む。承認済み・未反映の候補は、候補 section に「停止理由」の行を足し、`write-for-harness` が返した文を逐語で書く。手順 6 の照合で止めた候補には、対象外の path の一覧と次に人間が行う手順も書く
 
 各 section の書き下し方が掴めないときは `${CLAUDE_SKILL_DIR}/references/report-example.md` を Read する (schema の正本は上の 6 項で、reference はその記入例)。
 
@@ -200,7 +200,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。**
     - 契約の「2 file にまたがる変更」に当たる候補は、move-to-path-scoped と move-to-skill (移動先 + 元 file の行削除)、file をまたぐ merge (統合先 + 削除側)、共有化 (移動先 + `CLAUDE.local.md` の行削除)
     - どの候補を反映するかと 6-1 の制約を宣言する。候補の場所は対象テキストの引用で示す — 先の反映で行番号がずれるので、行番号はレポート上の識別子に留める
-2. **全候補の反映が済んだら diff を提示し、レポートの summary 表の採否列を書き込む**
+    - invoke ごとに、契約の「委譲後の変更 path の照合」節の手順で照合する。許可 path は、args が既存 file の path ならその 1 本 (2 file にまたがる候補も invoke ごとに、その invoke の file だけ。契約に従って rules の索引行を足す invoke の `CLAUDE.md` を含む)、`新規: rules` で起こす候補なら作成先 `.claude/rules/<topic>.md` の 1 本で、作成先は invoke 直前の同じ turn の文面で渡す (`新規:` の args は作成先 path を取らない)。止めたときは、契約が残させるものをレポートの候補 section と報告に残す2. **全候補の反映が済んだら (照合で止めたときはそこまでに) diff を提示し、レポートの summary 表の採否列を書き込む**
 
 - `write-for-harness` が反映を完了せずに終わった候補は、理由を問わず**承認済み・未反映**としてレポートと報告に残す (承認が黙って消えないようにする)
 

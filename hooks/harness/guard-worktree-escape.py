@@ -8,14 +8,30 @@ worktree ではなく main repository root で解決する既知バグがある
 (anthropics/claude-code#29083 / #31546 / #44557)。subagent 側では hook 入力の
 cwd 自体が汚染されうるため、cwd だけでは逸脱を判別できない。
 
-退役の判断材料 (2026-09-25 時点、v2.1.282):
+退役の判断材料 (2026-10-25 時点。上流と本体 guard の項は 2026-09-25・v2.1.282 時点):
   - 上流のバグは未修正 (上記 3 件は重複 close。重複先の #36182 / #11239 は OPEN)
   - 本体の worktree 隔離 guard が 2.1.222 以降「worktree-isolated session」の main checkout への
-    Edit / Bash を止めており、本 hook の deny は約 3.9 万回の起動で 0 件
+    Edit / Bash を止めている
+  - 本 hook の deny は 2026-10-06〜10-14 に 26 件 (#1116 の処遇表。それまでは約 3.9 万回の
+    起動で 0 件)。26 件とも外部ツール claude-dispatcher の worker で、手で `git worktree add` した
+    workspace (`.claude-dispatcher/workspaces/issue-N`) を cwd にした session が、main checkout
+    配下で worktree の外にある `.claude-dispatcher/workspaces/issue-N.review-stage-1.md` へ Write
+    したもの。2026-10-15〜10-25 の手元の transcript では deny 0 件
+  - 26 件の判定: path は下の deny 条件どおりに一致したが、本 hook が防ぐ上流バグではなく
+    **誤検出**。26 件に共通する根拠 (#1116 の集計と #1749 の観測が 26 件すべてについて書く値):
+    cwd は workspace (linked worktree) そのもので、書き先は worktree 内の path が main
+    checkout 側へずれた形ではなく、workspace の兄弟に置いた別名の file。claude-dispatcher の `.gitignore` が `/.claude-dispatcher/` を除外して
+    いるので、main checkout の差分も汚さない。session が main session (agent_id 無し) で cwd が
+    汚染されていないことは、手元の transcript に残る 1 件 (2026-10-12、issue-117) でだけ
+    確かめた (残り 25 件の transcript は手元に無い)。この 1 件は review の出力を作業ツリーの外へ
+    保存しようとした Write で、28 秒後に `/tmp/` へ書き直して進んだ (#1116 では 26 件中 23 件が
+    60 秒以内に次の呼び出しで成功)。損害は往復 1 回
+  - この経路は既知の誤検出の例外としてここに記録するだけで、hook の判定には例外を入れていない
+    (判定を変えるかは #2059)
   - 未確認なのは、`EnterWorktree` / `claude --worktree` / `isolation: "worktree"` を使わずに
-    手で `git worktree add` した worktree で作業する session (外部ツール claude-dispatcher の worker は、
-    workflow 定義の hooks で `git worktree add` した workspace を cwd にして起動しうる) を
-    本体 guard が isolated と扱うか。扱うと確認できたら本 hook は退役できる
+    手で `git worktree add` した worktree で作業する session (claude-dispatcher の worker が
+    これに当たる) を本体 guard が isolated と扱うか。上の 26 件は本 hook が先に止めたので、
+    本体 guard が同じ Write を止めるかは観測できていない。扱うと確認できたら本 hook は退役できる
 
 そこで信頼できる唯一の情報源であるメインセッションの cwd を session_id キーの
 状態ファイルに記録し (session_id は親と subagent で共通)、tool 呼び出し時に照合する:
@@ -25,7 +41,8 @@ cwd 自体が汚染されうるため、cwd だけでは逸脱を判別できな
 
 deny するのはバグの signature に一致する場合のみ:
   セッションの正しい root が linked worktree W のとき、
-  - Edit/Write の file_path (realpath) が同一 repo の main checkout 配下かつ W 外
+  - Edit/Write の file_path・NotebookEdit の notebook_path (realpath) が同一 repo の main
+    checkout 配下かつ W 外
   - Bash の cwd (realpath) が同一 repo の main checkout 配下かつ W 外
 
 以下はすべて素通し (fail-open):
@@ -40,7 +57,7 @@ fail-posture: **fail-open — ADR 0046 の「guard は原則 fail-closed」に�
 本 hook が原則から外れるのは、原則の根拠 (素通しの損害は不可逆・deny の損害は回復可能、と
 いう非対称性) がここでは成立しないため。3 点で判断している:
 
-  1. **停止範囲が過大**: 発火条件が `Bash|Edit|Write|Read` + SessionStart と全ツール級に広い。
+  1. **停止範囲が過大**: 発火条件が `Bash|Edit|Write|NotebookEdit|Read` + SessionStart と全ツール級に広い。
      fail-closed にすると、状態ファイルが書けない / git 情報が取れないだけで Read まで含む
      ほぼ全操作が止まる。同じ posture でも sh guard 4 本は Bash 止まりで、こちらはそれより広い
   2. **守る対象が security ではない**: 塞いでいるのは main checkout への逸脱という **workflow
@@ -55,6 +72,13 @@ fail-posture: **fail-open — ADR 0046 の「guard は原則 fail-closed」に�
 限界:
   - Bash のコマンド文字列内に埋め込まれた main checkout への絶対 path
     (例: `cat /path/to/main/file`) までは検査しない。cwd の照合のみ行う
+  - 状態 file の掃除 (`prune_stale_states`) は stat で TTL 超過を判定してから unlink する。その
+    間に同じセッションの記録が mtime を進めても (utime が成功して書き直さない)、続く unlink が
+    状態 file を消す。窓は stat から unlink までの数 μs で、TTL (7 日) ぎりぎりまで tool 呼び出しの
+    無かったセッションの再開が、別セッションの内容が変わる記録と重なったときだけ開く。消えた状態は
+    次の main session の記録で書き直されるので、失われるのはそれまでの subagent の判定だけ
+    (状態なしで素通し)。この窓は #1592 の修正の前からある。lock で直列化すると tool 呼び出しごとに
+    費用が乗るので、塞がずに受け入れている
   - git の位置は git を起動せず `.git` をたどって引く。扱うのは通常の checkout と linked worktree
     だけで、次の形態は扱わない。どの形態も、git rev-parse で判定していた実装との差分実行で
     確認済み (#1435):
@@ -86,7 +110,8 @@ import time
 
 STATE_DIR_ENV = "WORKTREE_GUARD_STATE_DIR"
 STATE_TTL_SECONDS = 7 * 24 * 3600
-GUARDED_WRITE_TOOLS = ("Edit", "Write")
+# 書き込み系 tool と、その対象 path を持つ tool_input の key
+GUARDED_WRITE_TOOLS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
 
 
 class _Finished(Exception):
@@ -130,16 +155,28 @@ def emit_deny(tool: str, target: str, main_root: str, session_root: str) -> None
         f"worktree セッション逸脱を検知: {tool} の対象 ({target}) は"
         f" main checkout ({main_root}) 配下です。このセッションの作業 root は"
         f" {session_root} です (既知の subagent path 解決バグの可能性)。"
-        f" 対象 path を {session_root} 配下の絶対 path に置き換えて再実行してください"
-        f" (Bash の場合はコマンド先頭に `cd {session_root} && ` を付ける)。"
     )
+    if tool == "Bash":
+        # Bash の判定対象は payload の cwd で、コマンド文字列は読まない。コマンド先頭の
+        # `cd` では payload の cwd が変わらず、同じ deny が返る (#1844)
+        reason += (
+            " Bash は起動時の cwd で判定しており、コマンドの書き換えでは解けません。"
+            f" file の読み書きは Read / Edit / Write に {session_root} 配下の絶対 path を"
+            " 渡して行ってください。Bash でしか行えない作業は Bash を再試行せずに残し、"
+            "それ以外の作業を続けてください。終えるときは、済ませた成果・残した Bash の作業・"
+            "その理由を呼び出し元 (親 session) へ報告してください。"
+        )
+    else:
+        reason += f" 対象 path を {session_root} 配下の絶対 path に置き換えて再実行してください。"
+    # ensure_ascii: target が対の無い surrogate (非 UTF-8 の byte を surrogateescape で読んだ
+    # path) を含むと、ascii 以外を残した本文は stdout へ書けず exit 1 に落ち、deny が効かない
     raise _Finished(json.dumps(
         {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
         }},
-        ensure_ascii=False,
+        ensure_ascii=True,
     ))
 
 
@@ -273,14 +310,25 @@ def write_state(session_id: str, root: str) -> None:
         if read_state(session_id) == root:
             # 内容が同じなら書かない (メインセッションは tool 呼び出しのたびに来る)。mtime だけ
             # 進めて、続いているセッションの状態を TTL 掃除から守る
-            os.utime(path)
-        else:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
+            try:
+                os.utime(path)
+                return
+            except FileNotFoundError:
+                pass  # 読んだ直後に別セッションの掃除が消した。下で書き直す
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # 一時 file に書いて置き換える。path を直接 truncate して書くと、並行する subagent の
+        # read_state が空の file を読んで状態なしに倒れ、逸脱を素通す
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(root + "\n")
-            # 掃除は書いたときだけ走らせ、tool 呼び出しごとの dir 走査をなくす。TTL を
-            # 過ぎた状態は、新しいセッションの SessionStart など内容が変わる記録のときに消える
-            prune_stale_states(os.path.dirname(path))
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)  # 書き込みか置き換えに失敗した残骸を残さない
+        # 掃除は書いたときだけ走らせ、tool 呼び出しごとの dir 走査をなくす。TTL を
+        # 過ぎた状態は、新しいセッションの SessionStart など内容が変わる記録のときに消える
+        prune_stale_states(os.path.dirname(path))
     except OSError:
         return  # 状態が書けなくても tool 実行は妨げない
 
@@ -339,18 +387,26 @@ def judge(stdin_text: str) -> None:
         passthrough(hook_event)  # worktree セッションでない → guard 対象外
 
     tool = str(data.get("tool_name") or "")
-    tool_input = data.get("tool_input") or {}
+    tool_input = data.get("tool_input")
+    if not isinstance(tool_input, dict):
+        tool_input = {}  # 形の崩れた tool_input で .get が落ちないよう、無いものとして扱う
     if tool in GUARDED_WRITE_TOOLS:
-        raw_target = str(tool_input.get("file_path") or "")
+        raw_target = str(tool_input.get(GUARDED_WRITE_TOOLS[tool]) or "")
         if not os.path.isabs(raw_target):
             passthrough(hook_event)  # 相対 path は解決先の確証なし
-        target = os.path.realpath(raw_target)
+        raw_path = raw_target
     elif tool == "Bash":
         if not cwd:
             passthrough(hook_event)
-        target = os.path.realpath(cwd)
+        raw_path = cwd
     else:
         passthrough(hook_event)  # Read 等は状態更新のみで deny しない
+    try:
+        target = os.path.realpath(raw_path)
+    except ValueError:
+        # NUL や対の無い surrogate を含む path は realpath が解決できない。traceback で
+        # exit 1 に落ちる代わりに、確証が持てないケースとして素通す
+        passthrough(hook_event)
 
     if any(is_under(target, root) for root in allowed_roots):
         passthrough(hook_event)

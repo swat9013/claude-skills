@@ -23,7 +23,7 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
 FROM tool_use tu
 JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
 JOIN file f ON f.file_id = tu.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
   AND (tu.tool IN ('Skill', 'Agent', 'Read') OR tu.tool LIKE 'mcp\_\_%' ESCAPE '\')
 ORDER BY f.project_dir, f.path, r.line_no, tu.block_no
@@ -36,7 +36,7 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
 FROM slash_invocation si
 JOIN record r ON r.file_id = si.file_id AND r.line_no = si.line_no
 JOIN file f ON f.file_id = si.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
 ORDER BY f.project_dir, f.path, r.line_no
 
@@ -47,7 +47,7 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
 FROM user_turn ut
 JOIN record r ON r.file_id = ut.file_id AND r.line_no = ut.line_no
 JOIN file f ON f.file_id = ut.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
 ORDER BY f.project_dir, f.path, r.line_no
 
@@ -66,7 +66,7 @@ SELECT tu.tool AS tool, r.session_id AS session_id,
 FROM tool_use tu
 JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
 JOIN file f ON f.file_id = r.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main' AND tu.tool != ''
 GROUP BY tu.tool, r.session_id
 
@@ -78,7 +78,7 @@ SELECT pn.attachment_type AS attachment_type, pn.name AS name,
 FROM presented_name pn
 JOIN record r ON r.file_id = pn.file_id AND r.line_no = pn.line_no
 JOIN file f ON f.file_id = r.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
 ORDER BY pn.line_no, pn.seq
 
@@ -90,7 +90,7 @@ SELECT DISTINCT sp.attachment_type AS attachment_type, r.session_id AS session_i
 FROM static_payload sp
 JOIN record r ON r.file_id = sp.file_id AND r.line_no = sp.line_no
 JOIN file f ON f.file_id = r.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main' AND r.session_id != ''
 
 -- assistant turn の token 経済 (帰属 skill 別の内訳は presentation 層が畳む)。
@@ -102,5 +102,5 @@ SELECT at.attribution_skill AS attribution_skill,
 FROM assistant_turn at
 JOIN record r ON r.file_id = at.file_id AND r.line_no = at.line_no
 JOIN file f ON f.file_id = r.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'

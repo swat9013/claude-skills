@@ -70,7 +70,7 @@
         ]
       },
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write|Edit|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -79,7 +79,7 @@
         ]
       },
       {
-        "matcher": "Bash|Edit|Write|Read",
+        "matcher": "Bash|Edit|Write|NotebookEdit|Read",
         "hooks": [
           {
             "type": "command",

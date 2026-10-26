@@ -38,8 +38,10 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _prelude import read_stdin_text  # noqa: E402
 
+# `.resolve()` を使わない: 起動 path (skills-dir では symlink、marketplace では cache) のまま leaf を指す。
+# 実 path を注入文に書くと、読み手が実 path を Read して本 repo の path-scoped rules が載る。
 LEAF = (
-    Path(__file__).resolve().parents[2]
+    Path(os.path.abspath(__file__)).parents[2]
     / "skills" / "knowledge" / "principle-index" / "references" / "leaves" / "principle-least-code.md"
 )
 INJECTED_EVENTS = ("SessionStart", "SubagentStart")

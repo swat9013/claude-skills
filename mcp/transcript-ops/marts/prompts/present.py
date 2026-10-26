@@ -19,7 +19,7 @@ scan_prompts:
 1. totality — 走査した user record 数 == 採用数 + 除外理由ごとの件数の総和
 2. 除外集合 — `contract.EXCLUSION_REASONS` の各理由に落ち、人間の手入力だけが残る
 3. anchor — 採用 record が session_id / repo / timestamp を必ず持つ
-4. 母集団 — 既定は main transcript のみ (subagent の user record は走査しない)
+4. 母集団 — main transcript のみ (subagent の user record は走査しない。選ぶ引数は無い)
 5. 観測窓 — 窓の外の record は走査しない
 
 select_candidates:
@@ -34,6 +34,7 @@ select_candidates:
 13. cross-repo 候補 — 定型一覧の repo 数が rule の入力 (`repo_count`) まで届き、全 repo 横断の slice だけが評価する
 14. repo scope の解決 — `repo` 未指定は cwd の repo に解決し、他 repo の prompt を載せない
 15. repo scope の fail-closed — cwd の repo を解決できなければ全 repo に倒さず fail する
+16. provenance の窓 — `mart` を渡すと、その window_start から window_end までだけを読む
 """
 
 from __future__ import annotations
@@ -85,6 +86,15 @@ REPO_SCOPE_EXPLICIT = contract.REPO_SCOPE_EXPLICIT
 REPO_SCOPE_CWD = contract.REPO_SCOPE_CWD
 REPO_SCOPE_ALL = contract.REPO_SCOPE_ALL
 
+# mart と slice の母集団は main session の transcript だけ。subagent を含めたい
+# 消費者がいないので、選ぶ引数を公開しない (設計 doc transcript-observation の
+# 不変条件 (10))。meta.transcript_kind にもこの値を出す
+TRANSCRIPT_KIND = transcript_kind_mod.DEFAULT
+_TRANSCRIPT_KINDS = transcript_kind_mod.kinds_param(TRANSCRIPT_KIND)
+
+# query.sql が読む projection。meta.store の ts 欠損はこの集合の中でだけ数える (#2110)
+READ_PROJECTIONS = ("user_prompt",)
+
 STORE_META_KEYS = (
     "ingested_files", "records", "broken_lines", "unreadable_files",
     "duplicate_record_uuid_groups", "ts_missing_events",
@@ -98,10 +108,11 @@ def _store_meta(conn: sqlite3.Connection, sync_report: ingest.SyncReport) -> dic
     同じ関数を呼ぶ — #497 でこの mart が 2 つ目の消費者になったため store 側へ
     引き上げた)。
     """
-    anomalies = store_mod.anomalies(conn)
+    anomalies = store_mod.anomalies(conn, _TRANSCRIPT_KINDS, READ_PROJECTIONS)
     return {
         **anomalies,
         "unrecognized_nested_files": sync_report.unrecognized_nested_files,
+        "workflow_journal_files": sync_report.workflow_journal_files,
         "synced_files": sync_report.ingested_files,
         "unchanged_files": sync_report.unchanged_files,
         "removed_files": sync_report.removed_files,
@@ -152,6 +163,10 @@ def _resolve_repos_by_cwd(
     return resolved
 
 
+class ProvenanceWindowMissing(ValueError):
+    """provenance の mart の meta が窓の両端 (window_start / window_end) を持たない。"""
+
+
 class RepoScopeUnresolved(RuntimeError):
     """cwd から repo を解決できず、明示 (repo / all_repos) が要る状態。
 
@@ -199,12 +214,13 @@ SCOPED_PROMPT_COLUMNS = (
 
 
 def _load_scoped_prompt(conn: sqlite3.Connection, statements: dict[str, str],
-                        cutoff_epoch: float, transcript_kinds: str) -> None:
+                        cutoff_epoch: float, now_epoch: float) -> None:
     conn.execute(statements["clear_scoped_prompt"])
     conn.execute(
         f"INSERT INTO scoped_prompt ({', '.join(SCOPED_PROMPT_COLUMNS)}) "
         + statements["refined_prompt"],
-        {"cutoff_epoch": cutoff_epoch, "transcript_kinds": transcript_kinds},
+        {"cutoff_epoch": cutoff_epoch, "now_epoch": now_epoch,
+         "transcript_kinds": _TRANSCRIPT_KINDS},
     )
 
 
@@ -239,14 +255,14 @@ def _boilerplate_membership(conn: sqlite3.Connection, statements: dict[str, str]
 
 
 def _open(transcripts_dir: Path, cache_dir: Path | None, now: dt.datetime,
-          cutoff_epoch: float, transcript_kinds: str,
+          cutoff: dt.datetime, window_end: dt.datetime,
           ) -> tuple[sqlite3.Connection, dict[str, str], ingest.SyncReport]:
     conn, sync_report = ingest.open_synced(transcripts_dir, cache_dir=cache_dir, now=now)
     udf.register(conn)
     statements = load_statements(QUERY_PATH)
     conn.execute(statements["create_scoped_prompt"])
     conn.execute(statements["create_scoped_prompt_index"])
-    _load_scoped_prompt(conn, statements, cutoff_epoch, transcript_kinds)
+    _load_scoped_prompt(conn, statements, cutoff.timestamp(), window_end.timestamp())
     return conn, statements, sync_report
 
 
@@ -255,17 +271,11 @@ def _open(transcripts_dir: Path, cache_dir: Path | None, now: dt.datetime,
 @dataclasses.dataclass(frozen=True)
 class ScanRequest:
     days: int = DEFAULT_DAYS
-    # 数える transcript の種類 (`main` / `all`)。値の検査は `transcript_kinds()`
-    transcript_kind: str = transcript_kind_mod.DEFAULT
     transcripts_dir: Path = DEFAULT_TRANSCRIPTS_DIR
     output_dir: Path = DEFAULT_OUTPUT_DIR
     text_limit: int = DEFAULT_TEXT_LIMIT
     now: str | None = None
     cache_dir: Path | None = None
-
-    def transcript_kinds(self) -> str:
-        """SQL の `:transcript_kinds`。未知の値は store を開く前に止める。"""
-        return transcript_kind_mod.kinds_param(self.transcript_kind)
 
 
 def _stamp(moment: dt.datetime) -> str:
@@ -302,8 +312,7 @@ def build_mart(request: ScanRequest,
     cutoff = now - dt.timedelta(days=request.days)
 
     conn, statements, sync_report = _open(
-        request.transcripts_dir, request.cache_dir, now, cutoff.timestamp(),
-        request.transcript_kinds())
+        request.transcripts_dir, request.cache_dir, now, cutoff, now)
     try:
         verdicts = _verdict_counts(conn, statements)
         accepted = _accepted_rows(conn, statements)
@@ -346,7 +355,7 @@ def build_mart(request: ScanRequest,
             "window_start": _stamp(cutoff),
             "window_end": _stamp(now),
             "days": request.days,
-            "transcript_kind": request.transcript_kind,
+            "transcript_kind": TRANSCRIPT_KIND,
             "transcripts_dir": str(request.transcripts_dir),
             "text_limit": request.text_limit,
             "total_prompts": len(prompts),
@@ -391,7 +400,6 @@ def emit_mart(mart: dict, output_dir: Path) -> str:
 
 def run_scan_prompts(
     days: int = DEFAULT_DAYS,
-    transcript_kind: str = transcript_kind_mod.DEFAULT,
     output_dir: str = str(DEFAULT_OUTPUT_DIR),
     transcripts_dir: str = str(DEFAULT_TRANSCRIPTS_DIR),
     text_limit: int = DEFAULT_TEXT_LIMIT,
@@ -399,7 +407,7 @@ def run_scan_prompts(
 ) -> dict:
     """`scan_prompts` tool の入口。mart は返さず、書いた path と meta だけを返す。"""
     request = ScanRequest(
-        days=days, transcript_kind=transcript_kind, output_dir=Path(output_dir),
+        days=days, output_dir=Path(output_dir),
         transcripts_dir=Path(transcripts_dir), text_limit=text_limit, now=now,
     )
     mart = build_mart(request)
@@ -448,28 +456,45 @@ def _mart_provenance(mart_path: Path | None) -> dict | None:
 
     読めない mart path は明示的な誤りとして呼び元に伝える (存在しないと知らずに
     黙って own window へ倒すと「provenance を指定したつもりが無視された」事故になる)。
+    main 以外の母集団で作った mart も同じく拒む (窓だけ引き継いで main で数えると、
+    slice が provenance と違う母集団を黙って名乗る)。
     """
     if mart_path is None:
         return None
     data = json.loads(mart_path.read_text(encoding="utf-8"))
-    return data.get("meta") or {}
+    meta = data.get("meta") or {}
+    mart_kind = meta.get("transcript_kind", TRANSCRIPT_KIND)
+    if mart_kind != TRANSCRIPT_KIND:
+        raise transcript_kind_mod.TranscriptKindRejected(
+            f"provenance の mart の母集団 ({mart_kind!r}) は {TRANSCRIPT_KIND!r} ではない。"
+            "scan_prompts で mart を作り直して渡す")
+    return meta
 
 
-def _resolve_window(request: SelectRequest,
-                    mart_meta: dict | None) -> tuple[dt.datetime, int, dt.datetime]:
-    """観測窓を決める。`mart` があればその window を、無ければ `days` から作る。
+def _resolve_window(
+        request: SelectRequest, mart_meta: dict | None,
+) -> tuple[dt.datetime, dt.datetime, int, dt.datetime]:
+    """観測窓 (始端, 終端) と days・now を決める。`mart` があればその window を、
+    無ければ `days` から作る (終端は now)。
 
     stamp drift 対策: `now` はここで 1 度だけ解決し、以降 (meta 生成 / 出力
     ファイル名) はこの値だけを使う。
     """
     now = resolve_now(request.now)
-    if mart_meta and mart_meta.get("window_start"):
-        cutoff = dt.datetime.fromisoformat(
-            str(mart_meta["window_start"]).replace("Z", "+00:00")
-        ).astimezone(dt.timezone.utc)
+    if mart_meta is not None:
+        missing = [key for key in ("window_start", "window_end")
+                   if not mart_meta.get(key)]
+        if missing:
+            # 欠けた端を slice の窓で補うと、mart が数えなかった prompt が黙って
+            # 候補に混ざる
+            raise ProvenanceWindowMissing(
+                f"provenance の mart の meta に {' / '.join(missing)} が無い。"
+                "scan_prompts で mart を作り直して渡す")
+        cutoff = resolve_now(str(mart_meta["window_start"]))
+        window_end = resolve_now(str(mart_meta["window_end"]))
         days = int(mart_meta.get("days") or request.days)
-        return cutoff, days, now
-    return now - dt.timedelta(days=request.days), request.days, now
+        return cutoff, window_end, days, now
+    return now - dt.timedelta(days=request.days), now, request.days, now
 
 
 def band_of(chars: int) -> str | None:
@@ -589,20 +614,15 @@ def build_slice(
 ) -> dict:
     """store を直接 query して slice を組む (ファイル出力を伴わない)。"""
     mart_meta = _mart_provenance(request.mart)
-    cutoff, days, now = _resolve_window(request, mart_meta)
+    cutoff, window_end, days, now = _resolve_window(request, mart_meta)
 
     repo_scope = request.repo_scope()
     repo_filter = request.repo
     if repo_scope == REPO_SCOPE_CWD:
         repo_filter = default_repo_resolver(request.repo_root)
 
-    # 母集団は窓と同じく provenance の mart から引き継ぐ (scan_prompts で選んだ
-    # transcript_kind に揃える)。mart が無ければ既定の main
-    transcript_kind = (mart_meta or {}).get("transcript_kind",
-                                            transcript_kind_mod.DEFAULT)
     conn, statements, sync_report = _open(
-        request.transcripts_dir, request.cache_dir, now, cutoff.timestamp(),
-        transcript_kind_mod.kinds_param(transcript_kind))
+        request.transcripts_dir, request.cache_dir, now, cutoff, window_end)
     try:
         accepted = _accepted_rows(conn, statements)
         membership = _boilerplate_membership(conn, statements, request.min_chars)
@@ -657,9 +677,9 @@ def build_slice(
             "mart_window_start": mart_meta.get("window_start") if mart_meta else None,
             "mart_window_end": mart_meta.get("window_end") if mart_meta else None,
             "window_start": _stamp(cutoff),
-            "window_end": generated_at,
+            "window_end": _stamp(window_end),
             "days": days,
-            "transcript_kind": transcript_kind,
+            "transcript_kind": TRANSCRIPT_KIND,
             "transcripts_dir": str(request.transcripts_dir),
             "min_chars": request.min_chars,
             "repo_filter": repo_filter,
@@ -758,8 +778,6 @@ def run_select_candidates(
 def parse_scan_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="scan_prompts の mart を組む")
     p.add_argument("--days", type=int, default=DEFAULT_DAYS)
-    p.add_argument("--transcript-kind", choices=transcript_kind_mod.CHOICES,
-                   default=transcript_kind_mod.DEFAULT)
     p.add_argument("--transcripts-dir", type=Path, default=DEFAULT_TRANSCRIPTS_DIR)
     p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     p.add_argument("--text-limit", type=int, default=DEFAULT_TEXT_LIMIT)
@@ -796,8 +814,7 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "scan":
         args = parse_scan_args(rest)
         request = ScanRequest(
-            days=args.days, transcript_kind=args.transcript_kind,
-            transcripts_dir=args.transcripts_dir,
+            days=args.days, transcripts_dir=args.transcripts_dir,
             output_dir=args.output_dir, text_limit=args.text_limit,
             now=args.now, cache_dir=args.cache_dir,
         )

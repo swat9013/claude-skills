@@ -22,7 +22,7 @@ SELECT sp.attachment_type AS attachment_type, r.session_id AS session_id,
 FROM static_payload sp
 JOIN record r ON r.file_id = sp.file_id AND r.line_no = sp.line_no
 JOIN file f ON f.file_id = r.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
 GROUP BY sp.attachment_type, r.session_id
 
@@ -42,7 +42,7 @@ SELECT memory_key(mi.path) AS memory_key, mi.path AS path,
 FROM memory_injection mi
 JOIN record r ON r.file_id = mi.file_id AND r.line_no = mi.line_no
 JOIN file f ON f.file_id = mi.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
 ORDER BY f.project_dir, f.path, r.line_no
 
@@ -55,7 +55,7 @@ SELECT r.session_id AS session_id, r.cwd AS cwd, cb.trigger AS trigger,
 FROM compact_boundary cb
 JOIN record r ON r.file_id = cb.file_id AND r.line_no = cb.line_no
 JOIN file f ON f.file_id = r.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
 
 -- session の cwd (repo scope 解決の入力)。同一 session 内で複数 cwd が観測された
@@ -65,7 +65,7 @@ SELECT f.project_dir AS project_dir, f.path AS file_path, r.line_no AS line_no,
        r.session_id AS session_id, r.cwd AS cwd
 FROM record r
 JOIN file f ON f.file_id = r.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind = 'main'
   AND r.session_id != '' AND r.cwd != ''
 ORDER BY f.project_dir, f.path, r.line_no

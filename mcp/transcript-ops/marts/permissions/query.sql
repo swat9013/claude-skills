@@ -103,8 +103,9 @@ SELECT DISTINCT tool FROM scoped_event
 -- 実行 1 件を mart の 7 分類へ細分する。base 語彙 (store) が選んだ枝の中で
 -- **label を付けるだけ**で、成否そのものの分岐を再導出しない (#476)。
 --
--- 窓は `ts_epoch` で切る。`NULL` (ts 欠損) は保守的に窓内へ倒す — 件数は meta に
--- 出すので、黙って増えることはない。
+-- 窓は `ts_epoch` で切る。`NULL` (ts 欠損) は保守的に窓内へ倒す。件数
+-- (`meta.store.ts_missing_events`、`store.anomalies` が数える) の読み方は、store の
+-- 劣化シグナルの注記を見る。
 --
 -- 母集団は `:transcript_kinds` (JSON 配列) の transcript だけ。既定は main で、
 -- subagent を含めるかは呼び出し側が選ぶ (`marts.transcript_kind`, #1456)。
@@ -143,7 +144,7 @@ WITH refined AS (
     FROM tool_use tu
     JOIN record r ON r.file_id = tu.file_id AND r.line_no = tu.line_no
     JOIN file f ON f.file_id = tu.file_id
-    WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+    WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
       AND f.transcript_kind IN (SELECT value FROM json_each(:transcript_kinds))
 )
 SELECT
@@ -379,7 +380,7 @@ SELECT hf.hook_name AS hook_name, hf.hook_event AS hook_event,
 FROM hook_firing hf
 JOIN record r ON r.file_id = hf.file_id AND r.line_no = hf.line_no
 JOIN file f ON f.file_id = hf.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind IN (SELECT value FROM json_each(:transcript_kinds))
 ORDER BY f.project_dir, f.path, hf.line_no
 

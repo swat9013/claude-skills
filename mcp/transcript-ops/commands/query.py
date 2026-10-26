@@ -45,6 +45,7 @@ from typing import Any, NamedTuple
 
 from adapter.transcript import resolve_now
 from artifacts import prepare_output_dir
+from marts import transcript_kind as transcript_kind_mod
 from store import ingest
 from store import store as store_mod
 from store.lock import SyncLockTimeout
@@ -323,7 +324,10 @@ def run_query(sql: str, params: dict | list | None, limit: int,
     conn, sync_report = ingest.open_synced(transcripts_dir, cache_dir=cache_dir,
                                            now=now)
     try:
-        anomalies = store_mod.anomalies(conn)
+        # ad-hoc の query は母集団も読む projection も絞らないので、劣化シグナルも
+        # main と subagent の両方・全 projection で数える
+        anomalies = store_mod.anomalies(conn, transcript_kind_mod.kinds_param("all"),
+                                        store_mod.PROJECTION_TABLES)
     finally:
         conn.close()
 
@@ -361,6 +365,7 @@ def run_query(sql: str, params: dict | list | None, limit: int,
             "store": {
                 **anomalies,
                 "unrecognized_nested_files": sync_report.unrecognized_nested_files,
+                "workflow_journal_files": sync_report.workflow_journal_files,
                 "synced_files": sync_report.ingested_files,
             },
         },

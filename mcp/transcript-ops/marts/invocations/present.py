@@ -208,7 +208,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
                    help="mart 出力先。default /tmp/inventory-skill-mcp")
     p.add_argument("--now", type=str, default=None,
-                   help="ISO timestamp。窓の起点を固定 (テスト・再現用)")
+                   help="ISO timestamp。窓の終端を固定 (テスト・再現用)")
     p.add_argument("--sufficient-threshold", type=int,
                    default=DEFAULT_SUFFICIENT_THRESHOLD,
                    help="相対判定可能とみなす総 invocation 閾値。default 30")
@@ -299,6 +299,7 @@ def collect_from_store(
     conn: sqlite3.Connection,
     statements: dict[str, str],
     cutoff_epoch: float,
+    now_epoch: float,
     resolver: dict[str, Any],
 ) -> tuple[list[Invocation], dict[str, dict], ContextObservation]:
     """query.sql の結果を旧 `extract_invocations` と同じ Invocation 列へ組み立てる。
@@ -309,7 +310,7 @@ def collect_from_store(
     """
     known_skill_ids: set[str] = resolver["known_skill_ids"]
     skill_md_paths: dict[str, str] = resolver["skill_md_paths"]
-    params = {"cutoff_epoch": cutoff_epoch}
+    params = {"cutoff_epoch": cutoff_epoch, "now_epoch": now_epoch}
 
     events: list[tuple] = []
     for row in conn.execute(statements["user_text_events"], params):
@@ -807,7 +808,7 @@ def collect(args: argparse.Namespace) -> dict:
     try:
         statements = load_statements(QUERY_PATH)
         invocations, session_attrs, context = collect_from_store(
-            conn, statements, cutoff_epoch, resolver)
+            conn, statements, cutoff_epoch, now.timestamp(), resolver)
     finally:
         conn.close()
 

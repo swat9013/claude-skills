@@ -88,6 +88,12 @@ skill 単位で `model:` を固定するときは「最も負荷が高いケー�
 
 既定の段はモデルで違う (Claude Code では Opus 5.5 / Sonnet 5.5 / Haiku 5.5 が `medium`、それ以外は `high`。API の既定とは一致しないモデルがある) ので、skill の `effort:` や agent 定義の `effort:` で明示する。Haiku 5.5 は 5 段すべてに対応するが、深い推論を任せる帯ではない。
 
+**並列・無人の長い実行で model と effort を固定するとき**は、段ごとの止まり方で選ぶ。
+
+- Sonnet 5.5 は `low` / `medium` の長い agentic task で、終える前に止まって確認を求めやすい (公式の prompting ガイド)。無人で走らせるなら `high` が前提で、`high` は tool 呼び出しを増やすので、turn 数に比例する cache_read で単価の差が縮む
+- Opus 5.5 の `low` は coding の評価で `medium` に近い結果を低い費用で出し、公式は段に結び付いた早期停止を注意していない。ただし公式の記述ではなく 1 つの agent 定義での実測として、手順の長い定義を `low` で並列に回すと、作業量が小さいと判断して決められた step (playbook の invoke やレビュー) を省く実行が出た。`medium` で省略が止まるかはまだ確かめていない。step を省かれると困る定義は、`low` を避けて `medium` に置くか、`low` のまま省略を名指しして止める文面を置き、どちらも実測で確かめる
+- 段によらず、途中経過を書いて turn を終える止まり方は Opus 5.5 にもある。これは effort では防げないので、文面で止まり方を名指しする ([models/opus-5-5.md](./models/opus-5-5.md) の「無人の長い実行は、止まり方を名指しして防ぐ」)
+
 fable・Opus 5.5・Sonnet 5.5 は **thinking を無効化できない** (adaptive thinking が常時 on。Haiku 5.5 は無効化を受け付ける)。「thinking を切って安く回す」は選択肢にならないので、浅く回したいなら effort を下げ、それでも重いなら model を 1 段下げる。
 
 ## コンテキスト管理 (Inferential コンポーネントの設計制約)

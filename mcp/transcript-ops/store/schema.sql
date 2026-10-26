@@ -29,12 +29,12 @@ CREATE TABLE IF NOT EXISTS file (
     -- なので、黙って skip せず file 単位で数える (silent skip の可視化)
     broken_lines INTEGER NOT NULL,
     ingested_at  TEXT NOT NULL,
-    -- v6 (#1456): transcript の種類。`<project>/*.jsonl` は 'main'、
-    -- `<project>/<session>/subagents/` 配下は 'subagent' (置き場の判定は
-    -- `ingest.transcript_kind_of`)。**subagent の record は親 session の session_id を
-    -- 持つ**ので、session 単位で数える mart はこの列で母集団を選ぶ (混ぜると distinct
-    -- sessions や最終 text が化ける)。置き場で決まる file 単位の値なので、record へ
-    -- 写さず file に 1 つだけ持つ (各 record は file_id から引く)
+    -- v6 (#1456): transcript の種類。`<project>/*.jsonl` は 'main'、`<session>/` の下は
+    -- adapter の `session_file_kind` が subagent の transcript とした file だけが 'subagent'
+    -- (`<session>/` の下を一律に subagent とはしない。値は `ingest.STORED_TRANSCRIPT_KINDS`)。
+    -- **subagent の record は親 session の session_id を持つ**ので、session 単位で数える
+    -- mart はこの列で母集団を選ぶ (混ぜると distinct sessions の数が化ける)。置き場で決まる
+    -- file 単位の値なので、record へ写さず file に 1 つだけ持つ (各 record は file_id から引く)
     transcript_kind TEXT NOT NULL CHECK (transcript_kind IN ('main', 'subagent'))
 );
 
@@ -43,7 +43,11 @@ CREATE TABLE IF NOT EXISTS unreadable_file (
     path        TEXT PRIMARY KEY,
     project_dir TEXT NOT NULL,
     reason      TEXT NOT NULL,
-    observed_at TEXT NOT NULL
+    observed_at TEXT NOT NULL,
+    -- v7 (#1836): `file.transcript_kind` と同じ値。劣化シグナル (`store.anomalies`) を
+    -- mart と同じ母集団で数えるために持つ (読めない file は `file` 表に row を持たない —
+    -- 前回取り込んだ row も `ingest.sync` が消す)
+    transcript_kind TEXT NOT NULL CHECK (transcript_kind IN ('main', 'subagent'))
 );
 
 -- spine。lake の 1 行 = 1 record = 本表の 1 行。
@@ -269,21 +273,3 @@ CREATE TABLE IF NOT EXISTS user_prompt (
     cli_version         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (file_id, line_no)
 ) WITHOUT ROWID;
-
--- v5 (#1046, `slice_sessions`) から追加。既存 table は変更しない。
-
--- projection: assistant record の text block を 1 block = 1 行で持つ。session の
--- 最終 text (worker / orchestrator が最後に何を報告したか) を query 層が引くため。
--- **切り詰めずに全文で持つ** — 最終報告の末尾 (CL の URL・停止理由等) が述語の
--- 評価対象になりうるので、先頭抜粋では判定の材料が欠ける。空 text の block は
--- row を作らない (「最終 text」が空文字に化けないように)。
-CREATE TABLE IF NOT EXISTS assistant_text (
-    file_id  INTEGER NOT NULL,
-    line_no  INTEGER NOT NULL,
-    block_no INTEGER NOT NULL,
-    text     TEXT NOT NULL,
-    PRIMARY KEY (file_id, line_no, block_no)
-) WITHOUT ROWID;
-
--- `slice_sessions` は session id 名指しで spine を引く (他 mart は窓で切るので不要だった)。
-CREATE INDEX IF NOT EXISTS record_session_idx ON record (session_id);

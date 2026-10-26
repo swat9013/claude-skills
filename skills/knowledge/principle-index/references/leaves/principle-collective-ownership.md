@@ -1,10 +1,9 @@
 ---
 name: principle-collective-ownership
-description: コードの所有範囲・レビューの目的・設計判断の記録先を決めるときに適用する。レビューは設計改善と知識共有の場、WHY は ADR に残す。
+description: コードの所有範囲・レビューの目的を決めるときに適用する。特定個人しか触れないコードを作らず、レビューは設計改善と知識共有の場にする。
 ---
 
-# レビューは設計改善と知識共有の場
+# コードは全員で所有し、レビューは設計改善と知識共有の場にする
 
-- **Collective Code Ownership** (Beck『Extreme Programming Explained』)。特定個人しか触れないコードを作らない
+- **Collective Code Ownership** (Beck『Extreme Programming Explained』)。特定個人しか触れないコードを作らない — 知識が 1 人に偏ると、その人が抜けたときに保守が止まる。権限や秘匿のために触れる人をわざと絞る範囲は対象外
 - **コードレビューの主目的は設計改善と知識共有** — 代替案の議論を通じてメンバー間のスキル・ドメイン知識を伝播させる
-- **コードで WHAT、ADR で WHY** (Nygard, 2011)。設計判断には rationale と棄却案を残す

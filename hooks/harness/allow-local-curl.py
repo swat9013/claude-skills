@@ -22,8 +22,8 @@ curl は settings の ask 対象 (外部ホストへのデータ持ち出し / �
 invariant: 上の条件のどれか 1 つでも確証できない command は allow しない (各条件が 1 項目。
 loopback に見せかけた host — userinfo・subdomain・suffix の似せ綴り — も loopback と数えない)。
 
-fail-safe: 静的に安全と確証できないケースは一切 allow せず exit 0 (出力なし) で素通しし、
-settings の ask に委ねる。guard-* の deny は本 hook 追加後も従来どおり効く
+fail-safe: 静的に安全と確証できないケースは一切 allow せず passthrough() で痕跡を出して
+素通しし (ADR 0043)、settings の ask に委ねる。guard-* の deny は本 hook 追加後も従来どおり効く
 (deny > allow のため compound 内の危険操作は別 hook がブロックする)。
 
 allow-tmp-delete.py と同じ「確証なき場合は素通し」方針。shell tokenize と URL 解析の
@@ -148,7 +148,10 @@ def outpath_ok(path: str, roots: list[str]) -> bool:
         return False  # ~user 非対応
     if "$" in p or "*" in p or "?" in p:
         return False  # 未展開変数 / glob → 確証なし
-    real = os.path.realpath(p)
+    try:
+        real = os.path.realpath(p)
+    except (OSError, ValueError):
+        return False  # NUL・対の無い surrogate 等で解決できない path → 確証なし
     for r in roots:
         if real == r or real.startswith(r + os.sep):
             return True
@@ -300,7 +303,7 @@ def build_out_roots(cwd: str) -> list[str]:
     for c in candidates:
         try:
             roots.append(os.path.realpath(c))
-        except OSError:
+        except (OSError, ValueError):  # 解決できない root (cwd に NUL 等) は候補から外す
             continue
     return roots
 

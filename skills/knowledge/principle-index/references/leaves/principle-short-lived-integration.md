@@ -3,7 +3,7 @@ name: principle-short-lived-integration
 description: branch の寿命・リリースの頻度・展開方法を決めるとき、作業の土台をいつ最新化するか決めるときに適用する。差分も土台も短命に保つ側へ倒す。
 ---
 
-# 差分も土台も短命に保つ
+# 差分も土台も短命に保つ (trunk-based development)
 
 - **短命ブランチ (1-2 日) で小さく統合する** (scaled trunk-based development — trunkbaseddevelopment.com)。長命 feature branch を作らない (= 作った差分をどれだけ短命に保つか)
 - **土台は常に主幹の最新にする**: 着手時に最新を取り込み、安定版を狙って取り込む時期をずらさない。最新で問題が出たらその場で直す (見送って古い土台に留まらない)。fetch / pull のコストは払う前提で組む (= 土台をどれだけ新しく保つか)

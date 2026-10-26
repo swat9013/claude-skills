@@ -8,7 +8,7 @@ description: 実行中 project の transcript から手入力プロンプトを�
 
 **実行中の project** でユーザーが出した**フィードバック性のプロンプト** (却下・訂正・方針指示) から規範を拾い上げ、その project の `CLAUDE.md` / `.claude/rules/` へ反映する棚卸し skill。観測源は標準 transcript のうち**人間が手入力した prompt だけ**で、観測範囲は**cwd の repo に限る**。
 
-3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は文章の具体化のみ**):
+3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は `open_predicates` の解釈と文章の具体化のみ**):
 
 1. **決定的観測**: `scan_prompts` tool が transcript を走査し、手入力 prompt だけの mart JSON を出す (手順 1)。`select_candidates` tool が mart を長さ・repo・正規形の完全一致で絞り込み、読み順を確定した slice を出す (手順 2)。どちらの tool も「どれがフィードバックか」「どれが規範か」を**知らない**
 2. **LLM 具体化 (このメインコンテキスト)**: slice を読み、同一規範ごとに束ねた候補・反映 diff 案を証拠 anchor 付きで組み立てる。**判定はしない** (手順 3)
@@ -19,7 +19,7 @@ description: 実行中 project の transcript から手入力プロンプトを�
 ## スコープ (改変不可の境界)
 
 - **読み対象**: `~/.claude/projects/**/*.jsonl` (標準 transcript) のみ。走査・抽出は tool の責務で、LLM が transcript を直接読むことはしない。**cwd の repo の prompt だけ**を候補にする (手順 2 の repo 既定解決)
-- **書き対象**: **cwd repo の `CLAUDE.md` / `.claude/rules/<topic>.md`** のみ。どちらの器に置くかは**手順 4 で人間が選ぶ** (skill が器を決めるのは禁止。手順 5)。**AskUserQuestion での人間承認後にだけ**行う。変更の届け方 (作業ツリーを分けるか / branch を切るか / PR にするか) は実行 project の運用に従う
+- **書き対象**: **cwd repo の `CLAUDE.md` / `.claude/rules/<topic>.md`** のみ。どちらの器に置くかは**手順 4 で人間が選ぶ** (skill が器を決めるのは禁止。手順 5)。**AskUserQuestion での人間承認後にだけ**行う。変更の届け方 (作業ツリー / branch / PR) は実行 project の運用に従い、本 skill は決めない
 - **除外**: `~/.claude/CLAUDE.md` (global) / cwd repo 以外のファイル
 - **非依存**: claude-mem / dotfiles / herdr。すべて標準 transcript と cwd repo 内 file のみ
 
@@ -36,7 +36,7 @@ description: 実行中 project の transcript から手入力プロンプトを�
 - `days` で観測窓を上書き (省略時 30 日)
 - 返り値の `path` に mart JSON (`/tmp/inventory-values/mart-<timestamp>.json`) が出る。**mart 本体は返らない**
 - **mart は生データ** — bucket も発話型も持たない。返り値の `meta.excluded` に除外理由別の内訳が出るので、`no_prompt_source` が急増していたら CLI schema 変更を疑う (観測の劣化が silent zero にならない設計)。**「急増」の判定には前回 mart が要る**。手元に無ければ `total_prompts` との比を劣化判定の代用にせず、レポートに「前回 mart が無く判定不能」と書く
-- **`meta.store` は観測の劣化シグナル**。`broken_lines` (壊れた行) / `unreadable_files` (読めなかった file) / `unrecognized_nested_files` (main とも subagent とも決められない置き場にあり、取り込まれなかった transcript) が 0 でなければ**分母が欠けている** — その数だけ「観測されなかった prompt」があるので、手順 6 のレポートヘッダへ転記する
+- **`meta.store` の劣化シグナルは、mart の `contract` の注記が劣化シグナルと名指す key だけ**。これらが 0 でなければ**観測が劣化している**ので、手順 6 のレポートヘッダへ転記する (key ごとの意味は contract の注記が持つ)。contract の注記が劣化シグナルと名指さない key は、0 でなくても転記しない。注記は返り値に無いので、mart JSON を Read の `limit` 100 で先頭から読み、届かなければ `offset` を 100 行ずつ進めて (`meta` の次に `contract` が来る)、`contract.notes` の配列を閉じ括弧まで読んだら止める — mart 全体は千 prompt 規模なので読まない
 
 `meta.total_prompts` が 0 なら「観測不能」を報告して終了する (推測での穴埋めをしない)。
 
@@ -50,8 +50,8 @@ mart は**全 project 横断**で作られる (transcript の lake は project �
 
 - 返り値の `path` に slice JSON (`/tmp/inventory-values/candidates-<timestamp>.json`) が出るので、それを Read する
 - 読み順は **`text_chars` 降順 → timestamp → session_id → uuid** の全順序。`rank` の昇順に読む
-- `limit` で件数を打ち切れる。削られた件数は `meta.truncated_by_limit` に出る (silent cap にしない)
-- 各候補に `steering_pattern` (`correct` / `question` / `instruct` / `steer`) が付く。**`limit` で打ち切るときは `steering_patterns.priority_order` の順に拾う** — `correct` (訂正) は規範とのずれが露出した瞬間で、長さ順の打ち切りで落とすと最も惜しい帯。`rank` 自体は動かない (読み順と提示順の分離は手順 4 と同じ)
+- `limit` で件数を打ち切れる。打ち切りは text_chars 降順で当たり、削られた件数は `meta.truncated_by_limit` に出る (silent cap にしない)。`limit` の外に出た候補は slice に出ないので、優先帯で拾い直せない
+- 各候補に `steering_pattern` (`correct` / `question` / `instruct` / `steer`) が付く。`steering_patterns.priority_order` は `limit` で残った候補から作られ、**読了予算で足切りするときの読み順**に使う — `correct` (訂正) は規範とのずれが露出した瞬間で、長さ順に読んで落とすと最も惜しい帯。`rank` 自体は動かない (読み順と提示順の分離は手順 4 と同じ)
 - `steering_pattern` は表層語だけの決定的分類で、**取りこぼす**。`correct` でない候補を訂正でないと読まない (優先帯は拾い上げの補助であって分類の正解ではない)
 
 #### 2-1. project scope (既定)
@@ -136,7 +136,7 @@ slice の `candidates` を `rank` 順に読み、**同一規範ごとに束ね�
 |---|---|---|
 | **CLAUDE.md 常時ルール** | 全セッションで効く不変の規範 (作業方式 / 前提確認 / 禁止事項) | cwd repo の `CLAUDE.md` の該当節に追記 |
 | **`.claude/rules/<topic>.md`** | 特定ファイル群の編集時だけ効く細則 (`paths:` で発火条件を絞れるもの) | 既存 rules への追記、または `paths:` を宣言した新規 rules |
-| **器が決まらない** | 上 2 つのどちらでもない / 判断材料が足りない (例: 応答規範・skill 化した方がよいもの) | **反映しない**。レポートに器の候補と含意を残し、必要なら issue 起票を提案するところで止まる |
+| **器が決まらない** | 上 2 つのどちらでもない / 判断材料が足りない (例: 応答規範・skill 化した方がよいもの) | 手順 4 で人間が器を選べば、その器へ反映する。選ばなければ**反映しない** — レポートに器の候補と含意を残し、issue 起票を提案するところで止まる (保留) か見送る |
 
 分類の軸は「発火条件で絞れるか」の 1 点。絞れる規約を CLAUDE.md 直書きにすると無関係セッションで毎回ロードされ high-signal が薄まり、逆に `paths:` の無い rules は CLAUDE.md と等価になる。**`paths:` で発火条件を絞れる規範だけを rules 側の選択肢に載せ、絞れないものは CLAUDE.md 側の器を選ぶ。**
 
@@ -160,9 +160,9 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 ### 4. 人間判定 (候補ごとの AskUserQuestion)
 
-**候補 1 件 = 1 問**で提示する。選択肢は器の選択 (CLAUDE.md 常時ルール / `.claude/rules/<topic>.md` / 見送る) を並べる。
+**候補 1 件 = 1 問**で提示する。選択肢は、器が決まった候補なら「CLAUDE.md 常時ルール / `.claude/rules/<topic>.md` / 見送る」、`器が決まらない` の候補なら「CLAUDE.md 常時ルール / `.claude/rules/<topic>.md` / issue 起票の提案で止める / 見送る」を並べる (分類は LLM の提案にとどまり、器を選ぶのは人間)。どちらの候補でも、rules の選択肢は 3-4 の「`paths:` で発火条件を絞れる規範だけ」に当たるときだけ載せる。
 
-**提示順は出現回数の降順** (同数なら最終出現が新しい順)。slice の `rank` (文字数降順) は**読み順**であって提示順ではない — 長さは規範圧の強さを表さないが、再出現は表す。同数のときは `steering_pattern: correct` を含む束を先に出す (訂正はずれが露出した瞬間で、規範圧が最も高い出方)。
+**提示順は出現回数の降順**。同数なら `steering_pattern: correct` を含む束を先に出し (訂正はずれが露出した瞬間で、規範圧が最も高い出方)、それでも同点なら最終出現が新しい順。slice の `rank` (文字数降順) は**読み順**であって提示順ではない — 長さは規範圧の強さを表さないが、再出現は表す。
 
 **バッチ規約**: AskUserQuestion は 1 回あたり 4 問までなので、候補は **4 件ずつ**提示し、必要な回数だけ繰り返す。候補が多くて全件は回せないと判断した場合、**打ち切った件数と出現回数の範囲をレポートに明記する** (silent に切らない)。
 
@@ -174,7 +174,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 採用された候補のみ、**cwd repo の**反映先ファイルへ書く。**人間承認を得ていない write はゼロ**で、書き終えたら diff を提示する。
 
-**変更の届け方は実行 project の運用に従う** — 作業ツリーを分けるか・branch を切るか・PR にするかを本 skill は決めない。反映先 repo の規約に従って運ぶ。
+変更の届け方はスコープの節のとおり。
 
 **規範文を書く工程は `write-for-harness` に委ねる。** 本 skill の責務は観測・候補化・人間判定と反映先の指定までで、harness ファイルの文面規範を本 skill は持たない。invoke の前に `${CLAUDE_SKILL_DIR}/../write-for-harness/references/caller-contract.md` (呼び出し元向けの契約) を Read し、契約が定める事項は契約に従う。順序は次の 3 段で固定する:
 
@@ -182,7 +182,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 2. **invoke から戻るたびに、変更された path を 5-2 で照合する**
 3. **全候補の反映を終えるか 5-2 で止めたら、ここまでに書いた diff を提示する**
 
-- **反映するのは器が決まった候補だけ。** 器が決まらなかった候補はレポートに器の候補と含意を残すところで止める (「近いから CLAUDE.md に入れておく」は規範の所在を歪める)
+- **反映するのは手順 4 で人間が器を選んだ候補だけ。** issue 起票の提案で止めた候補はレポートに器の候補と含意を残すところで止める (「近いから CLAUDE.md に入れておく」は規範の所在を歪める)
 - 採否の説明が要るときは手順 6 のレポート summary 表を使う (再出現回数と証拠 anchor はそこに揃っている)
 - `write-for-harness` が反映を完了せずに終わった候補は、理由を問わず**承認済み・未反映**としてレポートと報告に残す (承認が黙って消えないようにする)
 
@@ -195,27 +195,20 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 #### 5-2. 委譲後の変更 path の照合
 
-委譲先が書き対象の境界 (スコープ節の cwd repo の `CLAUDE.md` / `.claude/rules/<topic>.md`。invoke 1 回につき反映先 1 本) を越えたかは `write-for-harness` から返らない。invoke ごとに、変更された path が許可した path だけかを git の事実で確かめる (5-1 の内容の制約は path では確かめられないので、この照合の外にある):
+invoke ごとに、契約の「委譲後の変更 path の照合」節の手順で照合する。この skill での値は次のとおり:
 
-1. invoke の直前に `git rev-parse HEAD` と `git status --porcelain --untracked-files=all` の出力を控え、status に載っていた path (前の候補で書いた file を含む) ごとに `git hash-object <path>` の値も控える
-2. 戻ったら (反映を完了したかを問わず) `git diff --name-only <控えた HEAD>` と `git status --porcelain --untracked-files=all` の path を合わせる。控えた status に載っていた path は、`git hash-object` の値が控えと変わっていない (file が消えていない) ものだけを除く — 前の候補で書いた file への範囲外の書き込みを見逃さないため。`--untracked-files=all` は、新規ディレクトリの中の file が `?? <dir>/` に畳まれて許可 path と一致しなくなるのを防ぐ
-3. 残った path を、その invoke で許可する path と比べる。許可するのは、args が既存 file の path ならその 1 本 (契約に従って rules の索引行を足す invoke の `CLAUDE.md` を含む)、`新規: rules` で起こす候補なら手順 5 の 1 で渡した作成先の 1 本だけで、それ以外の新規 file も対象外の path として扱う
-
-対象外の path が 1 本でもあれば、反映をそこで止める。委譲先が意図して書いた変更か事故かを本 skill は判定できないので、対象外の path は元に戻さず判断を人間へ返す:
-
-- 対象外の path の一覧を逐語で報告する
-- その候補と、まだ invoke していない残りの候補を**承認済み・未反映**として残す
-- 報告に「次に人間が行う手順」を添える: 対象外の path の差分を確認して残すか破棄するかを決める。止めた候補の許可 path に差分が出ていれば、それも残すか破棄するかを決める (残したまま再 invoke すると同じ規範を二重に書くので、残すならその候補は再 invoke から外す)。決めた後に未反映の候補を再 invoke する
+- **許可 path**: args が既存 file の path ならその 1 本 (契約に従って rules の索引行を足す invoke の `CLAUDE.md` を含む)、`新規: rules` で起こす候補なら手順 5 の 1 で渡した作成先の 1 本だけ
+- **止めたときの記録先**: 契約が残させるものを、手順 6 のレポートと報告に残す
 
 ### 6. Markdown レポート組み立て
 
 `/tmp/inventory-values/report-<timestamp>.md` に mart / slice と並置で書く。以下の**固定 schema**:
 
-1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (`meta.store` の 0 でない項目。すべて 0 なら「劣化なし」と明記)
+1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (手順 1 の `meta.store` の劣化シグナルのうち 0 でないもの。すべて 0 なら「劣化なし」と明記)
 2. **除外の明示**: slice の `meta.excluded` (`below_min_chars` / `other_repo` / `boilerplate`) と `meta.band_histogram` を転記し、「短文帯 N 件・他 repo N 件・定型 N 件を意図的に対象外にした」ことを明記する。`meta.truncated_by_limit` が非 0 ならその件数も出す
 3. **定型一覧**: `boilerplate_forms` を件数付きで転記し、拾い戻した候補があればどれかを書く (拾い戻しゼロならその旨を書く。読んだことが復元できる形にする)
-4. **候補 section** (器の分類別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 規範の言い換え / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / 保留)。承認済み・未反映の候補は「停止理由」の行を足し、`write-for-harness` が返した文を逐語で書く。5-2 の照合で止めた候補には、対象外の path の一覧と次に人間が行う手順を書く
-5. **informational**: 4 発話型のどれにも当てはまらず候補にしなかった slice record と、その理由 + 読了 provenance
+4. **候補 section** (器の分類別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 規範の言い換え / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / 保留。保留は `器が決まらない` の候補を人間が issue 起票の提案で止めたもの)。承認済み・未反映の候補は「停止理由」の行を足し、`write-for-harness` が返した文を逐語で書く。5-2 の照合で止めた候補には、対象外の path の一覧と次に人間が行う手順を書く
+5. **informational**: 次の 3 種の slice record を、それぞれ理由付きで載せる + 読了 provenance — 4 発話型のどれにも当てはまらず候補にしなかったもの / 貼り付け境界で規範を復元できなかったもの / 読了予算で足切りしたもの
 6. **summary 表**: 番号 × 出現回数 × 器の分類 × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形。採用した候補の判定結果列には、手順 5 の結果 (反映済み / 承認済み・未反映) を書く
 
 冒頭に**束ね漏れ許容の前提** (3-2) を 1 行入れる。「網羅した一覧」と誤読させない。

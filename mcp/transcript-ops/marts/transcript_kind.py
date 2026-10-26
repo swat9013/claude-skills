@@ -2,9 +2,12 @@
 
 store は `file.transcript_kind` に `main` / `subagent` を持つ (#1456。混ぜてはいけない
 理由は store/schema.sql の同列の注記)。**既定は main だけ**で、subagent を含めるかを
-呼び出し側が選べるのは permissions / prompts の mart だけ。両 mart は本 module の
-`kinds_param` が返す JSON 配列を SQL の `:transcript_kinds` に渡す。他の mart
-(invocations / overhead / sessions) は選択肢を持たず、SQL に `'main'` を直接書く。
+呼び出し側が選べるのは permissions の mart だけ。permissions と、main に固定した
+prompts の mart / slice は、本 module の `kinds_param` が返す JSON 配列を SQL の
+`:transcript_kinds` に渡す。他の mart
+(invocations / overhead) は選択肢を持たず、SQL に `'main'` を直接書く。
+meta.store の劣化シグナル (`store.anomalies`) の集計にも、その成果物と同じ母集団を
+本 module の値で渡す。
 """
 
 from __future__ import annotations

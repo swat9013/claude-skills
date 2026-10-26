@@ -8,7 +8,7 @@ description: install 済みの skill / MCP を直近 30 日の transcript invoca
 
 install 済みの skill / MCP を **transcript の tool_use 実績**と突合し、単位別に削除候補 / 見直し候補 / 保持を LLM に**候補提示までさせて**、判定は人間の判断に残す棚卸し skill。
 
-3 段階モデル (原則: **決定的にできる推論は tool へ、意味判断だけを LLM へ、判定は人間に**):
+3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は `open_predicates` の解釈と文章の具体化のみ**):
 
 1. **決定的観測 + 決定的ルール**: `scan_invocations` tool が分母列挙 + 抜粋 sampling + 提示分母 + token 経済を出し、機械判定可能な条件を評価して `rule_candidates` (`bucket_candidate` / `rule_fired` / `rule_inputs` / `open_predicates` / `near_misses`) を mart に書く。**tool は bucket を確定しない**
 2. **LLM 具体化 (このメインコンテキスト)**: `open_predicates` に挙がった条件だけを判断して bucket を確定し、証拠 anchor 付き Markdown レポートを組み立てる。**採否は決めない**

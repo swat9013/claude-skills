@@ -12,7 +12,7 @@ steering の inventory 系が使う transcript 観測を一元化し、**on-disk
 tool 単位に保つ。
 
 構成: 観測契約を持つ tool (`scan_permissions` / `scan_prompts` /
-`select_candidates` / `scan_invocations` / `scan_overhead` / `slice_sessions`) は
+`select_candidates` / `scan_invocations` / `scan_overhead`) は
 store への query (`marts/`)、`find_invocations` (直読み残置) と `query` (read-only ad-hoc) と
 `sum_stage_usage` (監査した transcript 1 件の直読み) は `commands/`。
 
@@ -37,7 +37,7 @@ mart の `contract.notes`) にする (ADR 0031: context 常駐コストの削減
 
 invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
 
-1. 登録する tool の顔ぶれは固定 (追加は消費者の実在を条件とする — これはレビューで見る。設計 doc の不変条件 (7))
+1. 登録する tool の顔ぶれは固定 (追加と存続は消費者の実在を条件とし、消費者が消えた tool は撤去する — これはレビューで見る。設計 doc の不変条件 (7))
 2. tool の返り値は path (または paths) + meta と、本文を含まない要約 (件数・index など) だけで、
    mart / slice の本文 (candidates 等) を載せない
 3. commands / marts が投げる domain error はすべて `ANTICIPATED_ERRORS` に入り、文言が LLM へ届く
@@ -72,7 +72,6 @@ from marts.invocations import present as invocations_mart  # noqa: E402
 from marts.overhead import present as overhead_mart  # noqa: E402
 from marts.permissions import present as permissions_mart  # noqa: E402
 from marts.prompts import present as prompts_mart  # noqa: E402
-from marts.sessions import present as sessions_slice  # noqa: E402
 from marts.transcript_kind import TranscriptKindRejected  # noqa: E402
 
 SERVER_NAME = "transcript-ops"
@@ -101,12 +100,12 @@ server = MCPServer(name=SERVER_NAME, version=SERVER_VERSION, instructions=INSTRU
 ANTICIPATED_ERRORS = (
     prompts_mart.RepoScopeUnresolved,
     overhead_mart.RepoScopeUnresolved,
-    sessions_slice.SessionIdsRejected,
     query_mod.QueryRejected,
     query_mod.QueryFailed,
     stage_usage_mod.StageUsageRejected,
     SyncLockTimeout,
     TranscriptKindRejected,
+    prompts_mart.ProvenanceWindowMissing,
 )
 
 
@@ -170,7 +169,7 @@ def scan_permissions(
             sibling の settings.local.json は Claude Code が読まない層なので足さ
             ない)。既定 ~/.claude/settings.json
         config_dir: Claude Code config dir (plugin hooks の分母源)。既定 ~/.claude
-        now: ISO timestamp。観測窓の起点を固定する (再現用)
+        now: ISO timestamp。観測窓の終端を固定する (再現用)
 
     `paths` は読む順に並ぶ。各ファイルの用途・derived view の意味論・rule カタログ・
     読み方の注記は **`00-meta.json` の `contract` が正本**。
@@ -208,7 +207,7 @@ def scan_invocations(
         transcripts_dir: transcript lake。既定 ~/.claude/projects
         config_dir: Claude Code config dir。既定 ~/.claude
         claude_json: MCP server 分母源。既定 ~/.claude.json
-        now: ISO timestamp。観測窓の起点を固定する (再現用)
+        now: ISO timestamp。観測窓の終端を固定する (再現用)
 
     読み方の注記と rule カタログは **mart の `contract` が正本**。
     """
@@ -226,7 +225,6 @@ def scan_invocations(
 @tool()
 def scan_prompts(
     days: int = prompts_mart.DEFAULT_DAYS,
-    transcript_kind: str = "main",
     output_dir: str = str(prompts_mart.DEFAULT_OUTPUT_DIR),
     transcripts_dir: str = str(prompts_mart.DEFAULT_TRANSCRIPTS_DIR),
     text_limit: int = prompts_mart.DEFAULT_TEXT_LIMIT,
@@ -236,20 +234,17 @@ def scan_prompts(
 
     Args:
         days: 観測窓 (日)。既定 30
-        transcript_kind: 数える transcript。main (main session だけ) / all
-            (subagent を含める)。既定 main
         output_dir: 出力先。既定 /tmp/inventory-values。分母の違う棚卸し
             (engineering-values) は別 dir に分ける
         transcripts_dir: transcript lake。既定 ~/.claude/projects
         text_limit: 1 prompt あたりの mart 保存文字数上限。既定 4000
             (store は全文を持つ。`select_candidates` の候補は切り詰めない)
-        now: ISO timestamp。観測窓の起点を固定する (再現用)
+        now: ISO timestamp。観測窓の終端を固定する (再現用)
 
     読み方の注記は **mart の `contract` が正本**。
     """
     return prompts_mart.run_scan_prompts(
         days=days,
-        transcript_kind=transcript_kind,
         output_dir=output_dir,
         transcripts_dir=transcripts_dir,
         text_limit=text_limit,
@@ -274,8 +269,7 @@ def select_candidates(
 
     Args:
         mart: provenance。`scan_prompts` が返した mart JSON の path を渡すと、
-            その観測窓 (`days` 相当) と数える transcript (`transcript_kind`) を
-            再利用して候補を絞る。省略時は `days` から
+            その観測窓 (始端と終端) を再利用して候補を絞る。省略時は `days` から
             窓を作る (既定 30) — mart の事前生成は不要
         min_chars: 候補に含める text_chars の下限。既定 60
         repo: 完全一致で絞る repo 識別子
@@ -286,7 +280,8 @@ def select_candidates(
         days: `mart` 省略時の観測窓 (日)。既定 30 (`mart` を渡した場合は無視され、
             その meta の窓を使う)
         transcripts_dir: transcript lake。既定 ~/.claude/projects
-        now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
+        now: ISO timestamp。出力ファイル名の stamp を固定する。`mart` 省略時は
+            観測窓の終端も固定する (再現用)
 
     読み方の注記と rule カタログは **slice の `contract` が正本**。
     """
@@ -321,7 +316,7 @@ def scan_overhead(
         all_repos: repo 絞り込みを外して全 project 横断で見る
         output_dir: 出力先。既定 /tmp/inventory-claude-md
         transcripts_dir: transcript lake。既定 ~/.claude/projects
-        now: ISO timestamp。観測窓の起点を固定する (再現用)
+        now: ISO timestamp。観測窓の終端を固定する (再現用)
 
     読み方の注記は **mart の `meta.notes` / `meta.token_estimator` が正本**。
     """
@@ -357,32 +352,6 @@ def find_invocations(
     return find_invocations_mod.run(
         skill=skill,
         limit=limit,
-        transcripts_dir=transcripts_dir,
-        output_dir=output_dir,
-        now=now,
-    )
-
-
-@tool()
-def slice_sessions(
-    session_ids: list[str],
-    transcripts_dir: str = str(sessions_slice.DEFAULT_TRANSCRIPTS_DIR),
-    output_dir: str = str(sessions_slice.DEFAULT_OUTPUT_DIR),
-    now: str | None = None,
-) -> dict[str, Any]:
-    """名指しした session の tool_use 時系列 / deny / 最終 text を slice に書き、path を返す。
-
-    Args:
-        session_ids: 対象 session id の列。見つからない id は error にせず
-            `meta.missing_session_ids` に出る
-        transcripts_dir: transcript lake。既定 ~/.claude/projects
-        output_dir: 出力先。既定 /tmp/dispatcher-debrief
-        now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
-
-    読み方の注記は **slice の `meta.notes` が正本**。
-    """
-    return sessions_slice.run(
-        session_ids=session_ids,
         transcripts_dir=transcripts_dir,
         output_dir=output_dir,
         now=now,

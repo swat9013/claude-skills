@@ -64,7 +64,7 @@ repo に必要な機構だけ設置する。3 点すべてが要る repo は少�
 - `SessionStart` は resume / clear / compact でも発火する。初期化 script は冪等ガード必須 (本 skill の template は `.git` 側 marker で実装済み)
 - **`$CLAUDE_PROJECT_DIR` は event で指す先が違う** (実証): `SessionStart` は**セッションの project root** (= `--worktree` 起動ならその worktree)、`PostToolUse:EnterWorktree` は**起動ディレクトリのまま** (worktree に切り替わっても変わらない)。一方 hook プロセスの cwd は 3 経路とも対象 worktree。script の path は両方の root に存在する場所 (= `sparsePaths` に含めた `.claude/` 配下) を選ぶ。片方にしか無い場所に置くと、その経路だけ `/bin/sh: ...: No such file` で失敗する (UI に非ブロッキングエラーが 1 行出るだけ。実証)
 - `SubagentStart` の worktree は spawn ごとに新規作成されるため、marker 方式の冪等ガードは効かない (毎 spawn で初期化が走る)。既定の登録には含めない — 下の手順 5 を参照
-- project scope の hook は **workspace trust 承認後にのみ動く** (`--permission-mode bypassPermissions` は例外)。未承認ディレクトリでは `claude --worktree` 自体が "Workspace trust not yet accepted" で失敗する。headless (`-p`) では `SessionStart` は発火しない (`PostToolUse` は発火する)
+- project scope の hook は **workspace trust 承認後にのみ動く** (`--permission-mode bypassPermissions` は例外)。未承認ディレクトリでは `claude --worktree` 自体が "Workspace trust not yet accepted" で失敗する。headless (`claude -p`) でも `SessionStart` は発火する (Claude Code 2.1.303 で確かめたのは、plugin の hook と project scope の hook を `claude -p` で、plugin の hook を `claude -p --worktree` で起動した 3 通り)。project scope の hook を `claude -p --worktree` で起動する組み合わせ・他の版・`--bare` などの起動オプションでの発火は未確認。`PostToolUse` は発火する
 - `WorktreeCreate` hook (置き換え型): worktree 作成時に発火 (`EnterWorktree` 経由でも発火する。実証済み)。matcher 非対応。stdin JSON の実フィールドは `session_id` / `transcript_path` / `cwd` / `hook_event_name` / `name` (`EnterWorktree` 経由では `prompt_id` が加わる)。stdout に worktree path を返さないと作成自体が失敗する (フォールバック無し)。この経路では `.worktreeinclude` / `sparsePaths` / `symlinkDirectories` が 3 つとも適用されない (実証)
 - 初期セットアップの自動実行は公式サポートなし (「手動で初期化せよ」のみ)。本 skill の hook 連鎖はこのギャップを埋める
 - 上記以外の仕様詳細は公式 doc + 実証で裏取りしてから使う。未裏取りの詳細に依存する書き方をしない
@@ -176,7 +176,7 @@ git check-ignore -v .worktreeinclude .claude/scripts/worktree-setup.sh
 ./.claude/scripts/worktree-setup.sh
 ```
 
-続けて実際に worktree を 1 個作り、中身を確認する (`claude -p "ok とだけ出力して" --worktree probe`。project hook は workspace trust 承認後にしか動かないため、hook の発火確認は対話セッションで行う)。
+続けて実際に worktree を 1 個作り、中身を確認する (`claude -p "ok とだけ出力して" --worktree probe`。project hook は workspace trust 承認後にしか動かないため、承認済みのディレクトリで実行する)。下の初期化 marker が無ければ、project scope の hook を `claude -p --worktree` で起動する組み合わせは未確認なので、対話セッションで `claude --worktree probe` を起動して marker ができるかを確かめ、headless での hook の不発か script の失敗かを切り分ける。
 
 ```bash
 WT=.claude/worktrees/probe

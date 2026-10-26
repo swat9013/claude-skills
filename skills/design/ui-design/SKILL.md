@@ -18,19 +18,19 @@ description: >-
 
 ## 1. 置き場を決める
 
-- 既存の設計の置き場は、対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」が案内するものだけを見る。新しく作る設計は、既存の設計の置き場と同じ並び (案内が無ければ `docs/design/<name>/`) に作る。以降の手順と `references/` の `<置き場>` は、ここで決めた置き場を指す
+- 既存の設計の置き場は、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」を Read し、その引き方で引く。新しく作る設計は、既存の設計の置き場と同じ並び (案内が無ければ `docs/design/<name>/`) に作る。以降の手順と `references/` の `<置き場>` は、ここで決めた置き場を指す
 - `<name>` は設計対象の名前 (kebab-case)。既存ディレクトリと重複したら、それが同じ対象の旧設計か別対象かをユーザーに確かめる — 同じ対象なら「5. 既存設計を更新する」の側
 - 同じ対象の `sud-design` 成果物 (`usecases.md` / `domain.puml`) が既にあれば Read して入力にする。**無くても進める** — ユースケースは本 skill が画面インベントリの段で聞き出す
 
-置き場が決まったら、「2.」「5.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引の読み方に従って今回の設計に当たる leaf を読む。以降の手順が `principle-*` を名指ししたときも、索引の読み方に従う。本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
+置き場が決まったら、「2.」「5.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引の読み方に従って今回の設計に当たる leaf を読む。以降の手順が `principle-*` を名指ししたときも、索引の読み方に従う。以降の本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
 
 ## 2. 設計セッションを進める
 
-各段は、下記の確定項目が埋まるまで質問を続けてから次の段へ進む。質問はまとめて出し、ユーザーの回答が要らない事実 (既存コード・既存 doc・stack の実態) は自分で調べて埋める。決定するのはユーザー、事実を集めるのは自分。段の順序は固定。確定項目に条件の羅列が出たら直交する規則へ畳めないか、手段 (実装形式・既製品) を画面の要求より先に決めていないかを `principle-design-derivation-order` で見る。
+各段は、下記の確定項目が埋まるまで質問を続けてから次の段へ進む。質問はまとめて出し、ユーザーの回答が要らない事実 (既存コード・既存 doc・stack の実態) は自分で調べて埋める。決定するのはユーザー、事実を集めるのは自分。段の順序は固定。確定項目に条件の羅列が出たら、条件を減らして 1 本にできないか、残る条件を直交する規則へ畳めないかを `principle-orthogonal-rules` で、手段 (実装形式・既製品) を画面の要求より先に決めていないかを `principle-design-derivation-order` で見る。
 
 **画面インベントリ** — 確定項目:
 
-- 画面の一覧と、画面ごとの目的 (誰が何をしに来るか)。`usecases.md` があるならユースケースと画面の対応。画面名は `principle-ubiquitous-naming` に従って付ける
+- 画面の一覧と、画面ごとの目的 (誰が何をしに来るか)。`usecases.md` があるならユースケースと画面の対応。画面名は `principle-intention-revealing-names` に従って付ける
 - 画面ごとに扱う情報要素 (表示するもの・入力するもの)
 - 画面に見えて画面でないもの (modal / drawer / toast) の区別。これらは遷移の宛先になるかで決まる
 
@@ -47,7 +47,7 @@ description: >-
 
 **component 分解 + state 網羅** — 確定項目:
 
-- component の一覧と、どの画面のどの領域に現れるか。**どの画面からも参照されない component は理由を確かめる** (根拠が無ければ落とす — `principle-deletability` の「導入は価値の立つ項目だけに絞る」)。component 名は `principle-ubiquitous-naming` に従って付ける。似た component を共通化して 1 つにするか画面ごとに分けるかは `principle-structure-simplicity` と `principle-state-coupling-complexity-code` で案を比べ、結果を一覧に反映する (後者の「状態」は component が保持する可変データを指し、下表の表示 state ではない)
+- component の一覧と、どの画面のどの領域に現れるか。**どの画面からも参照されない component は理由を確かめる** (根拠が無ければ落とす — `principle-deletability` の「導入は価値の立つ項目だけに絞る」)。component 名は `principle-intention-revealing-names` に従って付ける。似た component を共通化して 1 つにするか画面ごとに分けるかは `principle-structure-simplicity` と `principle-state-coupling-complexity-code` で案を比べ、結果を一覧に反映する (後者の「状態」は component が保持する可変データを指し、下表の表示 state ではない)
 - component ごとの必須 state (下表)。表に無い component は必要な state を列挙する
 - component が受け取る情報 (props 相当) の概要。実装の型は書かない
 
@@ -115,7 +115,7 @@ README / screens.md / navigation.puml / components.md / tokens.md の 5 成果�
 **agent が自動でロードする UI 設計ドキュメントの形式は存在しない** (2026-09 時点。Figma / Storybook / shadcn / DESIGN.md を含む first-party 成果物のいずれも「読ませるのは利用者の仕事」と一次資料が明言する)。したがって届ける経路は明示的に作る:
 
 1. `<置き場>/README.md` を索引として置く (「3.」で作る)
-2. 新しく作った置き場を、対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」の entry (置き場・縛る対象・索引) に足す。縛る対象 (画面を実装する path) はユーザーに確かめ、節が無ければ節ごと足す — 実装とレビューの読み手は、この節が案内する設計 doc だけを読む
+2. 新しく作った置き場を、対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」の entry (置き場・適用範囲・索引。列の読まれ方は「1.」で読んだ leaf の「設計 doc の置き場の引き方」に従う) に足す。適用範囲 (画面を実装する path) はユーザーに確かめ、節が無ければ節ごと足す — 節に載らない設計 doc は、実装とレビューの読み手に届かない
 
 ## 5. 既存設計を更新する
 

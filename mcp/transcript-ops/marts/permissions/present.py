@@ -49,6 +49,9 @@ from . import contract, rules, settings as settings_mod, udf
 
 QUERY_PATH = Path(__file__).resolve().parent / "query.sql"
 
+# query.sql が読む projection。meta.store の ts 欠損はこの集合の中でだけ数える (#2110)
+READ_PROJECTIONS = ("tool_use", "hook_firing")
+
 DEFAULT_TRANSCRIPTS_DIR = Path("~/.claude/projects").expanduser()
 DEFAULT_GLOBAL_SETTINGS = Path("~/.claude/settings.json").expanduser()
 DEFAULT_CONFIG_DIR = Path("~/.claude").expanduser()
@@ -125,7 +128,7 @@ def _scope_roots(section: str, repo_root: Path) -> str:
 
 
 def _load_scoped_events(conn: sqlite3.Connection, statements: dict[str, str],
-                        cutoff_epoch: float, scope_roots: str,
+                        cutoff_epoch: float, now_epoch: float, scope_roots: str,
                         transcript_kinds: str) -> list[str]:
     """section の実行を積み、**そこに現れた tool 名を返す**。
 
@@ -138,7 +141,8 @@ def _load_scoped_events(conn: sqlite3.Connection, statements: dict[str, str],
     conn.execute(
         f"INSERT INTO scoped_event ({', '.join(SCOPED_EVENT_COLUMNS)}) "
         + statements["refined_event"],
-        {"cutoff_epoch": cutoff_epoch, "scope_roots": scope_roots,
+        {"cutoff_epoch": cutoff_epoch, "now_epoch": now_epoch,
+         "scope_roots": scope_roots,
          "transcript_kinds": transcript_kinds},
     )
     return [row["tool"] for row in conn.execute(statements["observed_tool"])]
@@ -890,7 +894,7 @@ def _summarize_settings_sources(
 
 def build_section(
         conn: sqlite3.Connection, statements: dict[str, str], request: Request,
-        section_name: str, cutoff_epoch: float, split_epoch: float,
+        section_name: str, cutoff_epoch: float, now_epoch: float, split_epoch: float,
         transcript_kinds: str) -> tuple[dict, list[settings_mod.PermissionEntry]]:
     """section 1 つ分の集計と、その section の設定 entry (rule 評価の入力)。
 
@@ -900,7 +904,7 @@ def build_section(
     entries = settings_mod.collect_permission_entries(
         section_name, request.repo_root, request.global_settings)
     observed_tools = _load_scoped_events(
-        conn, statements, cutoff_epoch,
+        conn, statements, cutoff_epoch, now_epoch,
         _scope_roots(section_name, request.repo_root), transcript_kinds)
 
     # global 層の突合を**先に**済ませる (#513)。順序が逆だと permission_entry の
@@ -954,6 +958,7 @@ def build(request: Request) -> dict:
     now = resolve_now(request.now)
     cutoff = now - dt.timedelta(days=request.days)
     cutoff_epoch = cutoff.timestamp()
+    now_epoch = now.timestamp()
     # 変化点フラグ用の固定二分点 (#584)。section・entry を問わず 1 点で、mart の
     # meta にも出す (どこで切ったかが分からないと前後半の内訳を検証できない)
     midpoint = cutoff + (now - cutoff) / 2
@@ -970,13 +975,14 @@ def build(request: Request) -> dict:
         conn.execute(statements["create_permission_entry"])
         conn.execute(statements["create_covered_tool"])
         conn.execute(statements["create_covered_tool_index"])
-        anomalies = store_mod.anomalies(conn)
+        anomalies = store_mod.anomalies(conn, transcript_kinds, READ_PROJECTIONS)
         firings = [dict(row) for row in
                    conn.execute(statements["hook_firings"],
                                 {"cutoff_epoch": cutoff_epoch,
+                                 "now_epoch": now_epoch,
                                  "transcript_kinds": transcript_kinds})]
         built = {
-            name: build_section(conn, statements, request, name, cutoff_epoch,
+            name: build_section(conn, statements, request, name, cutoff_epoch, now_epoch,
                                 split_epoch, transcript_kinds)
             for name in request.sections()
         }
@@ -1017,6 +1023,7 @@ def build(request: Request) -> dict:
             "store": {
                 **anomalies,
                 "unrecognized_nested_files": sync_report.unrecognized_nested_files,
+                "workflow_journal_files": sync_report.workflow_journal_files,
                 "synced_files": sync_report.ingested_files,
                 "unchanged_files": sync_report.unchanged_files,
                 "removed_files": sync_report.removed_files,

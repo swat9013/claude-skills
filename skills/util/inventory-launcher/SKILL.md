@@ -19,10 +19,14 @@ herdr session 内で inventory 系 3 skill をそれぞれ独立した Claude Co
 
 ### 1. 起動 script を撃つ
 
-target は user が書いたまま (空白区切りでも comma 区切りでも script が受ける) 渡す。省略時は 3 target 全部。**この 1 行を literal で撃つ** — path を変数や `${CLAUDE_SKILL_DIR}` へ置き換えると sandbox の除外指定と照合されず、script 内の herdr が socket へ届かないまま落ちる。
+target は user が書いたまま (空白区切りでも comma 区切りでも script が受ける) 渡す。省略時は 3 target 全部。
+
+script の path は、この skill の base directory (読み込み時に示される絶対 path) の先頭の `$HOME` を `~` に戻して作る。**その literal な tilde path を単文で撃つ** — `cd` / `VAR=x` の前置・パイプ・ループを付けず、path と targets だけの 1 コマンドにする。
+
+sandbox の除外指定は `~` で始まる path で書かれていて、照合は rule 側の `~` を展開しない。絶対 path のままでも、変数や `${CLAUDE_SKILL_DIR}` に置き換えても、複合コマンドにしても除外指定と照合されず、script 内の herdr が socket へ届かないまま落ちる。
 
 ```
-~/.claude/skills/swat-skills/skills/util/inventory-launcher/scripts/launch-inventory-panes.py [targets]
+<base directory の先頭の $HOME を ~ に戻した path>/scripts/launch-inventory-panes.py [targets]
 ```
 
 script は pane の分割・label 付与・セッション起動・agent の検出待ちまでを行い、結果を JSON で返す。前提 (herdr session の内側に居るか / 連携 hook の版 / daemon への疎通 / `claude` の実在) が 1 つでも欠けたら**どの target も起動せず** exit 1 で止まる。

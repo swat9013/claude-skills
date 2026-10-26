@@ -5,8 +5,9 @@
 API と schema をここに固定する。
 
 ```
-lake ~/.claude/projects/<project>/*.jsonl                        (正本・main)
-     ~/.claude/projects/<project>/<session>/subagents/**/*.jsonl  (正本・subagent)
+lake ~/.claude/projects/<project>/*.jsonl              (正本・main)
+     ~/.claude/projects/<project>/<session>/**/*.jsonl  (正本・subagent は adapter の
+                                                         session_file_kind が決めた file だけ)
   │  ingest.py — on-disk 形式を知る唯一の層 (+ adapter/transcript.py)
   ▼
 ~/.cache/claude-transcript-ops/store-v<N>.sqlite3   (0700)
@@ -36,9 +37,15 @@ store file 名は `store-v<N>-<lake digest>.sqlite3` で、lake の digest が 1
 互いの row を消し合う (設計の正本は設計 doc の [不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査))。
 
 `SyncReport`: `ingested_files` / `unchanged_files` / `removed_files` /
-`unreadable_files` / `unrecognized_nested_files` / `records` / `broken_lines`。
+`unreadable_files` / `unrecognized_nested_files` / `workflow_journal_files` / `records` /
+`broken_lines`。
 **`unreadable_files` と `broken_lines` は 0 でない値が出ること自体が観測劣化の
-シグナル**なので、mart meta へそのまま出す (silent skip の可視化)。
+シグナル**なので、mart meta へ出す (silent skip の可視化)。`SyncReport` は lake 全体の
+件数で、mart meta の劣化シグナルは `store.anomalies` が mart と同じ母集団
+(`transcript_kind`) に絞って数え直す。`unrecognized_nested_files` は main にも
+subagent にも属さないので、`SyncReport` の値を母集団を問わずそのまま出す。差分 sync の
+件数 (`synced_files` = `SyncReport.ingested_files` / `unchanged_files` / `removed_files`) も
+劣化シグナルではないので、`SyncReport` の lake 全体の値のまま出す。
 
 ## schema
 
@@ -47,11 +54,10 @@ store file 名は `store-v<N>-<lake digest>.sqlite3` で、lake の digest が 1
 | 表 | 単位 | 用途 |
 |---|---|---|
 | `file` | transcript 1 file | fingerprint `(mtime_ns, size_bytes)` / `broken_lines` / `transcript_kind` (main / subagent。母集団の選択の機構) |
-| `unreadable_file` | 読めなかった file | 「存在しない」と「読めない」を分ける |
+| `unreadable_file` | 読めなかった file | 「存在しない」と「読めない」を分ける。`transcript_kind` を持ち、劣化シグナルを母集団で絞る |
 | `record` (spine) | lake の 1 行 | 全 record type が 1 行入る (I4)。`ts_epoch` が窓判定の機構 |
 | `tool_use` | assistant の tool_use block | tool 実行 + **ペア済みの結果** |
 | `hook_firing` | hook 系 attachment | fire 実績 |
-| `assistant_text` | assistant の text block | session の最終 text (全文。`slice_sessions`) |
 
 - **窓は `record.ts_epoch` で切る。`NULL` (ts 欠損) をどちらへ倒すかは各 mart の
   WHERE 句が書く** (ADR 0013 の線を SQL 側で維持)。実測では tool_use を載せる
@@ -86,17 +92,21 @@ store の `store_meta` と突き合わせ、不一致なら drop & rebuild へ�
 projection を足すとき:
 
 1. `schema.sql` に表を足す
-2. `store.PROJECTION_TABLES` に足す (file 再取得時の全置換と、ts 欠損の劣化シグナルの
-   分母がこの表を見る)
+2. `store.PROJECTION_TABLES` に足す (file 再取得時の全置換と、`store.anomalies` が
+   受け付ける projection の名前がこの表を見る)
 3. `ingest._parse_lines` に分岐を足す (読む on-disk key は
    `format_vocabulary.ON_DISK_NAMES` へ追記する — 追記漏れは gate の見逃しになる)
 4. `store.STORE_VERSION` を上げる
 5. `tests/test_store_ingest.py` の `DUMPED_TABLES` に足す (I1 / I2 の比較対象に入る)
+6. その表を読む mart の `READ_PROJECTIONS` に足す (足さないと、その表の ts 欠損が
+   その mart の `ts_missing_events` から漏れる)
 
-**観測の劣化シグナル (`meta.store`) は 2 つ目の消費者が出たら store 側へ引き上げる。**
-現在は `marts/permissions/query.sql` の `store_anomalies` + `SyncReport` を
-`present.py` が組み立てている。どの mart も同じ数字を出すべきなので、#497 以降で
-2 つ目が要るとわかった時点で store の関数へ寄せる (SQL をコピーしない)。
+**`meta.store` のうち母集団で絞る値 (壊れた行・読めない file・ts 欠損と、取り込み件数・重複 uuid の組) は store の関数 1 本 (`store.anomalies`) が出す。** `unrecognized_nested_files`・`workflow_journal_files` と差分 sync の件数は `SyncReport` の値をそのまま出す。どれを劣化シグナルと読むかは各 mart の contract の注記が名指す (重複 uuid は劣化シグナルではない)。
+どの mart も同じ数え方で出すべきなので、mart ごとに SQL をコピーしない。呼び出し側は
+自分の母集団 (`marts.transcript_kind.kinds_param` の値) と、自分が読む projection の
+集合 (mart の `READ_PROJECTIONS`。ad-hoc の query は `PROJECTION_TABLES` 全件) を必ず
+渡す。ts 欠損はその集合の projection を持つ record だけで数える — mart が読まない
+projection の欠損はその mart の窓を通過しないので、数えると無傷の観測を劣化と読ませる。
 
 ## 不変条件の実装の注記
 
@@ -123,14 +133,21 @@ drop & rebuild は lock を握ったまま走るので、前方一致だと stor
 
 ## main と subagent
 
-`<project>/*.jsonl` は main、`<project>/<session>/subagents/` 配下は subagent で、subagent の
+`<project>/*.jsonl` は main、`<project>/<session>/` の下は adapter の `is_subagent_transcript` に当たる file が subagent で、subagent の
 record は親の `session_id` を持つ (session 単位の mart は `transcript_kind` で母集団を選ぶ)。
 意味の正本は設計 doc の [不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査)。実装の入口:
 
-- 置き場の判定は `ingest.transcript_kind_of` が正本。各 record の `transcript_kind` は
-  `file_id` から引く
+- `<session>/` の下の file を subagent の transcript・workflow の進行ログ・置き場の判定に
+  当たらない file に分けるのは adapter の `session_file_kind` が正本で、
+  `ingest.lake_file_kind` は直下を main とするほかはその答えを返すだけ。分類ごとの扱いは
+  2 つの表が持つ: 取り込む分類と `file.transcript_kind` に書く値は
+  `ingest.STORED_TRANSCRIPT_KINDS`、取り込まない分類と `SyncReport` の数える先は
+  `ingest.SKIPPED_KIND_COUNTERS`。各 record の `transcript_kind` は `file_id` から引く
 - 呼び出し側に母集団を選ばせる mart の helper は `marts/transcript_kind.py`
 - ad-hoc の `query` tool で mart と突き合わせるときは
   `JOIN file f ... WHERE f.transcript_kind = 'main'` で揃える
-- どちらの置き場にも当たらない深い file は ingest せず、件数を
-  `SyncReport.unrecognized_nested_files` に出す (黙って落とさない)
+- 置き場の判定に当たらない file (置き場にある `agent-<id>.jsonl` でない未知の file・置き場より深い file・
+  `subagents/` の外の file) は ingest せず、件数を
+  `SyncReport.unrecognized_nested_files` に出す (黙って落とさない)。workflow の進行ログ
+  (`subagents/workflows/<run>/journal.jsonl`) は transcript でないと分かっているので、
+  `SyncReport.workflow_journal_files` に分けて数え、劣化シグナルに混ぜない

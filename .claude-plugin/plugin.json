@@ -31,6 +31,10 @@
     "./skills/procedure/playbook-skill-creation",
     "./skills/procedure/playbook-test-optimization",
     "./skills/procedure/playbook-test-perf-tuning",
+    "./skills/procedure/create-verification-skill",
+    "./skills/procedure/maintain-verification-skill",
+    "./skills/procedure/create-formal-verification-skill",
+    "./skills/procedure/maintain-formal-verification-skill",
     "./skills/knowledge/principle-index",
     "./skills/knowledge/python-single-file-script",
     "./skills/knowledge/shell-script",
@@ -58,6 +62,7 @@
     "./skills/third/writing-for-agents",
     "./skills/third/retro",
     "./skills/third/improve-codebase-architecture",
-    "./skills/third/codebase-design"
+    "./skills/third/codebase-design",
+    "./skills/third/statechart"
   ]
 }

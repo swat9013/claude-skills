@@ -19,6 +19,7 @@ store は手入力 prompt の原文を持つため、削除の痕跡も残さな
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -26,7 +27,7 @@ from pathlib import Path
 # schema.sql を変更したら上げる。上げると file 名が変わり、次回 sync が full
 # rebuild になる (実測 20 秒台)。上げ忘れても `schema_digest` が拾って同じ
 # rebuild へ倒すので、version は「旧 store を残したまま切り替えたい」ときの手段。
-STORE_VERSION = 6
+STORE_VERSION = 8
 
 DEFAULT_CACHE_DIR = Path("~/.cache/claude-transcript-ops").expanduser()
 
@@ -51,12 +52,15 @@ STORE_NAME_TEMPLATE = "store-v{version}-{digest}.sqlite3"
 # store_meta の key。schema.sql の digest を持ち、connect が現物と突き合わせる。
 SCHEMA_DIGEST_KEY = "schema_digest"
 
-# spine (record) に対する projection。ts 欠損の可視化 (`ANOMALIES_SQL`) と
-# file 再取得時の全置換 (`ingest._delete_projection_rows`) が同じ表を見る。
+# spine (record) に対する projection。この表を見るのは、file 再取得時の全置換
+# (`ingest._delete_projection_rows`)、ts 欠損の述語の生成 (`_TS_MISSING_PREDICATE`)、
+# `anomalies` が受け付ける projection の名前の検査と、ad-hoc の query
+# (`commands/query.py`) が ts 欠損を数える集合として全件を渡す箇所。何を数えるかは
+# `anomalies` の docstring。
 PROJECTION_TABLES = (
     "tool_use", "hook_firing", "user_prompt", "slash_invocation", "user_turn",
     "assistant_turn", "presented_name", "static_payload", "memory_injection",
-    "compact_boundary", "assistant_text",
+    "compact_boundary",
 )
 
 
@@ -225,38 +229,76 @@ def get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 # ts 欠損 record のうち、**mart が実際に読む projection を持つもの**だけを数える
-# ための述語。窓 (`ts_epoch IS NULL OR ts_epoch >= cutoff`) を無条件で通過する行が
-# ここに出る。spine にしか無い record type (last-prompt / mode 等、実測 65,907 件) は
+# ための述語。窓 (`ts_epoch IS NULL OR ts_epoch BETWEEN 始端 AND 終端`) を
+# 無条件で通過する行がここに出る。spine にしか無い record type (last-prompt / mode 等、実測 65,907 件) は
 # どの mart も読まないので数えない — 数えると常時 0 でない値が出て警告が鈍る。
+# どの projection を読むかは mart ごとに違うので、呼び出し側が `:projections` (JSON
+# 配列) で渡した集合の projection だけを見る (#2110)。mart が読まない projection
+# だけに由来する欠損はその mart の窓を通過しないので、数えると無傷の観測を劣化と読ませる。
 _TS_MISSING_PREDICATE = "\n           OR ".join(
-    f"EXISTS (SELECT 1 FROM {table} p "
-    f"WHERE p.file_id = r.file_id AND p.line_no = r.line_no)"
+    f"('{table}' IN (SELECT value FROM json_each(:projections)) "
+    f"AND EXISTS (SELECT 1 FROM {table} p "
+    f"WHERE p.file_id = r.file_id AND p.line_no = r.line_no))"
     for table in PROJECTION_TABLES
 )
 
-# 観測の劣化シグナル。0 でない値が出ること自体が読み手への警告になる。
+# 観測の劣化シグナル (壊れた行・読めない file・ts 欠損) と、取り込み件数・重複 uuid の組を
+# 出す。どれを劣化シグナルと読むかは各 mart の contract の注記が名指す。劣化シグナルは
+# 0 でない値が出ること自体が読み手への警告になる。重複 uuid は record を dedup しないので
+# 健全な lake でも 0 にならず、劣化シグナルではなく集計を水増ししうる件数として出す
+# (劣化に数えると他の劣化の警告まで鈍る)。
 # **2 つ目の消費者 (prompts mart, #497) が出たため permissions mart から引き上げた**
 # — mart ごとに SQL をコピーすると、同じ数字が mart によって違う書き方で出る事故が
 # 起きうる。全 mart がここを 1 回呼ぶ。
+#
+# どの値も `:transcript_kinds` (JSON 配列) の母集団だけで数える (#1836)。読み手は
+# 劣化をその mart の観測の劣化として読むので、母集団の外 (main の mart から見た
+# subagent) の劣化を混ぜると、無傷の観測を劣化と読ませて判断を止める。
+_IN_POPULATION = "transcript_kind IN (SELECT value FROM json_each(:transcript_kinds))"
+
+# record は CTE に切り出さず、各集計で主キーの先頭 (file_id) の IN で絞る。複数回
+# 参照する CTE は SQLite が materialize するので、record 全行の写しを作ってしまう。
+_RECORD_IN_POPULATION = "file_id IN (SELECT file_id FROM pop_file)"
+
 ANOMALIES_SQL = f"""
+WITH pop_file AS (SELECT file_id, broken_lines FROM file WHERE {_IN_POPULATION})
 SELECT
-    (SELECT count(*) FROM file) AS ingested_files,
-    (SELECT count(*) FROM record) AS records,
-    (SELECT coalesce(sum(broken_lines), 0) FROM file) AS broken_lines,
-    (SELECT count(*) FROM unreadable_file) AS unreadable_files,
+    (SELECT count(*) FROM pop_file) AS ingested_files,
+    (SELECT count(*) FROM record WHERE {_RECORD_IN_POPULATION}) AS records,
+    (SELECT coalesce(sum(broken_lines), 0) FROM pop_file) AS broken_lines,
+    (SELECT count(*) FROM unreadable_file WHERE {_IN_POPULATION}) AS unreadable_files,
     (SELECT count(*) FROM (SELECT record_uuid FROM record
-                           WHERE record_uuid <> ''
+                           WHERE {_RECORD_IN_POPULATION} AND record_uuid <> ''
                            GROUP BY record_uuid HAVING count(*) > 1))
         AS duplicate_record_uuid_groups,
     (SELECT count(*) FROM record r
-      WHERE r.ts_epoch IS NULL
+      WHERE r.file_id IN (SELECT file_id FROM pop_file) AND r.ts_epoch IS NULL
         AND ({_TS_MISSING_PREDICATE})) AS ts_missing_events
 """
 
 
-def anomalies(conn: sqlite3.Connection) -> dict:
-    """store 全体の観測劣化シグナル (file 単位の破損 / 未読 / 重複 uuid / ts 欠損)。"""
-    return dict(conn.execute(ANOMALIES_SQL).fetchone())
+def anomalies(conn: sqlite3.Connection, transcript_kinds: str,
+              projections: tuple[str, ...]) -> dict:
+    """mart の母集団に絞った観測劣化シグナル (file 単位の破損 / 未読 / ts 欠損) と件数。
+
+    件数は取り込み件数と重複 uuid の組。重複 uuid は劣化シグナルではない。
+
+    `transcript_kinds` は mart の SQL に渡すのと同じ JSON 配列
+    (`marts.transcript_kind.kinds_param` の返り値)。`projections` は mart が読む
+    projection の名前 (`PROJECTION_TABLES` の部分集合) で、ts 欠損はこの集合の
+    projection を持つ record だけで数える。どちらも既定を持たないのは、呼び出し側が
+    自分の母集団を書かないまま store 全体の値を返す経路を残さないため。集合が空か
+    `PROJECTION_TABLES` に無い名前を含むと ts 欠損が黙って 0 になるので、ValueError で
+    止める。置き場の判定に当たらない file (`SyncReport.unrecognized_nested_files`) は
+    どの母集団にも属さないので本関数の外で数える。
+    """
+    unknown = set(projections) - set(PROJECTION_TABLES)
+    if not projections or unknown:
+        raise ValueError(
+            f"projections は PROJECTION_TABLES の空でない部分集合で渡す: {projections!r}")
+    return dict(conn.execute(ANOMALIES_SQL,
+                             {"transcript_kinds": transcript_kinds,
+                              "projections": json.dumps(list(projections))}).fetchone())
 
 
 def drop(transcripts_dir: str | Path,

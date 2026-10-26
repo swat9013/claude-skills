@@ -65,15 +65,32 @@ HEADING = re.compile(r"^#{1,6}\s")
 TABLE_ROW = re.compile(r"^\s*\|(?P<body>.+)\|\s*$")
 SEPARATOR_ROW = re.compile(r"^[\s|:-]+$")
 SCREEN_ID = re.compile(r"^[A-Za-z0-9_.]+$")
-# `' uncovered:` 等のコメント行を除いた遷移行 / 状態宣言行 (check-statechart.py と同じ範囲。
-# 単一 file script どうしで import できないので写しを持ち、一致は tests/test_ui_design_statechart_contract.py が突合する)
+# 遷移行 / 状態宣言行と、図に描かれる行の範囲 (drawn_lines と下の 4 つ) は check-statechart.py の写し。
+# 単一 file script どうしで import できないので写しを持ち、一致は tests/test_ui_design_statechart_contract.py が突合する
 TRANSITION = re.compile(
     r"^\s*(?P<src>\[\*\]|[\w.]+)\s*"
-    r"(?P<arrow>-+(?:(?:up|down|left|right|u|d|l|r)|\[[^\]]*\])*-*>)\s*"
+    r"(?P<arrow>-+(?:(?:up|down|left|right|do|le|ri|u|d|l|r)|\[[^\]]*\])*-*>)\s*"
     r"(?P<dst>\[\*\]|[\w.]+)\s*"
     r"(?::\s*(?P<label>.+?))?\s*$"
 )
-STATE_DECL = re.compile(r'^\s*state\s+(?:"[^"]*"\s+as\s+)?(?P<name>[\w.]+)\s*$')
+STATE_DECL = re.compile(
+    r'^\s*state\s+(?:"[^"]*"\s+as\s+)?(?P<name>[\w.]+)\s*(?::.*)?$', re.IGNORECASE
+)
+# 見出し類の前に置ける位置の語。置けるのは header と footer だけ (`left legend` は構文エラー)。
+HEADING_POSITION_PREFIX = r"(?:(?:left|right|center)\s+(?=header|footer))?"
+# 複数行 note の開始 (render-puml.py と同じく `:` を持たない note 行)。`note "本文" as N` は 1 行で
+# 閉じ、`note --> B` と `note.x --> B` は状態の遷移なので当たらない。
+NOTE_BLOCK_START = re.compile(
+    r'^\s*(?:r|h)?note(?![\w.])(?![^:]*:)(?!\s+"[^"]*"\s+as\b)(?!\s*[-.=<])', re.IGNORECASE
+)
+NOTE_BLOCK_END = re.compile(r"^\s*end\s*(?:r|h)?note\b", re.IGNORECASE)
+# 複数行の見出し類 (`legend right` / `right header` 〜 `endlegend` / `endheader` など。本文を持たない
+# 開始行) と、その終了。
+HEADING_BLOCK_START = re.compile(
+    rf"^\s*{HEADING_POSITION_PREFIX}"
+    r"(?P<kind>title|caption|header|footer|legend)(?:\s+(?:left|right|center|top|bottom))*\s*$",
+    re.IGNORECASE,
+)
 # 本文中の token 参照 `--name` (inline code の中だけを対象にする)
 TOKEN_REF = re.compile(r"`(--[A-Za-z0-9_-]+)`")
 TOKEN_DEF = re.compile(r"--[A-Za-z0-9_-]+")
@@ -91,7 +108,7 @@ def _read(path: Path) -> str | None:
     """読めれば本文、無ければ None。読めるが壊れている場合は空文字ではなく本文を返す."""
     if not path.is_file():
         return None
-    return path.read_text(encoding="utf-8", errors="replace")
+    return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
 def _table_after(text: str, heading: re.Pattern[str]) -> list[list[str]]:
@@ -141,9 +158,51 @@ def _screens(text: str) -> tuple[list[str], list[str]]:
     return ids, errors
 
 
+def drawn_lines(text: str):
+    """plantuml が図に描く行 (@startuml〜@enduml の中で、block comment・複数行 note・複数行の見出し類の外) を (行番号, 行) で返す."""
+    in_diagram = in_block_comment = False
+    # 複数行 note / 見出し類の中にいる間の、その終了行の形。
+    block_end: re.Pattern[str] | None = None
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not in_diagram:
+            in_diagram = line.startswith("@startuml")
+            continue
+        if line.startswith("@enduml"):
+            # 閉じ忘れた comment / note を次の @startuml ブロックへ持ち越さない。
+            in_diagram = in_block_comment = False
+            block_end = None
+            continue
+        if block_end is not None:
+            if block_end.match(raw):
+                block_end = None
+            continue
+        if in_block_comment:
+            in_block_comment = not line.endswith("'/")
+            continue
+        if line.startswith("/'"):
+            close = line.find("'/", 2)
+            if close < 0:
+                in_block_comment = True
+                continue
+            # 1 行で閉じた comment の後ろは描かれる (`/' m '/ A --> C : e`)。
+            raw = line[close + 2 :]
+            line = raw.strip()
+            if not line:
+                continue
+        if NOTE_BLOCK_START.match(raw):
+            block_end = NOTE_BLOCK_END
+            continue
+        heading = HEADING_BLOCK_START.match(raw)
+        if heading:
+            block_end = re.compile(rf"^\s*end\s*{heading.group('kind')}\b", re.IGNORECASE)
+            continue
+        yield lineno, raw
+
+
 def _puml_states(text: str) -> set[str]:
     states: set[str] = set()
-    for line in text.splitlines():
+    for _, line in drawn_lines(text):
         stripped = line.strip()
         if stripped.startswith("'"):
             continue

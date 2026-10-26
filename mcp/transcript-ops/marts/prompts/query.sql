@@ -36,13 +36,14 @@ DELETE FROM scoped_prompt
 -- user record 1 件を採用 / 除外理由へ確定させる。**この CASE の分岐順が仕様**
 -- (record ごとに 1 理由へ確定させるため): tool 実行結果を運ぶか → slash command の
 -- 展開 record か → `#rule ` 捕捉対象か → context 圧縮の要約注入か → skill 本文注入
--- (`is_meta`) か → subagent 側の prompt (`is_sidechain`) か → `prompt_source` 欠落か
+-- (`is_meta`) か → main transcript の中の sidechain record (`is_sidechain`) か → `prompt_source` 欠落か
 -- → `prompt_source` が非 human か → `origin_kind` が非 human か → 空文字か →
 -- 残りは採用。totality (scanned == accepted + 各除外の和) はこの CASE が全域
 -- (ELSE を持つ) であることから構造的に成立する。
 --
--- 窓は `ts_epoch` で切る。`NULL` (ts 欠損) は保守的に窓内へ倒す — 件数は
--- store の観測劣化シグナルに出るので、黙って増えることはない。
+-- 窓は `ts_epoch` で切る。`NULL` (ts 欠損) は保守的に窓内へ倒す。件数
+-- (`meta.store.ts_missing_events`、`store.anomalies` が数える) の読み方は、store の
+-- 劣化シグナルの注記を見る。
 --
 -- reason の 1 番目の枝だけ SQL 内部 label (`content_is_tool_result`) を使う —
 -- 公開 reason 語彙 (`contract.EXCLUSION_REASONS` の先頭) はそれ自体が on-disk の
@@ -81,7 +82,7 @@ SELECT
 FROM user_prompt up
 JOIN record r ON r.file_id = up.file_id AND r.line_no = up.line_no
 JOIN file f ON f.file_id = up.file_id
-WHERE (r.ts_epoch IS NULL OR r.ts_epoch >= :cutoff_epoch)
+WHERE (r.ts_epoch IS NULL OR r.ts_epoch BETWEEN :cutoff_epoch AND :now_epoch)
   AND f.transcript_kind IN (SELECT value FROM json_each(:transcript_kinds))
 -- 走査順 = (project dir 名, file 名, 行)。seq がこの順を写す
 ORDER BY f.project_dir, f.path, r.line_no

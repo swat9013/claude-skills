@@ -13,4 +13,4 @@ description: 大きな出力・長いファイル・委譲や参照の設計で 
 
 何を委譲してよいか (委譲範囲と人間へ返す境界) は `principle-ai-delegation-boundary` が扱う。本原則は**何を context に載せるか**を決める。
 
-出典: pstack `principle-guard-the-context-window` (cursor/plugins@b9ddc83) を本 repo の価値観へ翻案。
+出典: pstack の <https://github.com/cursor/plugins/blob/b9ddc83/pstack/skills/principle-guard-the-context-window/SKILL.md> を翻案。

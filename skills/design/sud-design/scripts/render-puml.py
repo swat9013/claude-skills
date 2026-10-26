@@ -40,6 +40,9 @@ invariant (破ると exit 1):
 5. 引数の path が .puml を 1 件も指さなければ落ちる
 6. `--check` は検査だけを行い、SVG を書かない
 7. .puml が読めなければ (UTF-8 でない等) exit 1
+8. 描画結果が図形を 1 つも持たなければ (空の図) 描画失敗とし、SVG を書かない — 閉じない
+   block comment (`'/` が行末に来ない閉じ行) は以降の行を `@enduml` まで飲み込み、構文検査も
+   描画も exit 0 のまま要素の無い SVG を返す
 """
 
 from __future__ import annotations
@@ -84,6 +87,8 @@ NON_MEMBER_KEYWORDS = frozenset(
 
 SVG_ROOT_OPEN = "<svg"
 SVG_ROOT_CLOSE = "</svg>"
+# plantuml が図を描くときに出す図形の要素。1 つも無い SVG は空の図 (invariant 8)。
+SVG_SHAPE = re.compile(r"<(?:rect|path|text|ellipse|polygon|polyline|line|circle|image)\b")
 
 # 描画結果に埋める 2 つの指紋。`</svg>` の内側へ置く — root の外に出すと、GitHub の
 # sanitizer や SVG を読み書きするツールが黙って落としうる。source 側は「どの `.puml`
@@ -217,13 +222,18 @@ def fingerprinted(svg: str, source_text: str) -> str:
 
 def svg_root_violations(path: Path, svg: str, returncode: int, stderr: str) -> list[str]:
     """描画結果が SVG の root を持つかで成否を判定する (exit code は証拠にならない)。"""
-    if SVG_ROOT_OPEN in svg and SVG_ROOT_CLOSE in svg:
-        return []
-    detail = stderr.strip() or "(plantuml が詳細を出力しなかった)"
-    return [
-        f"[puml render failed] {path} — plantuml -tsvg が SVG を返さなかった "
-        f"(exit {returncode}, stdout {len(svg)} 文字):\n{detail}"
-    ]
+    if SVG_ROOT_OPEN not in svg or SVG_ROOT_CLOSE not in svg:
+        detail = stderr.strip() or "(plantuml が詳細を出力しなかった)"
+        return [
+            f"[puml render failed] {path} — plantuml -tsvg が SVG を返さなかった "
+            f"(exit {returncode}, stdout {len(svg)} 文字):\n{detail}"
+        ]
+    if not SVG_SHAPE.search(svg):
+        return [
+            f"[puml render empty] {path} — 描画結果に図形が 1 つも無い "
+            f"(閉じない block comment `/' …` が以降の行を飲み込んでいないか。閉じる `'/` は行末に置く)"
+        ]
+    return []
 
 
 def render_svg(path: Path, text: str) -> tuple[str | None, list[str]]:

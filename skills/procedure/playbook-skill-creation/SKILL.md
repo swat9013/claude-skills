@@ -22,7 +22,7 @@ metadata:
 
 1. 原則の索引を Read する。`${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引の読み方に従って今回の作業に当たる leaf を読む。本 playbook は索引を内蔵していないので、この step を飛ばすと原則が 1 つも手元に来ない。以降の step が `principle-*` を名指ししたときも、索引の読み方に従う。
 
-2. skill 化の要否を判定する。`principle-automate-when-it-hurts` (自動化は痛みの実測後) で、その手順・知識が反復して要ることを依頼の根拠から確かめる。1 回限りのタスク、source や `--help` を読めば分かる情報は skill 化せず、その判断を理由付きで依頼元へ返し、残りの step に `skip: skill 化しない` を付けて終える。作る場合は、導入済み skill の一覧から同じ責務・同じ trigger 語彙の skill が既に無いことを確かめる — 既にあるなら新設ではなくその skill の改修を提案する。
+2. skill 化の要否を判定する。`principle-when-to-automate` (自動化は痛みの実測後) で、その手順・知識が反復して要ることを依頼の根拠から確かめる。1 回限りのタスク、source や `--help` を読めば分かる情報は skill 化せず、その判断を理由付きで依頼元へ返し、残りの step に `skip: skill 化しない` を付けて終える。作る場合は、導入済み skill の一覧から同じ責務・同じ trigger 語彙の skill が既に無いことを確かめる — 既にあるなら新設ではなくその skill の改修を提案する。
 
 3. 責務と境界を確定する。この skill が「何を書くか / 何をするか」を 1 文で書き、対象外 (隣接するが扱わない作業) を添えて書き留める — description と本文冒頭でそのまま使う。1 文に収まらないなら責務が複数混ざっているので、skill を分ける。
 

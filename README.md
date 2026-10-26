@@ -62,6 +62,10 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | `playbook-skill-creation` | コマンド | 新規 skill 作成を、skill 化の要否判定からレビュー工程の通過までの番号付き step で通す playbook。 |
 | `playbook-test-optimization` | コマンド | テストスイートの軸ごとの診断を、原則の索引 Read から適用判断の返却までの番号付き step で通す playbook。 |
 | `playbook-test-perf-tuning` | コマンド | テスト実行時間の短縮を、原則の索引 Read からレビュー工程の通過までの番号付き step で通す playbook。 |
+| `create-verification-skill` | コマンド | Generate a project-local verification skill that drives your app the way a user does — any language, framework, or platform. |
+| `maintain-verification-skill` | コマンド | Bring a project's verification skill and feature map back in line with the app after it changes. |
+| `create-formal-verification-skill` | コマンド | Generate a project-local skill that formally verifies the code where a bug costs the most and tests reach the least, in any language, with whichever verification tool fits. |
+| `maintain-formal-verification-skill` | コマンド | Bring a project's formal verification back in line with the code after the code changes. |
 | `review-stage` | コマンド / 自動 | CL を出す前の差分を、差分の重さに応じた複数の観点で並列にレビューし、PR へ貼れる 1 枚で返す。 |
 | `frontend-review` | コマンド / 自動 | 実装済みの HTML/CSS を デザインシステムの規範 (Refactoring UI tactics / WCAG AA / Rams・Nielsen heuristics) に照らして検査する。 |
 
@@ -73,7 +77,7 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | --- | --- | --- |
 | `ui-design` | コマンド / 自動 | UI 設計ドキュメント一式を 画面インベントリ → 画面遷移 → 領域/レイアウト → component 分解 → デザイントークン の順の対話的セッションで作成・更新する。 |
 | `sud-design` | コマンド / 自動 | 設計ドキュメント一式を目的 → システム関連図 → ユースケース → ドメインモデル図の順の 対話的セッションで作成・更新する。 |
-| `grill-with-docs` | コマンド | 計画・設計を共有理解に至るまで問い詰め、決まった用語を用語集に、戻しにくい決定を ADR に、同じ種類の判断で再び使える決定を規範に書き残す。 |
+| `grill-with-docs` | コマンド | 計画・設計を共有理解に至るまで問い詰め、決まった用語を用語集に、戻しにくい決定を ADR に、同じ種類の判断で再び使える決定を規範に、設計を変える決定を設計 doc に書き残す。 |
 
 ### util
 
@@ -87,7 +91,7 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 | `inventory-launcher` | コマンド | herdr (AI agent 向け terminal multiplexer) session 内で、inventory 系 3 skill (inventory-permissions / inventory-claude-md / inventory-project-values) をそれぞれ独立した Claude Code セッション (分割 pane) として並列起動する launcher。 |
 | `issue-restructure` | コマンド | open issue を根本課題ごとのクラスタに束ねて課題型の issue へまとめ直す案を、人間の承認を通して tracker へ反映する、triage の前段の対話。 |
 | `backlog-triage` | コマンド | open issue 全件を issue-triage に通し、AFK 境界の外側に残った判定と止まったものを、人間と設問のラウンドで決めて tracker と規範へ反映する対話 triage。 |
-| `issue-triage` | コマンド / 自動 | issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (ready-for-agent・close・wontfix) は tracker へ反映し、外側の判定 (規範の文案・深掘り・報告者への質問) と止まったものを呼び出し元へ返す. |
+| `issue-triage` | コマンド / 自動 | issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (ready-for-agent・close・wontfix) は tracker へ反映し、外側の判定 (規範の文案・深掘り・人手の作業・報告者への質問) と止まったものを呼び出し元へ返す. |
 | `ready-for-agent-review` | コマンド / 自動 | issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・AI 委任範囲の未閉鎖・規範同士の衝突を反証済みの修正提案として issue ごとに返す (issue を N 件まとめて受け、tracker へは書き込まない). |
 | `stacked-implement` | コマンド | 名指しした実装 (issue 集合・分割計画・単一の仕様) を CL 計画に分け、CL ごとに CL エージェントを並列に起動して実装させ、merge まで追従する。 |
 
@@ -110,6 +114,7 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 | `retro` | コマンド | Conduct a retrospective on a coding session. |
 | `improve-codebase-architecture` | コマンド | Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick. |
 | `codebase-design` | コマンド / 自動 | Shared vocabulary for designing deep modules. |
+| `statechart` | コマンド | Draw how any system moves between states, such as a product flow, a protocol, or a service, as a Mermaid statechart from a TLA+ model. |
 <!-- /generated:skills -->
 
 ## 同梱している subagent
@@ -156,3 +161,7 @@ hook は install した環境でそのまま動くが、以下を前提にして
 MIT ([LICENSE](LICENSE))
 
 [`skills/third/`](skills/third/) の skill はそれぞれの上流 repo のもので、上流の license に従う。上流ごとの LICENSE を `skills/third/LICENSE.<owner>-<repo>` として同梱している。
+
+[`skills/knowledge/principle-index/`](skills/knowledge/principle-index/) の原則 leaf のうち上流の文書を翻案したものは、上流の MIT license に従う。許諾文を [`LICENSE.cursor-plugins-pstack`](skills/knowledge/principle-index/LICENSE.cursor-plugins-pstack) として同梱している。
+
+[`skills/procedure/`](skills/procedure/) の `create-verification-skill` / `maintain-verification-skill` / `create-formal-verification-skill` / `maintain-formal-verification-skill` は上流の skill を改変したもので、上流の MIT license に従う。許諾文を各 skill の dir に `LICENSE.cursor-plugins-pstack` として同梱している。

@@ -15,7 +15,7 @@ Computational harness (settings / permission / hook script) の review 手順。
 - `/swat-skills:claude-config-review path1 path2 ...` → 明示 path リスト (相対 / 絶対 / `~/` どれでも可)。`~/` で始まる path は main agent が `$HOME` に展開してから次節の type 判定にかける
 - `/swat-skills:claude-config-review` (args なし) → 以下の自動検出で対象抽出
 
-args なし時は、`write-for-harness` の列挙 script が出す絶対 path (1 行 1 件) のうち、次節の path パターンに合致するものだけを対象化する。
+args なし時は、`write-for-harness` の列挙 script が出す絶対 path (1 行 1 件) のうち、次節の判定で hook か settings になったものだけを対象化する。
 
 ```bash
 ${CLAUDE_SKILL_DIR}/../../steering/write-for-harness/scripts/list-changed-files.py
@@ -23,26 +23,28 @@ ${CLAUDE_SKILL_DIR}/../../steering/write-for-harness/scripts/list-changed-files.
 
 script が exit 0 で 1 件も出さなかったときは「対象なし」を伝え正常終了。exit 非 0 は列挙の失敗なので、対象なしとせずに止まる。
 
-## ファイル種類判定 (path パターン)
+## ファイル種類判定
 
-| パターン (glob) | type | type-specific reference |
+対象の path を引数に並べて `write-for-harness` の分類 script を起動し、出た `<path> - <component>` で type を決める。path から component を決めるパターンの正本はこの script。
+
+```bash
+${CLAUDE_SKILL_DIR}/../../steering/write-for-harness/scripts/list-harness-inventory.py <path>...
+```
+
+| component | type | type-specific reference |
 |---|---|---|
-| `**/hooks/hooks.json`, `**/hooks/**/*.sh`, `**/hooks/**/*.py` | hook | claude-config-reference の references/hook.md |
-| `**/settings*.json` (含む `~/.claude/settings.json`) | settings | claude-config-reference の references/settings.md |
-| `**/.claude/agents/*.md`, plugin root (`.claude-plugin/` と同じ階層) の `agents/*.md` | (skip — 下記の Inferential と同じく `write-for-harness` へ回す) | — |
-| 上記以外 | (skip + warn) | — |
+| `hook` | hook | claude-config-reference の references/hook.md |
+| `settings` | settings | claude-config-reference の references/settings.md |
+| `skill` / `claude-md` / `rules` / `agent` | (skip — 下記の Inferential と agent 定義) | — |
+| stderr の `分類外:` | 下の段落 | — |
 
-判定衝突時は `hooks/hooks.json` のファイル名固有パターンを優先し、`settings*.json` は汎用 fallback (settings の `hooks` セクションは settings 型として扱う — 登録の妥当性は settings.md の観点で見る)。
+`分類外:` と出た file のうち hook の設定 (`hooks.json`・settings の `hooks`) の command が指す script は hook type に入れる — script は `hooks/` の外にある hook script を分類しない。それ以外の `分類外:` は、args で渡した path なら skip + warn にし、args なしなら harness の外の変更 file なので黙って外す。分類 script が exit 非 0 で終わったときは分類の失敗なので、対象なしとせずに止まる。
 
-`**/SKILL.md` / `**/CLAUDE.md` / `**/.claude/rules/*.md` と agent 定義 (上表。`tools` の制限も本文と一緒に `write-for-harness` が見る) は Inferential 側の担当なので skip し、「Inferential と agent 定義は対象外なので `write-for-harness` へ回す」と告げてから残りを進める。
+settings の `hooks` セクションは settings 型として扱い、登録の妥当性は settings.md の観点で見る。
+
+Inferential (`skill` / `claude-md` / `rules`) と agent 定義 (`tools` の制限も本文と一緒に `write-for-harness` が見る) は Inferential 側の担当なので skip し、「Inferential と agent 定義は対象外なので `write-for-harness` へ回す」と告げてから残りを進める。
 
 hook script は注入文 (Claude へ届く文。届く経路は問わない) を持っていても skip せず hook type に入れ、機構 (event / matcher / exit code / fail-posture) をレビューする。注入文の文面だけが Inferential なので、中身を読んで注入文を持つと分かった script には「注入文の文面は `write-for-harness` が見る」と告げてから残りを進める。
-
-hook パターンの補足:
-
-- `**` は 0 階層も含めて解釈する (`hooks/foo.sh` も `hooks/harness/foo.sh` も hook)。hook script の配置階層は repo ごとに違い、階層固定の pattern は実配置を取りこぼす
-- hook script は shell (`.sh`) と python (`.py`) の両方がある。片方だけを pattern に持つと、もう片方が丸ごと未レビューになる
-- `**/hooks/**/tests/**` は hook script の自動テストであり hook 設定そのものではないので skip する (hook 編集の diff には高確率で同居するが、hook.md の観点は適用できない)
 
 ## 実行フロー (per-type の並列 dispatch)
 

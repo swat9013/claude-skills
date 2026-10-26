@@ -17,7 +17,7 @@ description: >-
 
 実装役が能動的に self-check するのは [references/tactics.md](references/tactics.md) の **[S] tactic のみ** (36 tactics 中 25 個)。実装が終わってから本 skill の「レビューする」へ進む。
 
-対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」が、実装する画面を縛る `ui-design` の成果物を案内しているなら、実装前に `tokens.md` の semantic token を実装ファイルへ落とし、`components.md` の state 一覧を満たす。
+原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」を Read し、同節の引き方で実装する画面に適用される `ui-design` の成果物が引けるなら、実装前に `tokens.md` の semantic token を実装ファイルへ落とし、`components.md` の state 一覧を満たす。
 
 ## レビューする
 

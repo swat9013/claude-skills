@@ -20,7 +20,7 @@ cwd の project を対象に、swat-skills を使うためのセットアップ�
 | cwd project の `.claude/settings.json` | 共有したい旨の回答があったときのみ書き先にする。例外は手順 3-1 の `worktree` キーと hook 登録で、常にここへ書く — hook は worktree の中で動き、gitignored な `.claude/settings.local.json` は新しい worktree に存在しない。`worktree` キーは clone ごとに同じ checkout 範囲を効かせるために共有する |
 | cwd project の worktree の成果物 (`.worktreeinclude` / 初期化 script `.claude/scripts/worktree-setup.sh` (追加型) または `<repo root>/scripts/worktree-setup.sh` (置き換え型) / `.gitignore` の `symlinkDirectories` 対象の末尾 `/` の修正) | 手順 3-1 で委譲先の手順どおりに書く |
 | cwd project の project memory (`CLAUDE.md` か `.claude/CLAUDE.md` があればそれ、無くて `AGENTS.md` があればそれ、どちらも無ければ `CLAUDE.md` を新規作成) | 手順 3-2 の「Worktree 方式」節と、手順 6 で全環境 sandbox と明言されたときの隔離の記載だけを書く。それ以外には触れない。Claude Code は既定で `CLAUDE.md` が無いときだけ `AGENTS.md` を読むので、`AGENTS.md` だけの repo に `CLAUDE.md` を作ると `AGENTS.md` が読まれなくなり、`CLAUDE.md` のある repo の `AGENTS.md` に書いた記載は `CLAUDE.md` が `@AGENTS.md` で取り込まない限り読まれない。記載を探すときは、project memory が `@` で取り込む file も範囲に含める |
-| cwd project の `docs/agents/domain.md` | 手順 2-4 の「規約の置き場」節だけを書く (`domain.md` が無ければ節だけの file を作る)。委譲先が書いた節を含め、他の節には触れない |
+| cwd project の `docs/agents/domain.md` | 手順 2-4 の「規約の置き場」節と手順 2-5 の「設計 doc の置き場」節だけを書く (`domain.md` が無ければ節だけの file を作る)。委譲先が書いた節を含め、他の節には触れない |
 | cwd project の `CONTRIBUTING.md` / `CLAUDE.local.md` | **無い場合のみ**生成する (ある場合は内容を監査しない) |
 | cwd project の pre-commit 設定 (`.pre-commit-config.yaml` / lefthook 設定 / `.husky/pre-commit` / `core.hooksPath` 配下の `pre-commit`) | gitleaks の呼び出しを足すだけ。既存の hook 記述は保持する |
 | `~/.claude/settings.json` (global) | **読むだけ**。上位 scope の deny / ask が project の allow を殺していないかの衝突検知に使う |
@@ -45,6 +45,7 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
 |---|---|---|
 | tracker 設定 | `docs/agents/issue-tracker.md` と `docs/agents/triage-labels.md` が存在し、`issue-tracker.md` の「follow-up issue の起票」節が `${CLAUDE_SKILL_DIR}/references/follow-up-filing.md` の「突き合わせ」で変更提案ゼロで、`issue-tracker.md` に「follow-up issue の深さ」節が無い | 手順 2 |
 | 規約の置き場 | `docs/agents/domain.md` の「規約の置き場」節が `${CLAUDE_SKILL_DIR}/references/rule-sources.md` の「突き合わせ」で変更提案ゼロ (節が無いときは提案ゼロとみなす)。**宣言する候補は機械検査で確定しない** — 同書の候補のうち表に無いものがあれば手順 2-4 の対話で確定し、宣言しないなら対象外 | 手順 2-4 |
+| 設計 doc の置き場 | `docs/agents/domain.md` の「設計 doc の置き場」節があり、`${CLAUDE_SKILL_DIR}/references/design-doc-placement.md` の「突き合わせ」で変更提案ゼロ。**宣言するか否かは機械検査で確定しない** — 節が無ければ手順 2-5 の対話で確定し、宣言しないなら対象外 | 手順 2-5 |
 | repo-local の label | `triage-labels.md` の「Repo-local labels」表に `needs-grilling` と `tracking-issue` の両方の行がある。**入れるか否かは機械検査で確定しない** — 無い label は手順 2-2 の対話で確定し、入れないなら対象外 | 手順 2-2 |
 | worktree 設定 | `.claude/settings.json` の `worktree` キー / `.worktreeinclude` / worktree 初期化 script (`.claude/scripts/worktree-setup.sh` か `<repo root>/scripts/worktree-setup.sh`) のいずれかが存在する (3 点すべてが要る repo は少ない。置くものが無い repo にも検討済みの印としてコメントだけの `.worktreeinclude` が置かれるので、1 つでも在れば導入済みと扱う)。ただし初期化 script と `.claude/settings.json` の hook 登録は対で、片方だけなら不足とする。対になる登録は、追加型 (`.claude/scripts/worktree-setup.sh`) なら `SessionStart` と `PostToolUse` (matcher `EnterWorktree`) の両方に script を呼ぶ entry、置き換え型 (`<repo root>/scripts/worktree-setup.sh`) なら `hooks.WorktreeCreate` | 手順 3-1 |
 | worktree 規範 | スコープ表の project memory に `## Worktree 方式` 節があり、手順 3-2 の正本の見出しと 2 行の箇条を逐語で含む (空行は照合しない。節は見出しから次の同レベル以上の見出しの直前まで。利用者が足した行は差分に数えない)。**入れるか否かは機械検査で確定しない** — 節が無ければ手順 3-2 の対話で確定し、入れないなら対象外 | 手順 3-2 |
@@ -61,6 +62,7 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
 2. **repo-local の label**: `triage-labels.md` の「Repo-local labels」表に無いものについて、`needs-grilling` (人との深掘り対話を待つ issue) と `tracking-issue` (計画的に子 issue へ分けた作業の親。直接は実装しない) を入れるかを AskUserQuestion (複数選択) で尋ねる。確認は質問であって提案ではないので、手順 4-4 と同じく idempotency の「提案ゼロ」とは別勘定にする。選択肢には入れない場合の影響を添える: `needs-grilling` に当たる label が無いと triage は深掘りを待つ issue を報告でしか返せない / `tracking-issue` に当たる label が無いと、triage が計画的に分けた作業の親を除けず、親が `ready-for-agent` になって、直接は実装しない issue に worker が着手しうる。選ばれた label は表 (無ければ節ごと作る。列は既定の label の表と同じく `Canonical name | Label in our tracker | Meaning` の 3 列) に書き、tracker に無ければ委譲先の本文と同じ手順で作る。見送った label は手順 8 で対象外とする
 3. **follow-up issue の起票**: `${CLAUDE_SKILL_DIR}/references/follow-up-filing.md` を Read する。`issue-tracker.md` に「follow-up issue の起票」節が無ければ、同書の「雛形」を示し、承認されたら同書が決める位置に節だけを書き足す。節があれば同書の「突き合わせ」に従う。節が無いと、agent は repo の起票の規範を持たず、重複の確認も発端の行も無しに起票しうる。`issue-tracker.md` に「follow-up issue の深さ」節があれば、起票の節の有無によらず、深さの節ごと外すことを変更提案として示す — triage は深さを測らないので、節は行われない手順を説明している。どちらかが見送られたら手順 8 で「提案のみ」とし、次アクションに見送った節の追加か削除を載せる。見送られた提案は再実行のたびに同じ提案として示す
 4. **規約の置き場**: `${CLAUDE_SKILL_DIR}/references/rule-sources.md` を Read し、同書の「候補の探し方」で、`domain.md` の「規約の置き場」節の表に無い候補を探す。候補があれば、候補ごとに中身の見出しを添えて、規約として宣言するものを AskUserQuestion (複数選択) で尋ねる。確認は質問であって提案ではないので、手順 4-4 と同じく idempotency の「提案ゼロ」とは別勘定にする。選択肢には宣言しない場合の影響を添える: `review-stage` の原則の観点が、その file の規約を規約違反の根拠に使えない。`domain.md` が無いときは、選ぶと節だけの `domain.md` を作ることも添える。選ばれた候補を行にして、節が無ければ同書の「雛形」の節を `domain.md` の末尾に書き、節があれば表に行を足す。節があれば同書の「突き合わせ」の変更提案も示す。`domain.md` の他の節には触れない。見送った候補は手順 8 で対象外とする
+5. **設計 doc の置き場**: `${CLAUDE_SKILL_DIR}/references/design-doc-placement.md` を Read する。`domain.md` に「設計 doc の置き場」節が無ければ、再実行のたびに、設計 doc を置いているかと、置いているなら設計 doc ごとの置き場・適用範囲・索引を尋ねる (path は自由記述で答えてもらう)。置き場は利用者が名指したものだけにする — path の規約 (`docs/design/` など) で見つけた file を候補にすると、設計 doc でない文書が、読み手が変更を照らす基準として案内されうる。確認は質問であって提案ではないので、手順 4-4 と同じく idempotency の「提案ゼロ」とは別勘定にする。宣言しない場合の影響として、同書の冒頭が挙げる読み手がこの repo では設計 doc に照らさないことを添える。`domain.md` が無いときは、宣言すると節だけの `domain.md` を作ることも添える。答えた設計 doc を行にして同書の「雛形」の節を同書が決める位置に書く。節があれば同書の「突き合わせ」の変更提案を示す。`domain.md` の他の節には触れない。設計 doc を置いていない・宣言しないときは手順 8 で対象外とする
 
 終えたら (見送りがあっても) 手順 3 へ進む。
 
@@ -73,7 +75,7 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
    - 初期化 script と hook 登録の片方だけが欠けているときは、既存の方式 (script の置き場で判別する追加型 / 置き換え型) に合わせて、欠けた側の手順と E2E 検証だけを実行する。既存の成果物を作り直す提案や方式の選び直しをしない
    - 書き先はスコープ表の例外どおり `.claude/settings.json`。委譲先の本文は承認を求めずに書く形なので、成果物ごとに書く前に示して承認を取り、見送られた成果物は手順 8 で提案のみとする
    - 本文の作業前提 (作業場所の確保) と commit の手順は実行せず、setup の他の手順と同じく実行 project の運用に従う
-   - E2E 検証が通らなければ手順 8 で未完了とする。委譲先の E2E は headless 起動 (`claude -p`) で worktree を作るので `SessionStart` hook が発火せず、初期化 marker もできない — hook の発火と marker の有無は、別の対話セッションで `claude --worktree <name>` を起動しないと確かめられない。これだけが残るときは手順 8 で適用とし、次アクションに「対話で `claude --worktree` を起動し、git-dir に初期化 marker ができたかを確かめる」と書く
+   - E2E 検証 (初期化 marker の確認を含む) が通らなければ手順 8 で未完了とする。headless 起動で hook が発火する条件と、marker が無いときの切り分けは委譲先の本文に従い、切り分けの後も marker が無ければ未完了とする
 2. **worktree 規範**: 下の正本の節を扱う。
    - 節が無ければ、入れるかを AskUserQuestion で尋ねる。確認は質問であって提案ではないので、手順 4-4 と同じく idempotency の「提案ゼロ」とは別勘定にする。選択肢には入れない場合の影響を添える: 差分の出る作業 (subagent に任せた作業を含む) が main の作業ツリーで直接行われうる。入れないなら手順 8 で対象外とする
    - 書き先はスコープ表の project memory。`CLAUDE.local.md` には書かない — gitignored なので新しい worktree に存在せず、規範が肝心の worktree の中で読まれない
@@ -93,7 +95,7 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
 
 **最小集合** (swat-skills を使う全環境に共通して推奨する entry) と sandbox block は群ごとに入れるかをユーザーに尋ね、選ばれた群だけを提案する。便利系は repo 実態を見たアレンジ提案として区別する。
 
-1. **install 形態の判定**: `~/.claude/skills/swat-skills/` が読めれば symlink install、読めなければ marketplace install。判定は skill script 群の列挙の起点 (「最小集合」節) にだけ使う — 提案する entry の正本は install 形態によらず本文の表だけ。`~/.claude/skills/swat-skills/` 配下は**読むだけ**で書き換えない
+1. **install 形態の判定**: `cd "${CLAUDE_SKILL_DIR}/../../.." && pwd` の出力 (本 skill の dir から `skills/<category>/<name>` を外した dir) を plugin root とする。`pwd -P` にしない — symlink を解くと、`--plugin-dir` に渡した symlink の path と entry の path がずれる。plugin root が `$HOME/.claude/plugins/cache/` の下なら marketplace install、それ以外なら in-place install (plugin root をそのまま読む形)。判定は skill script 群の列挙の起点 (「最小集合」節) と、in-place 形の entry を足すか (「path 解決」節) にだけ使う — entry の形の正本は本文の表だけで、install 形態は表のどの行を使うかを決める。plugin root 配下は**読むだけ**で書き換えない
 2. **書き先の決定**: 既定は `.claude/settings.local.json` のまま進む。依頼文に共有意図 (「チームで」「commit したい」「CI でも」「fresh worktree でも」) が読めるときだけ `.claude/settings.json` にするかを尋ねる。既定側は gitignored なので fresh worktree / fresh clone には存在しない — 共有意図はこの形でも現れる。共有側は個人スコープの許可を他者へ配ることになるので既定にしない
 3. **現状の読み取り**: cwd の `.claude/settings.json` / `.claude/settings.local.json` (両方無ければ最小集合の全体が「追加」= 新規作成。片方だけあるときも書き先でない側を読んで重複提案しない)。env 群は permissions の配列ではなく top-level の `env` object の `CLAUDE_CODE_ENABLE_TODO_TOOLS` で、実効値を cwd で下の 1 行の出力から読む。充足判定はこの 2 file だけで行い、global の `env` は判定に使わない。`~/.claude/settings.json` は衝突検知のためだけに読む — permission は **`deny` > `ask` > `allow`** かつ上位 scope が勝つ形で評価されるため、global の deny / ask に当たる entry は project 側の allow が一度も機能しない
 
@@ -154,7 +156,7 @@ swat-skills の hook は一括 stage (`git add -A` 等) を止めない。秘匿
 
 ### 8. 完了報告
 
-全項目を表で報告する: 項目 / 結果 (**充足** = 検査を素通り / **適用** = 提案が承認され書き込んだ / **提案のみ** = 承認待ちや見送り / **未完了** = 停止・保留 / **対象外** = 手順 2-2 で見送った repo-local の label と、手順 2-4 で見送った規約の置き場の候補と、手順 3-2 で入れないと決めた worktree 規範と、手順 4-4 で見送った settings の群と、手順 7 で入れないと決めた secret 検査) / 次アクション。セッション内で実行されなかった委譲先も未完了として必ず載せる。手順 3-1 の E2E 検証が通らなかったときは、次アクションに「成果物は書かれているが未検証。worktree-setup の E2E 検証をやり直す」と書く — 成果物が 1 つでもあれば次回の手順 1 は充足と判定するので、この報告が失敗の残る唯一の場所になる。repo に取り込む前提の file (個人スコープの `CLAUDE.local.md` / `.claude/settings.local.json` は除く) に書いたら、書き込んだ file ごとに提案に添えた理由を次アクションに並べる — 後から入った人が setup 由来の記述を消してよいか判断できるようにするため (取り込み方は実行 project の運用に従う)。手順 4-3 のコマンドが失敗して判定できなかった env 群は未完了とし、次アクションに 4-3 で特定した原因の解消を書く。env 群を適用したら、次アクションに Claude Code の再起動を載せる (再起動するまで todolist tool は出ない)。書き先が `.claude/settings.local.json` なら、fresh worktree / fresh clone のセッションには届かないことも添える。
+全項目を表で報告する: 項目 / 結果 (**充足** = 検査を素通り / **適用** = 提案が承認され書き込んだ / **提案のみ** = 承認待ちや見送り / **未完了** = 停止・保留 / **対象外** = 手順 2-2 で見送った repo-local の label と、手順 2-4 で見送った規約の置き場の候補と、手順 2-5 で設計 doc を置いていない・宣言しないとした設計 doc の置き場と、手順 3-2 で入れないと決めた worktree 規範と、手順 4-4 で見送った settings の群と、手順 7 で入れないと決めた secret 検査) / 次アクション。セッション内で実行されなかった委譲先も未完了として必ず載せる。手順 3-1 の E2E 検証が通らなかったときは、次アクションに「成果物は書かれているが未検証。worktree-setup の E2E 検証をやり直す」と書く — 成果物が 1 つでもあれば次回の手順 1 は充足と判定するので、この報告が失敗の残る唯一の場所になる。repo に取り込む前提の file (個人スコープの `CLAUDE.local.md` / `.claude/settings.local.json` は除く) に書いたら、書き込んだ file ごとに提案に添えた理由を次アクションに並べる — 後から入った人が setup 由来の記述を消してよいか判断できるようにするため (取り込み方は実行 project の運用に従う)。手順 4-3 のコマンドが失敗して判定できなかった env 群は未完了とし、次アクションに 4-3 で特定した原因の解消を書く。env 群を適用したら、次アクションに Claude Code の再起動を載せる (再起動するまで todolist tool は出ない)。書き先が `.claude/settings.local.json` なら、fresh worktree / fresh clone のセッションには届かないことも添える。
 
 ## 最小集合 (手順 4-4 で群ごとに入れるかを尋ねる)
 
@@ -162,7 +164,7 @@ swat-skills の hook は一括 stage (`git add -A` 等) を止めない。秘匿
 
 | 群 | entry | 根拠 |
 |---|---|---|
-| skill script | install 済み swat-skills の `skills/<category>/<name>/scripts/` 配下で、SKILL.md 本文から直接起動される script すべて。列挙の起点は手順 4-1 で判定した install 形態で決まる — symlink なら `~/.claude/skills/swat-skills/`、marketplace なら「path 解決」節の cache glob を `ls` で実 path まで解決してから辿る | swat-skills の skill が直接呼ぶ script の事前承認。書き方は「path 解決」節の 2 本立て。列挙は実行のたびに SKILL.md 本文から行い、固定の一覧を持たない |
+| skill script | install 済み swat-skills の `skills/<category>/<name>/scripts/` 配下で、SKILL.md 本文から直接起動される script すべて。列挙の起点は手順 4-1 で決めた plugin root | swat-skills の skill が直接呼ぶ script の事前承認。書き方は「path 解決」節の 2 本立て。列挙は実行のたびに SKILL.md 本文から行い、固定の一覧を持たない |
 | MCP tool | 同梱 MCP server が提供する tool すべて。entry 形は `mcp__plugin_swat-skills_<server>__<tool>` で、`<server>` の列挙元は plugin の `.mcp.json`、`<tool>` はその server が実際に公開している tool | skill script 行と同じく「swat-skills を使う前提」で全環境共通。**本表に列挙は書かない** — server が tool を増やすたびに表の更新が要ることになる |
 | deny | `Bash(rm -rf /)` `Bash(rm -rf /*)` `Bash(rm -rf ~)` `Bash(rm -rf ~/)` `Bash(rm -rf $HOME)` `Bash(git push --force:*)` `Bash(git push -f:*)` `Bash(git reset --hard:*)` および pipe-to-shell 4 形 `Bash(curl * \| sh)` `Bash(curl * \| bash)` `Bash(wget * \| sh)` `Bash(wget * \| bash)` | 取り返しがつかない操作 / 明確なセキュリティリスクの最後の砦 |
 | env | `"env": {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}` (固定。install 形態で分岐しない) | 入れないと、一部の model では todolist tool が出ず、playbook が step を写す先が無くなる |
@@ -190,22 +192,22 @@ Claude Code 内蔵 sandbox の設定。macOS / Linux / WSL2 で動く。
 | `network.allowedDomains` の追加 | sandbox 内の fetch / install が domain 拒否で失敗する | 適用先の実依存 (npm / rubygems / 社内 registry 等) で決まる。sandbox block の network 行をそのまま増やさない |
 | `network.allowUnixSockets` に `/private/tmp` | **macOS**: sandbox 内のテスト / ツールが unix socket の `bind` / `connect` で `Operation not permitted` (`EPERM`) になる | `filesystem.allowWrite` では開かない — bind / connect は `network-bind` / `network-outbound` という file write とは別の権限クラス。**ディレクトリ単位**で並べ、その subpath 配下だけが通る (`/tmp` は `/private/tmp` へ解決されるので 1 本でよい)。**適用先が socket を張るテスト / 常駐 daemon を持つときだけ足す**。`allowAllUnixSockets: true` は全 socket 開放で、公式 docs が `/var/run/docker.sock` 経由の host 奪取を警告しているので選ばない。広いディレクトリ (`/private/tmp` 等) を許すとその配下の**他人の socket も到達可能**になるため、名指しできるならより狭い方を選ぶ |
 
-## path 解決: symlink 環境と marketplace 環境の 2 本立て
+## path 解決: in-place 形と marketplace 形
 
-swat-skills の script を指す entry は、環境ごとに 2 本併記する。entry の書き分けに環境判定は使わない (判定は手順 4-1 の script 列挙の起点にだけ使う) — 実在しない側は解決しない path を指すだけで害が無く、判定を持たない分だけ壊れる余地が減る。
+swat-skills の script を指す entry は、marketplace 形を install 形態によらず書き、手順 4-1 で in-place install と判定したら in-place 形も併記する — 同じ project を、起動の仕方によって in-place と marketplace のどちらの plugin でも開くことがあり、片方だけでは当たらない session が残る。marketplace 形は glob で版を吸収するのでどの session からでも書けるが、in-place 形の path は in-place の session でしか分からない。実在しない側は解決しない path を指すだけで害が無い。
 
 | 環境 | 書き方 |
 |---|---|
-| symlink | `Bash(~/.claude/skills/swat-skills/skills/<category>/<name>/scripts/<script>:*)` |
+| in-place | `Bash(<plugin root>/skills/<category>/<name>/scripts/<script>:*)`。`<plugin root>` は手順 4-1 の plugin root の先頭の `$HOME` を `~` に戻した path |
 | marketplace plugin | `Bash(~/.claude/plugins/cache/*/swat-skills/*/skills/<category>/<name>/scripts/<script>*)` |
 
 **marketplace 側で `:*` を使わない。これが最大の罠。** rule content が `:*` で終わると wildcard より先に prefix として parse され、`*` が literal 文字として比較される → 永久に match しない死に entry になる。`:` を外して `*` を script 名へ直付けすると wildcard 型になり、引数の有無を問わず一致する。
 
 **先頭 wildcard (`Bash(*/skills/<name>/scripts/<script>*)`) は書かない。** `*` はコマンド名自体を跨いで一致するため、「末尾がこの文字列に一致する任意のコマンド」を許可することになり、prefix anchor の無い bypass クラスを作る。version 吸収のために path 中央へ `*` を置くのは、先頭が絶対 path で固定されている限り許容範囲。
 
-**marketplace 環境で 2 本立てでも足りないことがある。** 照合は両辺とも文字列そのままで、rule 側の `~` はホームへ展開されない。skill が `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}` 経由で script を起動して絶対 path に解決される環境では、tilde entry に当たらない。**この症状 (marketplace install で ask が出続ける) が出たら**、`$HOME` を展開した絶対 path 版 (version segment のみ `*`) を足す。適用先の settings は個別環境のファイルなので絶対 path を書いてよい。
+**表の tilde の entry だけでは足りないことがある。** 照合は両辺とも文字列そのままで、rule 側の `~` はホームへ展開されない。skill が `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_SKILL_DIR}` 経由で script を起動して絶対 path に解決される環境では、tilde entry に当たらない。**この症状 (表の entry を入れても ask が出続ける) が出たら**、`$HOME` を展開した絶対 path 版 (marketplace 形は version segment のみ `*`) を足す。適用先の settings は個別環境のファイルなので絶対 path を書いてよい。
 
-`sandbox.excludedCommands` にも同じ parse 規則が効く。script を除外するときは同じ 2 形式で書き、**literal な tilde path の単文で起動する** — `${CLAUDE_SKILL_DIR}` 展開 (絶対 path) / 変数間接 / 複合コマンド (`for` ループ・`VAR=x` 前置) 経由の起動は照合されず、script が sandbox 内に落ちて subprocess の gh / herdr が即死する。
+`sandbox.excludedCommands` にも同じ parse 規則が効く。script を除外するときは表と同じ形式で書き、**literal な tilde path の単文で起動する** — `${CLAUDE_SKILL_DIR}` 展開 (絶対 path) / 変数間接 / 複合コマンド (`for` ループ・`VAR=x` 前置) 経由の起動は照合されず、script が sandbox 内に落ちて subprocess の gh / herdr が即死する。
 
 ## entry を足す / 足さない基準 (手順 4-5 アレンジ提案の判断軸)
 

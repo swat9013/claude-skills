@@ -6,7 +6,7 @@ permission フロー (settings の ask / auto mode classifier) に委ねる。pa
 同じ (`read_payload_or_pass()`。allow-hook は fail-safe 固定、ADR 0046)。rm を deny する guard は
 持たない (ADR 0077 の基準で削除)。
 
-承認ルート: /tmp /private/tmp $HOME/.claude/tmp <cwd>/tmp の各「配下」(ルート自体は対象外)。
+承認ルート: /tmp /private/tmp $HOME/.claude/tmp <cwd>/tmp の各「配下」(ルート自体は対象外。symlink の扱いは invariant 1)。
 recursive 削除 (-rf) 可。`PLAIN_COMMAND_CHARS` の外の文字 (glob/brace 展開/zsh の `=cmd`・`(...)`・
 extended_glob/変数/置換/quote)・語中の `~`/未知 flag/tmp 外混在/.. 脱出/ルート自体/改行で続けた 2 行目 は素通し。
 
@@ -24,7 +24,8 @@ path の解決は rm が実際に辿る物理的な解決 (`..` は直前の sym
 
 invariant:
     1. 承認ルートの配下に物理的に解決できない target (ルート自体・`..` 脱出・symlink を辿って
-       外へ出る形・存在しない末尾 `/` 付き target・home 自体・`~user`・cwd の無い相対 path) は allow しない
+       外へ出る形・存在しない末尾 `/` 付き target・home 自体・`~user`・cwd の無い相対 path) は allow しない。
+       symlink である $HOME/.claude/tmp / <cwd>/tmp の link 先は承認ルートに数えない
     2. 受理する綴り以外の rm (`sudo` / `env` / `\\rm` / 任意 path の rm / rmtrash / find -delete) は allow しない
     3. `PLAIN_COMMAND_CHARS` の外の文字と語中の `~` (shell 構文: glob / brace 展開 / zsh の `=cmd`・glob qualifier `(...)` / 変数 / 置換 / quote)・未知 flag・改行で続けた 2 行目・target 無しは allow しない
 
@@ -127,11 +128,18 @@ def posix_basename(path: str) -> str:
 
 
 def approved_roots(home: str, cwd: str) -> list[str]:
-    candidates = ["/tmp", "/private/tmp"]
+    """承認ルートの物理的な path。symlink の project root を外す規則は module docstring の invariant 1。
+
+    外す理由 (#1729): 承認の根拠は名前が `tmp` であることだけなので、link 先を root にすると
+    `tmp -> <home>` で home 配下の rm を allow する。link 先が system の tmp 配下なら、中身は system の
+    root で allow される。system の root (macOS の `/tmp -> /private/tmp`) は OS が置くので解決して使う。
+    """
+    project_roots = []
     if home:
-        candidates.append(home + "/.claude/tmp")
+        project_roots.append(home + "/.claude/tmp")
     if cwd:
-        candidates.append(_strip_one_trailing_slash(cwd) + "/tmp")
+        project_roots.append(_strip_one_trailing_slash(cwd) + "/tmp")
+    candidates = ["/tmp", "/private/tmp"] + [root for root in project_roots if not os.path.islink(root)]
     return [root for root in map(physical_directory, candidates) if root is not None]
 
 

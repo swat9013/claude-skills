@@ -26,6 +26,15 @@ inline subagent を agent 定義に切り出すのは、次の**どれか 1 つ*
 - **環境変数 `CLAUDE_CODE_EFFORT_LEVEL` は frontmatter の `effort` より優先される。** 設定されている環境では、定義ごとに変えた effort が全部その値に揃う。
 - **`model: inherit` は、呼び出し元のセッションと同じ深さで動くこと自体が役割の要件であるものに限る。** この役割では `effort` を書かず、セッションの effort で動かす。並列に作業を分け持つ役割でも、役割に要る深さを定義の側で決められるなら、`model` と `effort` を固定する — inherit にすると、人が対話のために選んだ effort が並列の数だけ費用に掛かる。
 
+## prompt cache の TTL
+
+- **呼び出し元や他の agent の返事を 5 分以上待つことがある役割 (起動後に SendMessage で再開される役割を含む) は、frontmatter に次の形で書く。** subagent の prompt cache は既定で 5 分で切れ、待った後の最初の呼び出しが context 全体を書き直す。待たずに終わる役割には書かない — 1 時間の TTL は cache の書き込み単価を上げるので、待たない役割では費用が増えるだけになる。
+
+```yaml
+experimental:
+  cacheTtl: 1h
+```
+
 ## haiku に任せる条件
 
 haiku を選ぶのは、次の **4 つをすべて**満たす仕事だけ。1 つでも欠けるなら sonnet 以上に置く。
@@ -69,6 +78,7 @@ haiku を選ぶのは、次の **4 つをすべて**満たす仕事だけ。1 �
 | `tools` | - | 使える tool の列挙。省略すると全 tool を継承する |
 | `model` | - | alias・モデル ID・`inherit`。選べる値は [models](../models.md) の表。省略すると環境変数 `CLAUDE_CODE_SUBAGENT_MODEL`、それも無ければ呼び出し元の model になる |
 | `effort` | - | `low` / `medium` / `high` / `xhigh` / `max`。モデルが対応しない段を指定すると、指定以下で対応する最高の段で動く |
+| `experimental` | - | 実験的な設定の入れ物。`cacheTtl` (`5m` / `1h`) で subagent の prompt cache の TTL を決める。書く条件は「prompt cache の TTL」 |
 
 model の決まり方は、Agent tool の `model` 引数 → 定義の `model` → 環境変数 `CLAUDE_CODE_SUBAGENT_MODEL` → 呼び出し元の model の順。
 
@@ -78,6 +88,7 @@ agent 定義を新設・編集する前、または skill に subagent の起動
 
 - [ ] 切り出す条件のどれに当たるかを言えるか (言えないなら inline のままにする)
 - [ ] frontmatter に `model` と `effort` を両方書いたか (`model: inherit` の役割は `effort` を書かない)
+- [ ] 返事を 5 分以上待つ役割にだけ、`experimental` の `cacheTtl: 1h` を書いたか
 - [ ] haiku を選んだなら、4 条件をすべて満たすか。検索や複数手順を伴う役割に `effort: low` を付けていないか
 - [ ] `tools` が役割に要るものだけか。読み取りだけの役割から書き込み系 tool と `Bash` を外したか
 - [ ] 本文に、一部の呼び出し元しか使わない手順を入れていないか

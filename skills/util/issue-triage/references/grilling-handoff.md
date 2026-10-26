@@ -1,6 +1,6 @@
 # 深掘りのセッションへの手順コメント
 
-`needs-grilling` にする issue へ投稿する手順コメントの雛形。作るのは issue-triage (区分 4) と issue-restructure (根本課題 issue)、投稿するのは `needs-grilling` を付ける呼び出し元。深掘りは user が別セッションで grill 系 skill を呼んで行い、そのセッションは triage 系 skill を読まない。手順がこのコメントだけで閉じるように、雛形の `<…>` はすべて実値で埋めて出す: `<M…>` は close したメンバーの番号、`<grill-with-docs の SKILL.md の絶対 path>` と `<body-rewrite.md の絶対 path>` は、本 file を Read させた SKILL.md が渡す path を、そこに見えている絶対 path のまま書く。tracker が GitHub でなければ、コマンドもその tracker の綴りへ置き換えて埋める。
+`needs-grilling` にする issue へ投稿する手順コメントの雛形。作るのは issue-triage (区分 4 (判断)。4 (人手) には作らない) と issue-restructure (根本課題 issue)、投稿するのは `needs-grilling` を付ける呼び出し元。深掘りは user が別セッションで grill 系 skill を呼んで行い、そのセッションは triage 系 skill を読まない。手順がこのコメントだけで閉じるように、雛形の `<…>` はすべて実値で埋めて出す: `<M…>` は close したメンバーの番号、`<grill-with-docs の SKILL.md の絶対 path>` と `<body-rewrite.md の絶対 path>` は、本 file を Read させた SKILL.md が渡す path を、そこに見えている絶対 path のまま書く。tracker が GitHub でなければ、コマンドもその tracker の綴りへ置き換えて埋める。
 
 - 分類根拠のコメントとは別のコメントにする — `ready-for-agent-review` は範囲を決めたコメントを検査対象にするので、手順が混ざると検査対象との境目が曖昧になる
 - 1 行目は雛形の固定の文字列のまま変えない。読んだその issue のコメントに 1 行目が同じコメントが既にあれば、手順コメントを作らない — 既に `needs-grilling` の issue へ重複して投稿しない

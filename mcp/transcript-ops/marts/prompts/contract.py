@@ -46,7 +46,7 @@ EXCLUSION_REASONS = (
     "rule_capture",             # `#rule ` A-strict 捕捉対象
     "compact_summary",          # context 圧縮の要約注入
     "meta_injected",            # isMeta (skill 本文注入 / SDK observer 等)
-    "sidechain",                # subagent 側の prompt
+    "sidechain",                # isSidechain (main transcript の中の sidechain record)
     "no_prompt_source",         # promptSource 欠落 (旧 CLI / システム生成)
     "non_human_prompt_source",  # promptSource が sdk / system
     "non_human_origin",         # origin.kind が human 以外
@@ -118,13 +118,29 @@ MART_NOTES = (
     "mart は全 project 横断で作る。repo での絞り込みは select_candidates の領分。",
     "excluded.no_prompt_source が急増していたら CLI の schema 変更で観測が劣化した"
     "疑い (silent zero にはならない設計)。急増の判定には前回 mart が要る。",
-    "store.broken_lines / store.unreadable_files / store.unrecognized_nested_files が"
-    "0 でなければ分母が欠けている (件数だけ出す。判断は読み手)。",
-    "分母は meta.transcript_kind が選ぶ。**既定 main は main session の transcript だけを"
-    "数える**。all は subagent の transcript も走査する。subagent の user record は "
-    "isSidechain / isMeta / tool_result を持つものが多く、その分は excluded の "
-    "sidechain / meta_injected / tool_result に落ちる。採用 (prompts) に入るのは、"
-    "どの除外にも当たらない subagent の record だけ。",
+    "store.broken_lines / store.unreadable_files / store.unrecognized_nested_files / "
+    "store.ts_missing_events が "
+    "0 でなければ観測が劣化している (件数だけ出す。判断は読み手)。broken_lines / "
+    "unreadable_files は分母の欠け。ts_missing_events は ts_epoch が NULL (欠損・解釈不能) で"
+    "この mart が読む projection を持つ record の数で、この mart はその "
+    "record を保守的に窓内へ倒すので、窓の外の prompt が混ざりうる上限として読む。store の劣化シグナルは "
+    "mart と同じ母集団 (meta.transcript_kind) で数える。unrecognized_nested_files は置き場の"
+    "判定に当たらず取り込まなかった file (transcript でない未知の file を含む) の数で、"
+    "transcript ならその分の分母が欠けている。main に"
+    "も subagent にも属さないので母集団を問わない。store.synced_files / "
+    "store.unchanged_files / store.removed_files は劣化シグナルではなく、lake 全体の差分 sync の"
+    "件数 (母集団を問わない)。",
+    "store.workflow_journal_files は transcript でないと分かっている workflow の進行ログの"
+    "件数で、劣化シグナルではない (母集団を問わない lake 全体の件数)。",
+    "store.duplicate_record_uuid_groups は record uuid が重複する組の数で、劣化シグナルでは"
+    "ない — record を dedup しないので健全な lake でも 0 にならない。重複した record は"
+    "出現回数と定型判定の件数を水増ししうる (mart と同じ母集団で数える)。",
+    "母集団は **main session の transcript だけ** (meta.transcript_kind は常に main)。"
+    "subagent の transcript file は走査せず、scanned_user_records にも excluded にも"
+    "入らない。excluded.sidechain は、main session の transcript の観測窓内の user record "
+    "のうち isSidechain が true で、excluded のキー順で sidechain より前の除外理由 "
+    "(tool_result / slash_command_expansion / rule_capture / compact_summary / "
+    "meta_injected) に当たらなかったものの件数。",
 )
 
 SLICE_NOTES = (
@@ -135,8 +151,8 @@ SLICE_NOTES = (
     "(host/owner/name) の distinct で、解決できなかった repo は数えない。",
     "repo / all_repos を渡さないと repo_root の git remote に解決する。解決できない"
     "ときは全 repo へ倒さず失敗する。",
-    "候補の母集団 (meta.transcript_kind) は provenance の mart の transcript_kind を"
-    "引き継ぐ。mart を渡さなければ main session の transcript だけ。",
+    "候補の母集団は mart と同じく main session の transcript だけ "
+    "(meta.transcript_kind は常に main)。",
 )
 
 

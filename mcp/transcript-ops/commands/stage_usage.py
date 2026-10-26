@@ -16,8 +16,18 @@ transcript を読んで決める。本 tool が持つのは境界の内側の算
   1 つの応答の record が工程の境界をまたぐときは、最初の record がある工程に帰属させる
 - subagent は工程内の起動 tool_use に対応する体の transcript を同じ規則で数え、入れ子の
   体は親に畳む。subagent 数に入れ子は含めない
-- 起動元に辿れない subagent (meta が無い・読めない・親が無い・親の連鎖が循環する) は
-  どの工程にも帰属できないので、工程の値に入れず `meta.unresolved_agent_ids` に出す
+- workflow の subagent (`subagents/workflows/<run>/`) は、工程内の `Workflow` tool_use の結果が
+  持つ run の id で run の体を引き、その tool_use のある工程に帰属させる。subagent 数には meta を
+  読めた run の体を 1 体ずつ足す。meta の読めない体は path から run が分かっても入れ子かどうかが
+  分からないので数に足さず、その起動は invariant 8 のとおり null と理由で返す。同じ run を指す
+  起動が重なったら、transcript で最初の起動にだけ帰属させる (工程ごとに足すと工程の合計で
+  二重になる)。結果が run の id を持たない `Workflow` (拒否・失敗) は run を起こしていないので
+  数えず、run の dir があって体が 0 体の run は 0 体と数える
+- 起動元に辿れない subagent (meta が無い・読めない・親が無い・親の連鎖が循環する・どの
+  `Workflow` の結果にも結び付かない run の体・agent id が重なる体) はどの工程にも帰属できない
+  ので、工程の値に入れず `meta.unresolved_agent_ids` に出す
+- session dir の下で subagent の transcript にも workflow の進行ログにも当たらない jsonl は、
+  列挙から外れる体がありうる兆候なので `meta.unrecognized_nested_files` に件数を出す
 
 対応が取れない値は 0 にせず `null` と理由で返す (0 だと消費が無かった工程と区別できない)。
 
@@ -29,6 +39,8 @@ invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持�
 5. 境界の内側の record だけを数え、応答の最終 usage はその応答の最初の record が属する工程に帰属させる
 6. 不正な stage 入力 (未知 uuid・境界の逆転) は当該 stage の `error` に出し、他の stage を止めない
 7. transcript lake の外の path・.jsonl 以外は `StageUsageRejected` で拒否する
+8. workflow の subagent は run を指す最初の `Workflow` tool_use の工程に帰属させ、run の体を引けない (dir が無い・transcript の無い体がある・meta の読めない体がある・agent id が重なる) workflow は 3 と同じく `null` と理由で返す
+9. session dir の下で置き場に当たらない jsonl は `meta.unrecognized_nested_files` に件数を出す
 
 出力: output_dir に stage-usage-<timestamp>.json を書き、**path と meta だけを返す**。
 """
@@ -45,7 +57,11 @@ from adapter.transcript import (
     resolve_now,
     subagent_files_of,
     subagent_launch_ids_of,
+    unrecognized_subagent_files_of,
     usage_of,
+    workflow_run_dir_exists,
+    workflow_launch_ids_of,
+    workflow_run_of,
 )
 from artifacts import prepare_output_dir
 
@@ -88,13 +104,19 @@ def sum_tokens(records: list[dict], start: int = 0, end: int | None = None) -> d
     }
 
 
-def resolve_roots(files: list) -> dict[str, str | None]:
+def resolve_roots(files: list, linked_runs: set[str]) -> dict[str, str | None]:
     """agent id → 起動元の top-level の agent id。辿れない体は None。
 
     meta が無い・読めない体、親の meta が無い体、親の連鎖が循環する体、辿り着いた先が
-    起動の tool_use id を持たない体は、どの起動に属するかが決まらない。
+    起動の tool_use id も、`Workflow` の結果に結び付いた run (`linked_runs`) も持たない体は、
+    どの起動に属するかが決まらない。agent id が重なる体は親の連鎖も起動も 1 つに決まらない。
     """
-    by_id = {f.agent_id: f for f in files}
+    by_id: dict[str, object] = {}
+    duplicated = set()
+    for f in files:
+        if f.agent_id in by_id:
+            duplicated.add(f.agent_id)
+        by_id[f.agent_id] = f
     roots: dict[str, str | None] = {}
     for f in files:
         current, seen = f, set()
@@ -104,47 +126,78 @@ def resolve_roots(files: list) -> dict[str, str | None]:
                 break
             seen.add(current.agent_id)
             current = by_id.get(current.parent_agent_id)
-        reached_launch = current is not None and current.meta_readable and current.tool_use_id
-        roots[f.agent_id] = current.agent_id if reached_launch else None
+        reached_launch = current is not None and current.meta_readable and (
+            current.tool_use_id or current.workflow_run_id in linked_runs)
+        resolved = reached_launch and not (seen | {f.agent_id, current.agent_id}) & duplicated
+        roots[f.agent_id] = current.agent_id if resolved else None
     return roots
 
 
-def sum_subagents(launch_ids: list[str], transcript: Path) -> dict:
+def sum_subagents(launch_ids: list[str], workflow_runs: dict[str, str], transcript: Path,
+                  linked_runs: set[str]) -> dict:
+    """工程内の起動 (`Task` / `Agent` の tool_use id と、run を指す最初の `Workflow` の tool_use id
+    → run の id) に対応する体を数える。`linked_runs` は transcript 全体で結果に結び付いた run。"""
     result: dict = {"count": len(launch_ids), "tokens": None,
                     "cache_read_input_tokens": None, "unmatched_tool_use_ids": []}
-    if not launch_ids:
+    if not launch_ids and not workflow_runs:
         result.update(tokens=0, cache_read_input_tokens=0)
         return result
     files = subagent_files_of(transcript)
     if files is None:
-        result["unmatched_tool_use_ids"] = list(launch_ids)
+        result["unmatched_tool_use_ids"] = [*launch_ids, *workflow_runs]
         result["reason"] = "subagents dir が無い"
         return result
-    top = {f.tool_use_id: f for f in files
-           if f.meta_readable and f.tool_use_id and not f.parent_agent_id}
-    launched = set()
+    # 起動元へ直接対応する体 (入れ子でなく meta を読めた体)
+    top = [f for f in files if f.meta_readable and not f.parent_agent_id]
+    by_tool_use: dict[str, list] = {}
+    for f in top:
+        if f.tool_use_id:
+            by_tool_use.setdefault(f.tool_use_id, []).append(f)
+    # 起動に対応した体の agent id → 起動の tool_use id。agent id が重なる体は複数の起動に対応しうる
+    launch_of: dict[str, set[str]] = {}
     for launch_id in launch_ids:
-        found = top.get(launch_id)
-        if found and found.transcript.is_file():
-            launched.add(found.agent_id)
-        else:
+        found = by_tool_use.get(launch_id, [])
+        for f in found:
+            launch_of.setdefault(f.agent_id, set()).add(launch_id)
+        # 対応する体が無いか、複数あってどれがその起動の体かが決まらない
+        if len(found) != 1:
             result["unmatched_tool_use_ids"].append(launch_id)
+    for launch_id, run_id in workflow_runs.items():
+        # run の体は path から決まるので、meta の読めない体も入れる (起動元へ解決できず数えられない
+        # 体として下で起動ごと null にする)
+        run = [f for f in files if f.workflow_run_id == run_id and not f.parent_agent_id]
+        if not run and not workflow_run_dir_exists(transcript, run_id):
+            result["unmatched_tool_use_ids"].append(launch_id)
+        for f in run:
+            launch_of.setdefault(f.agent_id, set()).add(launch_id)
+        # meta の読めない体は入れ子かどうかも分からず起動元に辿れないので、subagent 数に足さず
+        # `meta.unresolved_agent_ids` の側で出す (数に足すと unresolved と二重に数えられる)
+        result["count"] += sum(1 for f in run if f.meta_readable)
+    roots = resolve_roots(files, linked_runs)
+    # 起動に対応したのに起動元へ解決できない体と、起動に属するのに transcript の無い体は数えられない
+    unreadable = {launch_id for agent_id, ids in launch_of.items() if roots[agent_id] is None
+                  for launch_id in ids}
+    unreadable |= {launch_id for f in files
+                   if roots[f.agent_id] in launch_of and not f.transcript.is_file()
+                   for launch_id in launch_of[roots[f.agent_id]]}
+    result["unmatched_tool_use_ids"] += sorted(unreadable - set(result["unmatched_tool_use_ids"]))
     if result["unmatched_tool_use_ids"]:
-        result["reason"] = "起動した tool_use に対応する agent の file か meta が見つからない"
+        result["reason"] = ("起動した tool_use に対応する agent の file か meta が見つからないか、1 つに決まらない"
+                            " (workflow は run の dir か体の transcript か meta。agent id・tool_use id の重なりを含む)")
         return result
-    roots = resolve_roots(files)
     records = []
     for f in files:
-        if roots[f.agent_id] in launched and f.transcript.is_file():
+        if roots[f.agent_id] in launch_of:
             records.extend(_read(f.transcript))
     result.update(sum_tokens(records))
     return result
 
 
-def unresolved_agent_ids(transcript: Path) -> list[str]:
+def unresolved_agent_ids(transcript: Path, linked_runs: set[str]) -> list[str]:
     """起動元に辿れない subagent。どの工程にも帰属できないので transcript の meta に出す。"""
     files = subagent_files_of(transcript) or []
-    return sorted(agent_id for agent_id, root in resolve_roots(files).items() if root is None)
+    return sorted({agent_id for agent_id, root in resolve_roots(files, linked_runs).items()
+                   if root is None})
 
 
 def _timestamp(rec: dict) -> dt.datetime | None:
@@ -157,7 +210,8 @@ def _timestamp(rec: dict) -> dt.datetime | None:
         return None
 
 
-def summarize_stage(stage: dict, records: list[dict], index: dict[str, int], transcript: Path) -> dict:
+def summarize_stage(stage: dict, records: list[dict], index: dict[str, int],
+                    first_launch_runs: dict[str, str], linked_runs: set[str], transcript: Path) -> dict:
     out = {key: stage.get(key) for key in ("stage", "from_uuid", "to_uuid")}
     start, end = index.get(stage.get("from_uuid")), index.get(stage.get("to_uuid"))
     missing = [key for key, pos in (("from_uuid", start), ("to_uuid", end)) if pos is None]
@@ -172,7 +226,9 @@ def summarize_stage(stage: dict, records: list[dict], index: dict[str, int], tra
     out["duration_seconds"] = (last - first).total_seconds() if first and last else None
     out.update(sum_tokens(records, start, end))
     launch_ids = list(dict.fromkeys(i for rec in span for i in subagent_launch_ids_of(rec)))
-    out["subagents"] = sum_subagents(launch_ids, transcript)
+    workflow_runs = {i: first_launch_runs[i] for rec in span for i in workflow_launch_ids_of(rec)
+                     if i in first_launch_runs}
+    out["subagents"] = sum_subagents(launch_ids, workflow_runs, transcript, linked_runs)
     return out
 
 
@@ -195,7 +251,18 @@ def build_slice(path: Path, stages: list[dict], now: dt.datetime) -> dict:
         uuid = rec.get("uuid")
         if isinstance(uuid, str) and uuid not in index:
             index[uuid] = position
-    summaries = [summarize_stage(stage, records, index, path) for stage in stages]
+    # run の id は結果の record にあり、工程の境界の外に出うるので file 全体から引く。結果が run の
+    # id を持たない Workflow (拒否・失敗) は run を起こしていないので入らない
+    run_ids = dict(run for rec in records if (run := workflow_run_of(rec)))
+    linked_runs = set(run_ids.values())
+    # 同じ run を指す起動が重なったら最初の起動だけに帰属させる
+    first_launch_runs: dict[str, str] = {}
+    for rec in records:
+        for launch_id in workflow_launch_ids_of(rec):
+            if launch_id in run_ids and run_ids[launch_id] not in first_launch_runs.values():
+                first_launch_runs[launch_id] = run_ids[launch_id]
+    summaries = [summarize_stage(stage, records, index, first_launch_runs, linked_runs, path)
+                 for stage in stages]
     mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.timezone.utc)
     return {
         "meta": {
@@ -205,7 +272,9 @@ def build_slice(path: Path, stages: list[dict], now: dt.datetime) -> dict:
             "stages": len(summaries),
             "stage_errors": sum(1 for s in summaries if "error" in s),
             # 起動元に辿れない subagent の消費は、どの工程の subagent の token にも入らない
-            "unresolved_agent_ids": unresolved_agent_ids(path),
+            "unresolved_agent_ids": unresolved_agent_ids(path, linked_runs),
+            # 置き場に当たらない jsonl。列挙から外れた体がいれば subagent の token は部分和になる
+            "unrecognized_nested_files": unrecognized_subagent_files_of(path),
         },
         "stages": summaries,
     }

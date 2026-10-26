@@ -326,7 +326,8 @@ META_NOTES = (
     "hook_activity は section (cwd scope) で絞らない — 「30 日どこでも fire していない」"
     "が「fire していない hook」の主張になるため、分母を窓全体に取る。",
     "観測窓は record の timestamp だけで切る (v2 で file mtime による事前除外を撤廃)。"
-    "timestamp を持たない record は保守的に窓内へ倒し、件数は store.ts_missing_events に出す。",
+    "timestamp を持たない record は保守的に窓内へ倒す。件数の読み方は store の劣化の注記 "
+    "(store.ts_missing_events) を見る。",
     "meta.settings_denominator が分母 path の全量。read: false の行が「存在するのに"
     "読まなかった層」で、reason (out_of_section / absent / unparsed / cross_layer_match / "
     "not_a_settings_layer) が理由を示す。**`uncovered_event_count` を読む前にここを見る** — "
@@ -352,8 +353,28 @@ META_NOTES = (
     "**rule_candidates の rule_inputs は view の収載条件に届かない entry にも "
     "hard_deny_share を載せる** (near-miss 行を含む) ので、view に該当行が無ければ "
     "20-axis-a.json の outcome_breakdown_early / _late を直接見る。",
-    "store.broken_lines / store.unreadable_files / store.unrecognized_nested_files が "
-    "0 でなければ観測が劣化している (件数だけ出す。判断は読み手)。",
+    "store.broken_lines / store.unreadable_files / store.unrecognized_nested_files / "
+    "store.ts_missing_events が "
+    "0 でなければ観測が劣化している (件数だけ出す。判断は読み手)。broken_lines / "
+    "unreadable_files は観測の欠け。ts_missing_events は ts_epoch が NULL (欠損・解釈不能) で"
+    "この mart が読む projection を持つ record の数で、この mart はその "
+    "record を保守的に窓内へ倒すので、窓の外の event が混ざりうる。件数は record 数で、"
+    "この mart が読む projection のうち tool_use 以外の record (tool_use を持たない。"
+    "hook_activity の fire 実績になる hook firing の record) も含む。"
+    "1 record が複数の tool_use を持ちうることと合わせ、"
+    "窓内へ倒した tool_use の event 数とは一致しない (0 なら倒した event は無い)。窓内へ倒した event は前後半の"
+    "内訳 early / late のどちらにも入らない。store の劣化シグナルは "
+    "mart と同じ母集団 (meta.transcript_kind) で数える — 既定 main の mart では subagent の "
+    "transcript の劣化を含まない。unrecognized_nested_files は置き場の判定に当たらず取り込まな"
+    "かった file (transcript でない未知の file を含む) の数で、transcript ならその分の観測が"
+    "欠けている。main にも subagent にも属さない "
+    "ので母集団を問わない。store.synced_files / store.unchanged_files / "
+    "store.removed_files は劣化シグナルではなく、lake 全体の差分 sync の件数 (母集団を問わない)。",
+    "store.workflow_journal_files は transcript でないと分かっている workflow の進行ログの "
+    "件数で、劣化シグナルではない (母集団を問わない lake 全体の件数)。",
+    "store.duplicate_record_uuid_groups は record uuid が重複する組の数で、劣化シグナルでは"
+    "ない — record を dedup しないので健全な lake でも 0 にならない。重複した record は"
+    "match_count などの件数を水増ししうる (mart と同じ母集団で数える)。",
     "母集団 (実行・hook の fire とも) は meta.transcript_kind が選ぶ。**既定 main は "
     "main session の transcript だけを数え、subagent の tool 呼び出しを含まない** — "
     "subagent の中でだけ使われた entry は match_count 0 に見えるので、revoke 判定の前に "

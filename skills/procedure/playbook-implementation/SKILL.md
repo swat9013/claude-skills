@@ -29,9 +29,9 @@ metadata:
 
 4. 変更の形を決める。選択肢が複数あるなら `principle-design-derivation-order` (制約 → アーキテクチャ特性 → 構造の順で導く) と `principle-state-coupling-complexity-code` (状態 > 結合 > 複雑性 > コード量の順に比べ、波及を抑える案を取る) で選ぶ。自前実装と既製品が拮抗したら `principle-build-vs-buy`。決めた理由と退けた案を書き留める — step 7 の PR 説明文で使う。
 
-5. テストを先に書く。条件: 振る舞いを追加・修正するとき。`principle-tdd-rhythm` で失敗するテストを先に置き、`principle-test-level-allocation` でレベルを決め、`principle-test-as-spec` で名前と構造を決める。振る舞いが変わらない作業 (文書・設定・構造だけのリファクタリング) は `skip: 振る舞いの変更なし`。
+5. テストを先に書く。条件: 振る舞いを追加・修正し、その対象にテストを書くと `principle-test-thickness-by-property` が決めるとき。`principle-tdd-rhythm` で失敗するテストを先に置き、`principle-test-level-allocation` でレベルを決め、`principle-test-as-spec` で名前と構造を決める。振る舞いが変わらない作業 (文書・設定・構造だけのリファクタリング) は `skip: 振る舞いの変更なし`、テストを書かない性質の対象 (推論で効く文を含む) は `skip: テストを書かない対象` — 両方に当たるときは先に挙げたほうを書く。
 
-6. 実装する。`principle-structure-simplicity` (責務の置き場と共通化の有無) / `principle-ubiquitous-naming` (識別子と概念名) / `principle-signature-intent` (引数とシグネチャ) / `principle-fail-loudly` (エラー処理とフォールバック) を当てる。step 5 で書いたテストと変更が触れる範囲のテストは手で走らせる。対象 repo の commit / push の hook が走らせる検査は hook に任せて commit し (commit の前に手で走らせると、hook が同じ検査をもう一度走らせる)、どの hook も走らせない検査は commit の前に手で走らせる。hook が落ちたら、落ちた検査が指摘した箇所を直して commit し直す。
+6. 実装する。`principle-structure-simplicity` (責務の置き場と共通化の有無) / `principle-intention-revealing-names` (識別子と概念名) / `principle-signature-intent` (引数とシグネチャ) / `principle-fail-loudly` (エラー処理とフォールバック) を当てる。step 5 で書いたテストと変更が触れる範囲のテストは手で走らせる。対象 repo の commit / push の hook が走らせる検査は hook に任せて commit し (commit の前に手で走らせると、hook が同じ検査をもう一度走らせる)、どの hook も走らせない検査は commit の前に手で走らせる。hook が落ちたら、落ちた検査が指摘した箇所を直して commit し直す。
 
 7. PR 到達前にレビュー工程を通す。通ったら PR を draft で出してレビューの出力をコメントで投稿し、作業が完了したら ready にする。`swat-skills:review-stage` を Skill tool で invoke する。
    - review-stage は commit 済みの差分だけを読むので、invoke の前に変更を commit する。発端の issue があれば `issue=<ref>` を args で渡す。出力の `再レビュー:` 行が `停止` で始まるときは、理由が `未 commit` で、`停止理由:` 行に挙がった file がすべてこの作業で入れた変更なら commit して同じ args で invoke し直す (この停止出力を `prev=` に渡すと初回へ落ちる)。それ以外の停止 (無関係な変更を含む `未 commit`・`reviewer 未起動`・`その他: <自由文>`) は、レビューを通らないまま先へ進まないよう user へ報告して止まる (spawn prompt から開いたときは最終返答に載せる)。`停止` で始まらなければ Act on を直して commit し、`再レビュー:` 行が `要` で始まるときだけ `swat-skills:review-stage` を invoke し直し、前巡の出力を保存した file を `prev=<file>` で渡す — 前の invoke の記憶から reviewer を直接立てると、invoke 先の手順が抜ける。`要` で始まらなければレビューはそこで終える

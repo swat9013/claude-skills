@@ -8,7 +8,7 @@ description: Claude Code の permission (allow/deny/ask) / sandbox / guard hook 
 
 Claude Code の permission 3 層 — **permission** (正規表現ベースの一律許可) / **hook** (細粒度の条件判断) / **sandbox** (行動範囲の線引き) — を、`~/.claude/projects/**/*.jsonl` の tool_use 実績と突合し、単位別に **5 bucket (revoke / promote / refine / sandbox / keep)** の候補を LLM に**候補提示までさせて**、判定は人間の判断に残す棚卸し skill。
 
-3 段階モデル (原則: **決定的にできる推論は tool へ、意味判断だけを LLM へ、判定は人間に**):
+3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は `open_predicates` の解釈と文章の具体化のみ**):
 
 1. **決定的観測 + 決定的ルール**: `scan_permissions` tool が両軸集計 + bypass 系列 + guard 逆引きを出し、機械判定可能な条件を評価して `rule_candidates` (`bucket_candidate` / `rule_fired` / `rule_inputs` / `open_predicates` / `near_misses`) を書く。**tool は bucket を確定しない**
 2. **LLM 具体化 (このメインコンテキスト)**: `open_predicates` に挙がった条件だけを判断し、bucket を確定して具体 entry 案 (hook は要件文まで) を組み立てる。**採否は決めない**
@@ -102,7 +102,7 @@ Claude Code 本体の permission matcher 実装を確認できれば `sample_mat
 **確度注記の義務**:
 - `hard_deny_share` を bucket 判定の根拠にする前に、その deny が **permission entry 由来か**を確かめる。guard hook 由来の deny も `deny_permission-rule` にラベルされ (`denial_kind` 空 + `outcome_base: error` に落ちる経路もある)、guard の deny メッセージは安定文字列なので `result_text` の署名で帰属が引ける。入力が汚染されているときは `axis_a_high_deny_share` / `compound_line_deny_miscount` の 0 件を「候補が無い」ではなく「入力が汚れている」と読む
 - outcome の `unknown` は**参考値**として扱い、bucket 判定は明示 outcome を主根拠にする (tool_result が transcript 末尾で truncate された / 別セッションに分割された / 未完了、のいずれでも unknown に落ちる)
-- `meta.store` の**事故由来**の劣化 (`broken_lines` / `unreadable_files`) が 0 でないうちは、revoke ではなく hold にする — observation が欠けており、未使用に見える entry が実際には使われていることがある。既定の `transcript_kind: main` は subagent の tool 呼び出しを数えないので、subagent 内だけで使われた entry も `match_count 0` に見える。revoke 候補を採る前に、`transcript_kind: "all"` で取り直した mart でその entry の `match_count` を確かめ、0 でなければ revoke にせず keep にする
+- `meta.store` の**事故由来**の劣化 (`broken_lines` / `unreadable_files`) が 0 でないうちは、revoke ではなく hold にする — observation が欠けており、未使用に見える entry が実際には使われていることがある。既定の `transcript_kind: main` は subagent の tool 呼び出しを数えないので、subagent 内だけで使われた entry も `match_count 0` に見える。revoke 候補を採る前に、`transcript_kind: "all"` で取り直した mart でその entry の `match_count` を確かめ、0 でなければ revoke にせず keep にする。main の mart の劣化で hold にならなかった候補でも、取り直した mart の `meta.store` の事故由来の劣化が 0 でなければ、その mart の `match_count 0` を根拠にする revoke 候補は informational へ落とし、取り直した mart の劣化の件数を添える — 劣化は mart と同じ母集団で数えるので main の mart には出ず、壊れた subagent の transcript の中でだけ使われた entry も取り直した mart で 0 に見える
 - `axis_a_high_deny_share` の `window_split.shifted: true` の entry は、**窓全体の `hard_deny_share` を bucket 判定の根拠にしない** (変更前後を混ぜた平均で、どちらの期間も表していない)。前半 / 後半の `hard_deny_share` を entry 表示に併記し、判定は変化後 (後半) の値で行う。`shifted: null` は判定不能 (どちらかの半分が薄い) で「窓内で一様」の証拠ではない — 前後半の件数を注記して informational へ落とす
 - `matcher_confidence: approx` の entry は「近似マッチ (glob / domain の wildcard) — 実 matcher と揺れる可能性」を **entry 表示に注記**し、revoke / keep の判定対象から外して informational へ置く (rule 側でも除外され `near_misses` に出る)
 - `matcher_confidence: unmatchable` の entry は **`match_count 0` を「未使用」と読まない** (読み方は mart の `contract.notes` が正本)。approx と同じく revoke / keep の判定対象から外し、**`unmatchable_reason` をそのまま**理由に添えて informational へ置く。所見には「どうすれば判定できるようになるか」を併記する — `input_column_empty` なら store に照合対象の列を足す、`param_rule` (`Tool(param:value)` 形で server が param の値を持たない) なら transcript を直接読む。**`param_rule` に `query` tool を使わない** — 値を持つ列が無く、`input_excerpt` は 200 字上限で Bash は `command` が先に入るため、長い command の呼び出しでは param が切り落とされて実在する呼び出しを 0 件と読む (この 0 を未使用と読むと #888 の偽陽性が戻る)
@@ -149,7 +149,7 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
 
 `/tmp/inventory-permissions/report-<timestamp>.md` に mart と並置で書く。以下の**固定 schema**:
 
-1. **ヘッダ**: 観測窓 / 総 event 数 / distinct sessions / section / 判定可能性 / matcher confidence 内訳 / 数えた transcript (`meta.transcript_kind`) / 観測の劣化 (`meta.store` の 0 でない項目を宣言する。`broken_lines` / `unreadable_files` は事故由来、`unrecognized_nested_files` は main とも subagent とも決められない置き場の transcript で、取り込まれていない。事故由来がすべて 0 なら「事故由来の劣化なし」と明記) / 分母の欠落 (`meta.settings_denominator` の `read: false` 行を reason ごとに宣言する。`unparsed` / `not_a_settings_layer` が在れば必ず書く)
+1. **ヘッダ**: 観測窓 / 総 event 数 / distinct sessions / section / 判定可能性 / matcher confidence 内訳 / 数えた transcript (`meta.transcript_kind`) / 観測の劣化 (`meta.store` のうち `contract.notes` が劣化シグナルと名指す key の 0 でないものを宣言する (key ごとの意味は contract の注記が持つ)。名指さない key は 0 でなくても宣言しない。うち `broken_lines` / `unreadable_files` は手順 2 の hold の判定に使う事故由来の劣化。事故由来がすべて 0 なら「事故由来の劣化なし」と明記。`transcript_kind: "all"` で取り直した mart を revoke の判定に使ったら、その mart の劣化シグナルのうち 0 でないものも並べて宣言する) / 分母の欠落 (`meta.settings_denominator` の `read: false` 行を reason ごとに宣言する。`unparsed` / `not_a_settings_layer` が在れば必ず書く)
 2. **候補 section** (bucket 別に列挙):
     - 単位: `entry` (A 軸候補) or `tool + command_head` (B 軸候補) or `session_id + denied_at` (bypass)
     - match_count / outcome_breakdown (A 軸) or count / outcomes (B 軸)
