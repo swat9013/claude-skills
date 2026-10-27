@@ -11,7 +11,7 @@ open issue を全件読み、根本課題を共有する issue をクラスタ�
 語は次の意味で使う。
 
 - **観測型 issue**: 起きた不具合や食い違いを書いたもの。**手段型 issue**: 解き方を先に指定したもの。**課題型 issue**: 解くべき問題と、解けたかの判定条件を書いたもの
-- **根本課題**: クラスタの共通原因を課題の形で言い直したもの。解決すればクラスタ内のどの issue も不要になる (再現しなくなる・書く理由が消える) 原因のうち、最も浅いものを採る。1 件しか説明しない原因は根本課題にしない
+- **根本課題**: クラスタの共通原因を課題の形で言い直したもの。解決すればクラスタ内のどの issue も不要になる (再現しなくなる・書く理由が消える) 原因のうち、最も浅いものを採る。1 件しか説明しない原因は根本課題にしない。原因が iceberg model のどの層にあるかと、どの層の原因を採るかは原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-root-cause-and-hierarchy-of-controls.md` に従う
 
 置き場は `-R` で明示する: issue は `-R <issue 置き場>`、PR は `-R <CL 置き場>`。issue 置き場は、呼び出し元が指定していればそれを使う。指定が無ければ対象 repo の `docs/agents/issue-tracker.md` の宣言に従う。宣言が別の file を正本として指すなら、その file が置き場として宣言する値を使う。指された file が無いか値を読み取れなければ、対象 repo 自身へ落とさず、止まって、指された file の path と読めなかった理由を挙げて置き場を user に問う — 正本が別 repo を宣言していると、同じ番号の別の issue を読むことになる。`docs/agents/issue-tracker.md` が無いか置き場の宣言を読み取れなければ対象 repo 自身を置き場とする。CL 置き場と CLI 規約・label の綴り (`needs-triage`・`ready-for-agent`・`needs-info`・`ready-for-human`・`needs-grilling`・`tracking-issue`) は対象 repo の `docs/agents/issue-tracker.md` / `docs/agents/triage-labels.md` を Read して決める。無ければ CL 置き場は cwd の repo、label は上に並べた既定の名前とし、その前提を報告に書く。`needs-grilling` に当たる label が無い repo では、深掘りを待つ根本課題 issue を label でなく報告で返す。`tracking-issue` に当たる label が無い repo では label を付けず、親の着手を止めるのは本文の 1 文だけになることを報告に書く。コマンド例は GitHub (`gh`) の綴りで、他の tracker なら読み替える。
 
@@ -22,7 +22,7 @@ tracker に何も書かずに調べる。
 - 判断の規律は `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、当たる leaf を読んで使う
 - open issue を本文とコメントごと `gh issue list -R <issue 置き場> --state open --limit 1000 --json number,title,body,labels,comments` の 1 回で全件引き、出力を `mktemp` で作業ツリーの外に作った file に受ける。この file は反映を終えるまで消さない。返った件数が `--limit` に届いていたら上げて引き直す (`--limit` を超えた分は黙って打ち切られる)。読む前に件数を確かめ、全件の本文を読んで原因で束ねきれない件数なら、絞り方だけを先に user に聞く。原因の仮説で束ねるには全件の本文が要るので、要約へ落とさず自分で読む。`gh issue list` は issue ごとのコメントを先頭 100 件で黙って打ち切るので、コメントがちょうど 100 件返った issue だけ `gh issue view <N> -R <issue 置き場> --json comments` で読み直す (`gh issue view` は残りのコメントも引く)
 - open CL を `gh pr list -R <CL 置き場> --state open --limit 1000 --json number,title,body` で同じく全件引き、どの issue を実装しているかを控える
-- 原因の仮説で束ねる。component や題名の近さは候補を探すのに使い、原因は本文と `git fetch` 後の `origin/<既定 branch>` (`git show` / `git grep`) で確かめる — 同じ component に触れていても原因が別なら別のクラスタにする。同じ指摘を持つ重複も 1 つのクラスタにする。cwd は user の checkout でありうるので HEAD は動かさない
+- 原因の仮説で束ねる。component や題名の近さは候補を探すのに使い、原因は本文と、`git fetch` 後の `origin/<既定 branch>` にあるコード・手順・規範 (`git show` / `git grep`) で確かめ、設計文書は原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」で引いたものだけを読む — 同じ component に触れていても原因が別なら別のクラスタにする。同じ指摘を持つ重複も 1 つのクラスタにする。cwd は user の checkout でありうるので HEAD は動かさない
 - 根本課題は、根拠 (issue 本文・コード・過去の決定の引用) を添えた仮説として書く。実行しないと決まらないものは、再現の確認を判定条件に含める
 
 クラスタと issue ごとに案を 1 つ決める。作る issue と書き換える issue の本文は、次の課題型の雛形で書く。
@@ -54,7 +54,7 @@ tracker に何も書かずに調べる。
 
 ## 承認のラウンド
 
-user には番号付きの設問をラウンドで出す。最初のラウンドの冒頭にクラスタの一覧表 (クラスタ / メンバー / 根本課題の仮説 / 根拠) を置き、クラスタごとに 1 つの Q を立てる。単発の書き換えはまとめて 1 つの Q にする。作る issue の本文・書き換え後の本文・投稿するコメントは、その Q の本文に逐語で並べる — user が読んでいない文面を tracker に載せない。まだ番号の無い issue への参照は `#<根本課題: 題名>` のような placeholder で書き、反映で置き換えてよいのはこの placeholder だけにする。
+user には番号付きの設問をラウンドで出す。最初のラウンドの冒頭にクラスタの一覧表 (クラスタ / メンバー / 根本課題の仮説 / 層 (events・structures・mental models のどれか) / 根拠) を置き、クラスタごとに 1 つの Q を立てる。単発の書き換えはまとめて 1 つの Q にする。作る issue の本文・書き換え後の本文・投稿するコメントは、その Q の本文に逐語で並べる — user が読んでいない文面を tracker に載せない。まだ番号の無い issue への参照は `#<根本課題: 題名>` のような placeholder で書き、反映で置き換えてよいのはこの placeholder だけにする。
 
 ```
 ❓ **Q1** - **<見出し>**: <本文。作る issue・書き換え後の本文・コメントの文面は逐語で>

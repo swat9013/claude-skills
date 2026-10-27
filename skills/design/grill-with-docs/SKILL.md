@@ -18,6 +18,13 @@ Skill tool で `swat-skills:grilling` と `swat-skills:domain-modeling` を呼�
 
 推奨を決めた leaf があれば、その leaf の名前と当てた規則を推奨に 1 句で添える。user が推奨の根拠をその場で確かめられ、推奨を覆したときに節「決まった判断を規範へ codify する」がどの規範と食い違う判断かを特定できる。leaf が答えを決める設問も、user に問う設問として出す — leaf は他の project とも共有する一般則で、この project が別の決め方を選ぶことがある。対象 repo の規範が leaf と違う決め方をしていれば、repo の規範で推奨を決め、推奨には leaf の名前と repo の規範の path と見出しを添える — repo の規範はこの project が選んだ決め方で、leaf は他の project とも共有する一般則なので、両方を添えると、一般則と違う決め方で推奨していることを user がその場で確かめられる。
 
+## 層を行き来する
+
+問題への対処か、構造・前提を変える決定を問う設問では、問い詰める対象が iceberg model のどの層にあるかを見て、層を行き来する。層の定義と、どこまで降りるか (直す層の既定) は、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-root-cause-and-hierarchy-of-controls.md` を Read して従う。
+
+- **降りる**: user の入力が events 層か patterns 層にある (起きたこと・繰り返すこと) なら、繰り返すか・繰り返すと見込めるかを先に問い、leaf の既定が求める層まで降りた設問を立てる — 入力の層で設問を閉じると、出来事ごとの手当てを決めて終わり、繰り返しを生む仕組みと前提が問われないまま残る
+- **昇る**: 決定が structures 層か mental models 層を変えるなら、その決定で消えるはずの patterns 層の繰り返しを設問で特定し、効いたかを確かめる観測として決定に添える。添えた観測は節「決まった判断を規範へ codify する」の文案に含め、同節の手順で出して承認を得てから書く。設計 doc の見直し条件に書くときは同節が Read させる見直し条件の規約に従い、その規約で観測できない繰り返しは issue の判定条件に置く (判定条件は解けたかを確かめる条件で、決定の書き直しには当たらない) — 観測を添えないと、変えた構造や前提が効いたかを後から確かめる手がかりが残らない
+
 ## 用語の見出し語は leading word から選ぶ
 
 用語を新設・改名するときは、正準の語を提案する前に、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-intention-revealing-names.md` を Read し、その規則で語を選ぶ。用語集への載せ方と設問での出し方は次に従う。

@@ -24,7 +24,7 @@ disable-model-invocation: true
 
 3. 失敗を作業ツリーで再現する。手元で再現できない失敗は推測で push せず、続行不能として呼び出し元のフローで人へ返す。原因が自分の変更の外にある失敗 (base branch でも落ちる / 外部サービス起因) も同じく人へ返す。
 
-4. 原因を直す。手元で失敗が通ることを確かめてから commit する — テストを消して通すのは修正ではない。
+4. 原因を直す。手元で失敗が通ることを確かめてから commit する — テストを消して通すのは修正ではない。この CL の失敗と同じ種類の失敗が他の branch でも出ていて (GitHub Actions なら `gh run view <run-id> -R <CL repo> --json workflowName` で workflow 名を引き、`gh run list -R <CL repo> --workflow <workflow 名> --status failure --json headBranch,displayTitle` で直近の失敗を見る)、繰り返しを生む側 (テストの書き方・検査の設定) の原因がこの CL の範囲の外なら、担当範囲の外で見つけたものとして、作業ツリーの repo の issue の規範に従う。
 
 5. PR 到達前にレビュー工程を通す。出力は PR を出した後にコメントで投稿する。既存 CL では push が PR 到達に当たり、対象差分は原因を直した修正差分に絞る (`swat-skills:review-stage` の args に `<修正前の head>..HEAD` を渡す。渡さないと起点 branch からの CL 全体を見る)。
    - `swat-skills:review-stage` を Skill tool で invoke する

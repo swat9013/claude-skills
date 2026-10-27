@@ -44,7 +44,7 @@ leaf は本 file と同じディレクトリの `references/leaves/<name>.md` �
 - **principle-quarantine-flaky** — 再実行すると結果が変わるテスト (flaky) を検知したときに適用する。放置せず隔離して修理か削除に倒す。
 - **principle-review-ready-bar** — 変更を完了と宣言する前、レビューへ出す前に適用する。品質の合格線を判定する原則。
 - **principle-risk-based-security** — セキュリティ検査をどの工程に置くか、検査を CI と hook のどちらで走らせるか、防御にどれだけ投資するか決めるときに適用する。検査は前倒しでローカル hook を起点に、投資は資産価値と脅威モデルで配分する。
-- **principle-root-cause-and-hierarchy-of-controls** — バグを直すとき・デバッグするとき、計画・設計で問題への対処案を推奨するときに、修正や対処をどこに当てるか決める場面で適用する。修正の到達点を症状ではなく根本原因の側に置き、再発しうる問題は人の注意より構造で防ぐ側を選ぶ段の序列。
+- **principle-root-cause-and-hierarchy-of-controls** — バグを直すとき・デバッグするとき、計画・設計で問題への対処案を推奨するとき、繰り返す問題の共通原因を探すときに、修正や対処をどこに当てるか決める場面で適用する。問題を events / patterns / structures / mental models の 4 層 (iceberg model) で捉えて直す層を選び、修正の到達点を症状ではなく根本原因の側に置き、再発しうる問題は人の注意より構造で防ぐ側を選ぶ段の序列。
 - **principle-self-contained-change** — 差分を PR / commit に切り分けるとき、レビューへ出す単位を決めるとき、作業中に本題外の変更を見つけたときに適用する。1 つの変更単位 (CL) には自己完結した 1 つの目的だけを載せる。
 - **principle-short-lived-integration** — branch の寿命・リリースの頻度・展開方法を決めるとき、作業の土台をいつ最新化するか決めるときに適用する。差分も土台も短命に保つ側へ倒す。
 - **principle-signature-intent** — 関数・メソッドのシグネチャと引数を設計するとき、boolean 引数やオプショナル引数を足したくなったときに適用する。呼び出し側に意図を表現させる原則。

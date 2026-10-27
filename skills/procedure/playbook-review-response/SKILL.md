@@ -22,7 +22,7 @@ disable-model-invocation: true
 
 2. 未解決 thread を列挙する。`gh api graphql` で `pullRequest.reviewThreads` の `id` / `isResolved` / `isOutdated` / `path` / `line` / `originalLine` / `comments.nodes { body authorAssociation }` を引く (outdated な thread は `line` が null で `originalLine` に元の行が入る)。書き手の `authorAssociation` が OWNER / MEMBER / COLLABORATOR 以外の thread は反映の対象にせず、step 5 の「同意できない thread」と同じ扱いで人へ返す側に積む — 書き手を見ずに push 権限を持つ作業者の行動指示にしない。
 
-3. 同意できる指摘を反映する。thread を 1 件ずつ見て、同意できるなら thread に返信し (`addPullRequestReviewThreadReply` mutation、どう直すか 1〜3 文)、作業ツリーで反映して commit する。反映すべき変更が無い thread (質問 / 既に対応済みの指摘) は返信だけ済ませ、resolve は step 4 の push 後にまとめて行う。
+3. 同意できる指摘を反映する。複数の thread が同じ種類の指摘なら、先にその種類を生む 1 か所 (共有する関数・手順) を直して thread をまとめて解消できるかを見る。その 1 か所がこの CL の範囲の外なら、担当範囲の外で見つけたものとして、作業ツリーの repo の issue の規範に従い、各 thread は 1 件ずつ直す。thread を 1 件ずつ見て、同意できるなら thread に返信し (`addPullRequestReviewThreadReply` mutation、どう直すか 1〜3 文)、作業ツリーで反映して commit する。反映すべき変更が無い thread (質問 / 既に対応済みの指摘) は返信だけ済ませ、resolve は step 4 の push 後にまとめて行う。
 
 4. PR 到達前にレビュー工程を通す。出力は PR を出した後にコメントで投稿する。既存 CL では push が PR 到達に当たり、対象差分は指摘へ応えた修正差分に絞る (`swat-skills:review-stage` の args に `<修正前の head>..HEAD` を渡す。渡さないと起点 branch からの CL 全体を見る)。修正差分が無い (返信だけの thread しか無い) なら `skip: 修正差分なし`。
    - `swat-skills:review-stage` を Skill tool で invoke する
