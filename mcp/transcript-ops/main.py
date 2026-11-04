@@ -103,6 +103,7 @@ ANTICIPATED_ERRORS = (
     query_mod.QueryRejected,
     query_mod.QueryFailed,
     stage_usage_mod.StageUsageRejected,
+    find_invocations_mod.InvokedNameRejected,
     SyncLockTimeout,
     TranscriptKindRejected,
     prompts_mart.ProvenanceWindowMissing,
@@ -337,6 +338,7 @@ def find_invocations(
     transcripts_dir: str = str(find_invocations_mod.DEFAULT_TRANSCRIPTS_DIR),
     output_dir: str = str(find_invocations_mod.DEFAULT_OUTPUT_DIR),
     now: str | None = None,
+    invoked_name: str | None = None,
 ) -> dict[str, Any]:
     """指定 skill の**実呼出** transcript を特定し、slice を書いて path を返す。
 
@@ -346,6 +348,8 @@ def find_invocations(
         transcripts_dir: transcript lake。既定 ~/.claude/projects
         output_dir: 出力先。既定 /tmp/skill-usage-audit
         now: ISO timestamp。出力ファイル名の stamp を固定する (再現用)
+        invoked_name: 呼ばれたときの名前 (`swat-skills:adr` / `adr`) がこれと一致する
+            呼出しだけを数える。既定は prefix を問わない
 
     読み方の注記は **slice の `meta.notes` が正本**。
     """
@@ -355,6 +359,7 @@ def find_invocations(
         transcripts_dir=transcripts_dir,
         output_dir=output_dir,
         now=now,
+        invoked_name=invoked_name,
     )
 
 

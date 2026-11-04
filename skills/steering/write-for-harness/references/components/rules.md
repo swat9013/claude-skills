@@ -1,8 +1,8 @@
-# rules/*.md のレビュー観点
+# rules のレビュー観点
 
 ## いつこの doc を Read するか
 
-`<repo>/.claude/rules/*.md` または `~/.claude/rules/*.md` を新設・編集する前に Read する。rules の固有性は **frontmatter `paths:` による path-scoped trigger**。`paths:` が無い rules は CLAUDE.md と等価で常時ロードされ、rules の存在意義が無い。
+`<repo>/.claude/rules/` か `~/.claude/rules/` の下の `.md` (サブディレクトリを含む) を新設・編集する前に Read する。rules の固有性は **frontmatter `paths:` による path-scoped trigger**。`paths:` が無い rules は CLAUDE.md と等価で常時ロードされ、rules の存在意義が無い。
 
 ## 責務
 

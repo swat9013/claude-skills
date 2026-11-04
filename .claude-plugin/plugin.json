@@ -19,6 +19,7 @@
     "./skills/procedure/claude-config-review",
     "./skills/knowledge/claude-config-reference",
     "./skills/knowledge/dev-env-best-practices",
+    "./skills/knowledge/issue-tracker-operations",
     "./skills/util/dialogue",
     "./skills/procedure/fitness-function-audit",
     "./skills/procedure/playbook-diagnosis",

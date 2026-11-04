@@ -64,7 +64,9 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 - bucket: merge
 - 証拠: 双方が同義の規範を重複記述 (observation の該当 2 行を引用)
 - 提案: CLAUDE.md:92 に統合し 140 行目を削除
-- 停止理由: <write-for-harness が返した文を逐語で転記>
+- 止まった操作: write-for-harness
+- 返した文: <write-for-harness が返した `未反映:` 行と `復旧:` 行を逐語で転記。文が無ければ「文を返さずに終わった」>
+- 書かれた file: なし (反映先は CLAUDE.md の 1 本)
 
 ## rewrite
 
@@ -94,7 +96,9 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 | 4 | move-to-path-scoped (共有化) | CLAUDE.local.md:11-13 | project-local → project | 見送り |
 | 5 | move-to-lint | CLAUDE.md:56 | project | - |
 | 6 | delete | CLAUDE.md:120 | project | 反映済み |
-| 7 | delete | CLAUDE.md:31 | project | 未判定 (打ち切り) |
+| 7 | delete | CLAUDE.md:31 | project | `undecided` |
 | 8 | merge | CLAUDE.md:92 / 140 | project | 承認済み・未反映 |
 | 9 | rewrite | CLAUDE.md:48 | project | 反映済み |
+
+undecided: 1 件 (#7)
 ```

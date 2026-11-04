@@ -2,7 +2,7 @@
 
 ## いつこの doc を Read するか
 
-hook script が Claude へ届ける注入文 (SessionStart の初期 context / UserPromptSubmit の追記 / PreToolUse の warning) を書く・見直すときに Read する。同じ script でも event / matcher / exit code / fail-posture といった機構側の作りは [hook](../../../../knowledge/claude-config-reference/references/hook.md) が正本。
+hook script が Claude へ届ける注入文を書く・見直すときに Read する。注入文は届く経路を問わない — たとえば SessionStart の初期 context、UserPromptSubmit の追記、PreToolUse の warning に加え、deny 理由 (`permissionDecisionReason`)・`decision: "block"` の `reason`・exit 2 の stderr として Claude へ届く拒否の文も注入文に当たる。event ごとにどの経路が Claude へ届くかは [hook](../../../../knowledge/claude-config-reference/references/hook.md) の event 表で引く。同じ script でも event / matcher / exit code / fail-posture といった機構側の作りは [hook](../../../../knowledge/claude-config-reference/references/hook.md) が正本。
 
 ## 責務
 
@@ -20,6 +20,8 @@ hook script が Claude へ届ける注入文 (SessionStart の初期 context / U
 | `SessionStart` | セッション開始時に 1 回、以後 context に残る | CLAUDE.md と同じ常時ロード枠を食う |
 | `UserPromptSubmit` | ユーザー送信のたび | ターンごとに加算される。最短にする |
 | `PreToolUse` / `PostToolUse` | 該当 tool の呼び出しのたび | 発火頻度がそのまま増分になる |
+
+表に無い event (`Stop` の block の `reason` など) は、[hook](../../../../knowledge/claude-config-reference/references/hook.md) の event 表で発火の時機を引いて同じく見積もる。
 
 文面そのものの規則 (何をどう書くか / 既定で足りるので書かないもの) は [writing](../writing.md) が正本。対象モデルの決め方は [models](../models.md) の「文面の基準モデル」が正本 (注入文は実行モデルを宣言しないので基準モデルになる)。
 
@@ -40,6 +42,6 @@ hook script が Claude へ届ける注入文 (SessionStart の初期 context / U
 
 ## 参照
 
-- 共通: [architecture](../architecture.md) (注入は C/Guide。deny は C/Sensor) / [writing](../writing.md) (文面規則の正本) / [models](../models.md) (注入量と context 制約)
+- 共通: [architecture](../architecture.md) (注入を運ぶ機構は C/Guide、deny を返す機構は C/Sensor。どちらの機構が Claude へ届ける文面も本書の対象) / [writing](../writing.md) (文面規則の正本) / [models](../models.md) (注入量と context 制約)
 - 関連: [hook](../../../../knowledge/claude-config-reference/references/hook.md) (注入を運ぶ script 側の event / matcher / fail-posture)
 - 公式: Claude Code hooks ドキュメント (URL は [sources](../../../../knowledge/claude-config-reference/references/sources.md) 経由で確認)

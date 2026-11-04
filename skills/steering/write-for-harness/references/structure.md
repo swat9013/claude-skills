@@ -2,7 +2,7 @@
 
 ## いつこの doc を Read するか
 
-write-for-harness の俯瞰 (構造) reviewer として dispatch されたときに Read する。単一 component の文面レビュー (検証 subagent) では読まない。
+write-for-harness の俯瞰 (構造) reviewer として dispatch されたときに Read する。構造 reviewer を起動した側は、返ってきた提案の採否を決めるときに「impact / migration_cost の 2 軸」の節を Read する。単一 component の文面レビュー (検証 subagent) では読まない。
 
 ## 課題領域
 
@@ -53,7 +53,7 @@ write-for-harness の俯瞰 (構造) reviewer として dispatch されたとき
 
 - **impact** は、その構造変更が防ぐ誤動作・削る重複・下げる保守コストの大きさで測る
 - **migration_cost** は、変更ファイル数・追随が必要な参照 (link / permission entry / gate / 索引) の数・利用者に見える変化 (起動名・配置) で測る
-- 採否の目安: impact が migration_cost を上回る提案が採用候補。low impact × high cost は原則出さない (ノイズになる)
+- 採否の目安 (構造 reviewer を起動した側が、返ってきた提案ごとに採用候補かを決める段で当てる): impact が migration_cost を上回る提案が採用候補
 
 ## 参照
 

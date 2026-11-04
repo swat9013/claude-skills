@@ -54,6 +54,6 @@ user が下した判断と、user が issue-triage の反映を覆した判断�
 - close / `wontfix` / reopen: コメントを投稿してから `gh issue close` / `gh issue reopen`。`wontfix` は close の前に `wontfix` を付ける。close したら状態の label (`wontfix` は含まない) を外し、reopen したら `needs-triage` を付ける
 - CL の差し戻し: 承認された文面のコメントを `gh pr comment <N> -R <CL 置き場> --body-file <file>` で投稿する。CL の close は、承認されたときだけ `gh pr close <N> -R <CL 置き場>` で行う
 - 規範の codify: 上で Read した codify の節の反映の手順で、その規範を引く issue の本文の書き換えより先に反映する
-- 本文の書き換え: 承認された書き換え案を持つ issue は、その案と issue-triage が返した基準の path を見出しの下に添えて `swat-skills:issue-triage` に渡し直す。内側に入れば issue-triage が本文の書き戻しと `ready-for-agent` までを反映し、外側に残れば次のラウンドの Q にする。open CL がある issue は issue-triage が書かないので、`${CLAUDE_SKILL_DIR}/../issue-triage/references/body-rewrite.md` の「書き戻し」の順で自分で書き戻してから CL を差し戻す (手順 1 で外す label は `ready-for-agent`。止めたら user へ報告し、label は止めた時点のまま残す)
+- 本文の書き換え: 承認された書き換え案を持つ issue は、その案と issue-triage が返した基準の path を見出しの下に添えて `swat-skills:issue-triage` に渡し直す。内側に入れば issue-triage が本文の書き戻しと `ready-for-agent` までを反映し、外側に残れば次のラウンドの Q にする。open CL がある issue は issue-triage が書かないので、`${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/body-rewrite.md` の「書き戻し」の順で自分で書き戻してから CL を差し戻す (手順 1 で外す label は `ready-for-agent`。止めたら user へ報告し、label は止めた時点のまま残す)
 
 最後に次を報告する: issue-triage が反映した操作 (issue ごと)・user が承認して反映した操作・起票された follow-up issue と発端の issue の対応・承認されず据え置いた issue・`needs-grilling` (今回付けた issue の一覧と既存の残数)・codify の節が終わりに伝えるとした規範と issue の対応・user に残る作業。

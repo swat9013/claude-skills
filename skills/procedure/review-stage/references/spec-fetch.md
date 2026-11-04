@@ -1,3 +1,7 @@
-# Spec 源の issue 本文を取得する
+# Spec 源の issue の置き場を決める
 
-本文の取得手順はレビュー対象 repo の `docs/agents/issue-tracker.md` に従う (tracker と置き場は repo ごとに違う)。その file が無ければ remote の host に合わせて `gh issue view` / `glab issue view` で取り、issue 置き場を `-R <issue 置き場>` で明示する。置き場は、ref が `owner/repo#N` の形ならその repo、`#N` の形ならレビュー対象 repo (remote) とする — `-R` を省くと CLI が clone の remote から repo を推すので、置き場が別 repo のとき同じ番号の別 issue を読む。GitHub では `gh issue view <N> -R <issue 置き場> --json title,body,labels,comments` で本文と全コメントを読む (`--comments` は非 TTY 実行ではコメントだけを出力し、本文が黙って抜ける)。GitLab では `glab issue view <N> -R <issue 置き場> --comments` で本文と全コメントを取り、出力に本文が含まれることを確かめる (glab が非 TTY 実行で本文を落とすかは確かめていない)。本文が欠けていれば、本文を取得できなかったときとして扱う。
+issue 置き場は `${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/placement.md` を Read して ref ごとに決める — 置き場を決めずに番号だけで引くと、CLI が clone の remote から repo を推すので、置き場が別 repo のとき同じ番号の別 issue を読む。commit message と PR 本文の ref は、同 file の「置き場をまたぐ参照の書き方」の読み方で読む (commit message はレビュー対象 repo に、PR 本文はその PR が載った置き場に載った文面)。`issue=` の ref はどの置き場にも載らないので、置き場付きならその置き場、素の `#N` なら同 file の解決順で決めた issue 置き場の番号として読む。
+
+レビュー対象 repo の `docs/agents/issue-tracker.md` が本文の取得手順を定めているときは、その手順で本文を取得し、issue の body だけを file に置いて `prepare-inputs.py prompts` の `--issue-file <ref>=<file>` で渡す。取得できなかった ref は `--issue-missing <ref>=<理由>` で渡す (注記は script が返す)。
+
+定めが無いときは remote の host で決め、`--issue` へ GitHub なら `github:<置き場>#<番号>`、GitLab なら `gitlab:<置き場>#<番号>` の形で渡す。script が CLI で本文を取得する。sandbox の下では script の子の CLI が資格情報を読めず失敗することがあるので、`notes` に取得の失敗が出たら、呼び出し元が `gh issue view <番号> -R <置き場> --json body --jq .body` / `glab issue view <番号> -R <置き場> --output json --jq .description` を直接実行して、その出力 (issue の body だけ) を file に置き、`--issue-file` で `prompts` を呼び直す。

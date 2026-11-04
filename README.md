@@ -40,6 +40,7 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | --- | --- | --- |
 | `claude-config-reference` | 自動 | Claude Code の Computational harness (settings / permission / hook script) の仕様・レビュー観点と、仕様を一次情報で確かめるときの情報源の順を持つ参照知識。 |
 | `dev-env-best-practices` | 自動 | 開発環境構築時に言語/FW 別のベストプラクティス reference と構築観点を引き出す。 |
+| `issue-tracker-operations` | 自動 | issue tracker への操作 (本文の書き換え・状態の label の付け替え・close / reopen・親子の関係の記録) の手順と、issue 置き場・CL 置き場の解決順の正本。 |
 | `principle-index` | コマンド / 自動 | 原則 leaf 全件の適用条件を 1 行ずつ並べた索引。 |
 | `python-single-file-script` | 自動 | PEP 723 インラインメタデータ + uv run で単一ファイル Python スクリプトを新規作成・編集する場面に参照する。 |
 | `shell-script` | 自動 | bash で .sh single-file script を新規作成・編集する場面に参照する。 |

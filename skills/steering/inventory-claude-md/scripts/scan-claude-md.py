@@ -6,7 +6,7 @@
 """inventory-claude-md の観測 script (observation JSON 生成)。
 
 project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.md`
-+ サブディレクトリ CLAUDE.md + `.claude/rules/*.md`) を **静的観測** し、以下 3
++ サブディレクトリ CLAUDE.md + `.claude/rules/**/*.md`) を **静的観測** し、以下 3
 項目を含む observation JSON を出力する。
 
 - 参照先実在性 (link_targets): markdown link と `@import` 展開先の実在チェック。
@@ -36,7 +36,7 @@ move-to-skill / move-to-lint / delete / merge) を割り当てない。
 print する。Markdown レポートは LLM 段階の成果物で、本 script は生成しない。
 
 汎用スキル制約: 依存は Claude Code 標準ファイルのみ (`<repo>/CLAUDE.md` /
-`<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/*.md`)。global
+`<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/**/*.md`)。global
 `~/.claude/CLAUDE.md` は読みも書きもしない (仕様上除外)。`#rule` buffer への
 依存は ADR 0018 で撤去済み。
 
@@ -282,7 +282,7 @@ def check_target_existence(
     - relative-path: `base_dir` (link を書いた file のディレクトリ) からの相対で
       resolve、anchor 除去後の path を検査。markdown の相対 link は書いた file から
       の相対で読まれるので、repo root を基準にすると repo 直下以外の file
-      (`.claude/rules/*.md` 等) の `../../` が必ず外れる
+      (`.claude/rules/**/*.md` 等) の `../../` が必ず外れる
     - absolute: そのまま存在検査 (repo 外可)
     - url / anchor / dynamic / empty: 検査しない (exists=None)
     """
@@ -398,7 +398,7 @@ def observe_markdown_file(
 
 
 def observe_rules_file(path: Path, repo_root: Path) -> dict[str, Any]:
-    """rules/*.md は markdown 観測 + frontmatter `paths:` 抽出。"""
+    """rules/**/*.md は markdown 観測 + frontmatter `paths:` 抽出。"""
     obs = observe_markdown_file(path, repo_root, label="rules")
     if obs["status"] == "present":
         text = (repo_root / obs["path"]).read_text(encoding="utf-8")
@@ -430,7 +430,8 @@ def find_rules_files(repo_root: Path) -> list[Path]:
     rules_dir = repo_root / ".claude" / "rules"
     if not rules_dir.exists():
         return []
-    return sorted(rules_dir.glob("*.md"))
+    # サブディレクトリの rules も Claude Code が読むので再帰で拾う
+    return sorted(rules_dir.rglob("*.md"))
 
 
 def summarize_meta(root_obs: dict[str, Any]) -> dict[str, Any]:

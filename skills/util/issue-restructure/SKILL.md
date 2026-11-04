@@ -44,7 +44,7 @@ tracker に何も書かずに調べる。
 - **根本課題 issue を作る**: 題名は課題の形にし、雛形で本文を書き、`needs-triage` を付ける (2 ラウンドで決まらず `needs-grilling` を付ける根本課題 issue を除く)。メンバーは根本課題 issue へのリンクをコメントしてから close する
 - **既存の issue を使い回す**: コメント欄が既に根本課題そのものの議論になっている issue があれば、新しく作らずその issue を雛形で書き換えて根本課題 issue にする
 - **寄せ集めを振り分ける**: 複数の根本課題にまたがる指摘を寄せ集めた issue は、中身を各クラスタの根本課題 issue へ振り分け、振り分け先のリンクをコメントしてから close する
-- **子 issue に分ける**: 1 つの CL に収まらない根本課題は課題型の子 issue に分け、子同士の依存を tracker の依存リンクで表す。親には `tracking-issue` を付け、本文に「子 issue の追跡用で、直接は実装しない。子がすべて close されたら close する」と書く — label は機械が親を着手対象から外すための印で、本文は triage で読む人に理由を伝える。作った親にも、使い回して親にした既存の issue にも付ける
+- **子 issue に分ける**: 1 つの CL に収まらない根本課題は課題型の子 issue に分け、子同士の依存を tracker の依存リンクで表す。対象 repo の `docs/agents/issue-tracker.md` が依存リンクの手順を持たないなら、依存は子の本文の `Blocked by: #<N>` の行で表し、その行をこの段で子の本文の案に入れる。親には `tracking-issue` を付け、本文に「子 issue の追跡用で、直接は実装しない。子がすべて close されたら close する」と書く — label は機械が親を着手対象から外すための印で、本文は triage で読む人に理由を伝える。作った親にも、使い回して親にした既存の issue にも付ける
 - **単発を書き換える**: どのクラスタにも入らない観測型・手段型の issue のうち、課題か判定条件が欠けているものは、番号を変えずに題名と本文を雛形で書き換える — 手段を仕様のまま残すと、課題を解かずに手段だけが実装される
 - **変更なし**: 上のどれにも当たらない issue
 
@@ -54,7 +54,7 @@ tracker に何も書かずに調べる。
 
 ## 承認のラウンド
 
-user には番号付きの設問をラウンドで出す。最初のラウンドの冒頭にクラスタの一覧表 (クラスタ / メンバー / 根本課題の仮説 / 層 (events・structures・mental models のどれか) / 根拠) を置き、クラスタごとに 1 つの Q を立てる。単発の書き換えはまとめて 1 つの Q にする。作る issue の本文・書き換え後の本文・投稿するコメントは、その Q の本文に逐語で並べる — user が読んでいない文面を tracker に載せない。まだ番号の無い issue への参照は `#<根本課題: 題名>` のような placeholder で書き、反映で置き換えてよいのはこの placeholder だけにする。
+user には番号付きの設問をラウンドで出す。最初のラウンドの冒頭にクラスタの一覧表 (クラスタ / メンバー / 根本課題の仮説 / 層 (events・structures・mental models のどれか) / 根拠) を置き、クラスタごとに 1 つの Q を立てる。単発の書き換えはまとめて 1 つの Q にする。作る issue の本文・書き換え後の本文・投稿するコメントは、その Q の本文に逐語で並べる — user が読んでいない文面を tracker に載せない。まだ番号の無い issue への参照は `#<根本課題: 題名>` のような placeholder で書き、反映で置き換えてよいのはこの placeholder だけにする。CL に投稿する文面が issue を指すときは、`${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/placement.md` の「置き場をまたぐ参照の書き方」を Read し、その綴りの `<issue 置き場>#<N>` (placeholder なら `<issue 置き場>#<根本課題: 題名>`) で書く。反映で置き換えるのは、この形でも `#<根本課題: 題名>` の部分だけになる。
 
 ```
 ❓ **Q1** - **<見出し>**: <本文。作る issue・書き換え後の本文・コメントの文面は逐語で>
@@ -66,7 +66,7 @@ user には番号付きの設問をラウンドで出す。最初のラウンド
 ❓ **Q2** - ...
 ```
 
-根本課題をめぐって問答を重ねてよい。同じラウンドの他の Q の答えに依存する Q と、回答で新たに生まれた判断は、次のラウンドに出す。2 ラウンドを経ても根本課題が決まらないクラスタは、決まった範囲で根本課題 issue を作るか既存の issue を使い回して `needs-grilling` を付け、メンバーは通常どおりリンクをコメントして close する — open のまま残すと、次の triage や深掘りがメンバーを観測ごとに `ready-for-agent` にしうる。束ね方が覆ったら、深掘りのセッションがメンバーを reopen する。`needs-grilling` にする根本課題 issue には、`${CLAUDE_SKILL_DIR}/../issue-triage/references/grilling-handoff.md` を Read し、その雛形の値 (close するメンバーの番号を含む) を埋めて手順コメントを作り、そのクラスタの Q に逐語で出す。雛形の二つの path には `${CLAUDE_SKILL_DIR}/../../design/grill-with-docs/SKILL.md` と `${CLAUDE_SKILL_DIR}/../issue-triage/references/body-rewrite.md` を、ここに見えている絶対 path のまま書く。「推奨でOK」のような一括の回答は、そのラウンドの全 Q を推奨どおりに承認する。読み取れない回答は聞き直す。
+根本課題をめぐって問答を重ねてよい。同じラウンドの他の Q の答えに依存する Q と、回答で新たに生まれた判断は、次のラウンドに出す。2 ラウンドを経ても根本課題が決まらないクラスタは、決まった範囲で根本課題 issue を作るか既存の issue を使い回して `needs-grilling` を付け、メンバーは通常どおりリンクをコメントして close する — open のまま残すと、次の triage や深掘りがメンバーを観測ごとに `ready-for-agent` にしうる。束ね方が覆ったら、深掘りのセッションがメンバーを reopen する。`needs-grilling` にする根本課題 issue には、`${CLAUDE_SKILL_DIR}/../issue-triage/references/grilling-handoff.md` を Read し、その雛形の値 (close するメンバーの番号を含む) を埋めて手順コメントを作り、そのクラスタの Q に逐語で出す。雛形の二つの path には `${CLAUDE_SKILL_DIR}/../../design/grill-with-docs/SKILL.md` と `${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/body-rewrite.md` を、ここに見えている絶対 path のまま書く。「推奨でOK」のような一括の回答は、そのラウンドの全 Q を推奨どおりに承認する。読み取れない回答は聞き直す。
 
 聞くことが無くなったら、反映する操作の一覧を出して「この一覧どおりに反映するか」を確かめてから書く。修正が返ったら該当する Q を次のラウンドへ戻し、一覧を出し直す。
 
@@ -77,12 +77,12 @@ user には番号付きの設問をラウンドで出す。最初のラウンド
 書き込みが 1 つでも失敗したら、その issue の番号を参照する残りの操作を止める。報告には、成功した操作・失敗した操作とその理由・反映していない承認済みの操作を並べる — user が残りから再開できるようにする。
 
 - 作成: `gh issue create -R <issue 置き場> --title <題名> --body-file <file> --label <needs-triage か needs-grilling。子 issue に分けた親には、そのどちらかに加えて、label のある repo なら tracking-issue も>`
-- 依存リンク・子 issue の紐付け: 対象 repo の `docs/agents/issue-tracker.md` の手順に従う。無ければ、承認した子の本文に `Blocked by: #<N>` の行を含めておく
+- 依存リンク・子 issue の紐付け: 対象 repo の `docs/agents/issue-tracker.md` の手順に従う。手順が無ければ、「子 issue に分ける」の案で子の本文に入れた `Blocked by:` の行の placeholder を置き換えるだけにし、承認された本文に行を足さない
 - label: `gh issue edit <N> -R <issue 置き場> --add-label <label> --remove-label <label>`。使い回して子 issue の親にした既存の issue には、ここで `tracking-issue` を足す。使い回して `needs-grilling` にする根本課題 issue も、ここで付け替える
 - コメント: `gh issue comment <N> -R <issue 置き場> --body-file <file>`
 - close: リンクを書いたコメントを投稿してから `gh issue close <N> -R <issue 置き場>`
 - 手順コメント: `needs-grilling` にした根本課題 issue へ、作成とメンバーの close を済ませた後に、承認された手順コメントを `gh issue comment <N> -R <issue 置き場> --body-file <file>` で 1 件投稿する — 雛形はメンバーを close 済みと述べるので、close に失敗したメンバーがあれば投稿しない
 - CL の差し戻し: 承認された文面のコメントを `gh pr comment <N> -R <CL 置き場> --body-file <file>` で投稿する。CL の close は、承認されたときだけ `gh pr close <N> -R <CL 置き場>` で行う
-- 本文の書き換え: `${CLAUDE_SKILL_DIR}/../issue-triage/references/body-rewrite.md` を Read し、その「書き戻し」の順で書き戻す。基準は、調査で受けた file にあるその issue の body を切り出したもの。承認された状態の label の付け替え (`ready-for-agent` などを外し、`needs-triage` か `needs-grilling` を付ける) は、同書の手順 1 で 1 回の操作として済ませる (上の label の操作と同じもので、二度は撃たない)。同書が人へ報告するとした内容の宛先は user。同書の手順 2 か 5 で止めたら、上の「書き込みが失敗した」ときと同じく、その issue の番号を参照する残りの操作 (メンバーの close・手順コメント) も止める
+- 本文の書き換え: `${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/body-rewrite.md` を Read し、その「書き戻し」の順で書き戻す。基準は、調査で受けた file にあるその issue の body を切り出したもの。承認された状態の label の付け替え (`ready-for-agent` などを外し、`needs-triage` か `needs-grilling` を付ける) は、同書の手順 1 で 1 回の操作として済ませる (上の label の操作と同じもので、二度は撃たない)。同書が人へ報告するとした内容の宛先は user。同書の「open CL の確かめ」か手順 2・5 で止めたら、上の「書き込みが失敗した」ときと同じく、その issue の番号を参照する残りの操作 (メンバーの close・手順コメント) も止める
 
 最後に、反映した操作・承認されず据え置いた issue・`needs-grilling` (今回 `needs-grilling` にした根本課題 issue の一覧と、`needs-grilling` の残数)・user に残る作業を報告する。user に残る作業には、作った issue と書き換えた issue が (2 ラウンドで決まらず `needs-grilling` を付けた根本課題 issue を除き) `needs-triage` になっているので、次に `/swat-skills:backlog-triage` を回すことを含める。深掘りのセッションへの手順は手順コメントが持つので、報告には展開しない。`needs-grilling` に当たる label が無い repo では、手順コメントを投稿しない代わりに、根本課題 issue ごとに手順コメントを逐語で報告に書く。メンバーの close に失敗して手順コメントを投稿しなかった根本課題 issue は、close に失敗したメンバーの番号と埋めた手順コメントの逐語を user に残る作業に書く — 深掘りのセッションへ手順が届く経路が他に無い。

@@ -81,7 +81,8 @@ bucket 確定後、以下をすべて満たす unit だけを高確度候補と�
 高確度候補は候補ごとに証拠 1-2 行 (`rule_inputs` の count / sessions_presented / 分母 source) + 適用手順 (手順 4 の単位別分岐表) を添えて **AskUserQuestion で選択肢を提示する** (例:「obsidian plugin は 30 日 0 invocation (skill 3/3 未使用・同梱 MCP も 0)。uninstall しますか?」。選択肢は「適用する / 見送る (レポート記載のみ) / 保留」相当)。
 
 - **承認されたらそのまま同セッション内で適用に進む**。適用は単位別分岐に従う: swat-skills 本体 / third 分は swat-skills repo の運用に従って反映、他 plugin の `/plugin` 操作・MCP config 編集・claude.ai connectors disconnect 等の人間側操作は具体的手順を提示して受け渡す
-- 却下・保留された候補、および 3 条件を満たさない候補はすべて手順 4 のレポートへ回す。「count 1 だしほぼ確実」のように基準を緩めたくなったものもレポート側に落とし、緩和は rule 実装か本 SKILL.md の改訂として行う
+- 却下・保留された候補、および 3 条件を満たさない候補はすべて手順 4 のレポートへ回す。「保留」と答えた候補は、打ち切りの有無によらず `undecided` とする。「count 1 だしほぼ確実」のように基準を緩めたくなったものもレポート側に落とし、緩和は rule 実装か本 SKILL.md の改訂として行う
+- 人が提示を打ち切ったら、答えの出ていない候補 (示して答えが無い候補と、まだ示していない候補) を `undecided` とし (対象は本手順で提示する高確度候補だけで、提示せずレポートへ回した候補は含めない)、承認された候補だけで適用へ進む — `undecided` は見送りと分けて手順 4 のレポートに件数と一覧を残す
 
 ### 4. Markdown レポート組み立て
 
@@ -96,7 +97,7 @@ bucket 確定後、以下をすべて満たす unit だけを高確度候補と�
     - 提案 (1-2 行、証拠に紐づく)
     - 適用手順 (単位別分岐、下表参照)
 3. **informational**: MCP tool 表 (server 判断の材料)、`near_misses` (落選理由つき)、`open_predicates` を満たさないと判断した候補
-4. **summary 表**: 番号 × bucket × 対象。「3 と 7 だけ採用」と言える形。**高確度候補 (手順 3) も本表に載せ**、「セッション内提案済み (承認 / 見送り / 保留)」の結果を付記する — レポートは監査証跡として単体で完結させる
+4. **summary 表**: 番号 × bucket × 対象。「3 と 7 だけ採用」と言える形。**高確度候補 (手順 3) も本表に載せ**、セッション内提案の結果 (承認 / 見送り / `undecided (保留)` / `undecided`。`undecided (保留)` は「保留」と答えた候補、`undecided` は打ち切りで答えの出なかった候補で、未提示の候補を含む) を付記し、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く — レポートは監査証跡として単体で完結させる
 
 schema を埋めた形の記入例が要るときは [references/report-example.md](references/report-example.md) を Read する (bucket 別 section / informational / summary 表の書き方)。
 

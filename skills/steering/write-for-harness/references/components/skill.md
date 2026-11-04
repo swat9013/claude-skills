@@ -68,7 +68,7 @@ skill を新設・編集する前に確認する。
 - [ ] `model:` がタスク負荷と整合か → [models](../models.md) の表で照合
 - [ ] 本文の prompt スタイルが対象モデルに最適か ([writing](../writing.md) が文面規則の正本。対象モデルの差分まで見る — 対象モデルの決め方は [models](../models.md) の「文面の基準モデル」)。haiku は同 skill に reference がなく [models](../models.md) の Haiku 節が正本
 - [ ] `allowed-tools` が最小化されているか (× 全 tool / ○ 必要な tool のみ列挙)
-- [ ] 手順が subagent を起こすなら、[agent](./agent.md) の「切り出す条件」「本文と呼び出し元の分担」「起動の仕方」に照らしたか (inline のままにするか切り出すか / Agent tool の `model`・`effort` 引数を渡していないか / 定義の本文を prompt に書き写していないか / 報告を SendMessage で求めていないか)
+- [ ] 手順が subagent を起こすなら、[agent](./agent.md) の「切り出す条件」「本文と呼び出し元の分担」「起動の仕方」と「チェックリスト」に照らしたか
 - [ ] 配置場所が project-local vs global で妥当か (判断基準はプロジェクト CLAUDE.md / rules 側)
 - [ ] 既存 skill との重複がないか (同様の trigger 語彙を持つ skill との競合)
 - [ ] 配布 skill (`skills/`) の SKILL.md と `references/` が変更の届け方を指示していないか → 上記「届け方を書かない判定基準」で照合 (`references/` も skill ディレクトリごと配布される)

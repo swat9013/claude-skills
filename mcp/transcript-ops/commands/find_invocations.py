@@ -28,7 +28,12 @@ invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持�
 2. 実呼出しでないマーカー (queue-operation / local_command echo / 本文の引用) は
    計上せず、理由別の件数を `meta.excluded` に残す
 3. skill 名は完全一致で照合する (`adr` の監査に `adr-review` を混ぜない)。plugin
-   prefix は呼出し側・引数側どちらにあっても無視する
+   prefix は呼出し側・引数側どちらにあっても無視する。ただし `invoked_name` を
+   渡されたら、呼ばれたときの名前 (prefix 付きか) がそれと一致する呼出しだけを
+   数え、transcript の選定と呼出しの件数もその集合で決める — 同名の配布 skill
+   (`<plugin>:<name>`) と project-local skill (`<name>`) を分けて監査するため。
+   形が違って外した呼出しは `meta.other_invoked_name_calls` に数を残し、
+   `invoked_name` の素の名前が `skill` と違えば拒否する (黙って 0 件にしない)
 4. 監査の単位は main session。subagent transcript は対象に入れない
 5. 読めない file・壊れた行で scan を止めない (fail-soft)
 
@@ -79,6 +84,13 @@ CHANNEL_SKILL_TOOL = "skill_tool"
 CHANNEL_COMMAND = "command"
 INVOCATION_CHANNELS = (CHANNEL_SKILL_TOOL, CHANNEL_COMMAND)
 
+# `invoked_name` と呼ばれ方が違って外した実呼出し (excluded の理由とは別に数える)。
+OTHER_INVOKED_NAME = "other_invoked_name"
+
+
+class InvokedNameRejected(ValueError):
+    """`invoked_name` の素の名前が `skill` と違う。文言は LLM に届く。"""
+
 # 除外理由。**この順で評価する** (hit ごとに 1 理由へ確定させるため順序が仕様)。
 # いずれも「マーカーは在るが実呼出しではない」もので、grep 方式が呼出回数を
 # 過大に見せていた原因そのもの。
@@ -121,6 +133,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--skill", type=str, required=True,
                    help="対象 skill 名。plugin prefix (`swat-skills:`) は付けても外しても可")
+    p.add_argument("--invoked-name", type=str, default=None,
+                   help="呼ばれたときの名前 (`swat-skills:adr` / `adr`) がこれと一致する"
+                        "呼出しだけを数える。default は prefix を問わない")
     p.add_argument("--limit", type=int, default=DEFAULT_LIMIT,
                    help=f"slice に載せる transcript 数の上限。default {DEFAULT_LIMIT}")
     p.add_argument("--transcripts-dir", type=Path, default=DEFAULT_TRANSCRIPTS_DIR,
@@ -153,6 +168,11 @@ def marker_regex(skill: str) -> re.Pattern:
         rf"<command-name>/(?:[A-Za-z0-9_-]+:)?{name}</command-name>"
         rf'|"skill"\s*:\s*"(?:[A-Za-z0-9_-]+:)?{name}"'
     )
+
+
+def matches_invoked_name(value: str, invoked_name: str | None) -> bool:
+    """`invoked_name` が無ければ常に真、あれば呼ばれたときの名前がそれと一致するか。"""
+    return invoked_name is None or value.strip() == invoked_name.strip()
 
 
 def matches_skill(value: Any, bare: str) -> bool:
@@ -212,6 +232,7 @@ def _classify_excluded(rec: dict, marker: re.Pattern) -> str | None:
 def extract_invocations(
     jsonl_path: Path,
     skill: str,
+    invoked_name: str | None = None,
 ) -> tuple[list[Invocation], collections.Counter, dict[str, str]]:
     """1 transcript file から対象 skill の実呼出しと除外内訳を取り出す。
 
@@ -253,6 +274,9 @@ def extract_invocations(
                     slash = parse_slash_invocation(content)
                     if slash is None or not matches_skill(slash, bare):
                         continue
+                    if not matches_invoked_name(slash, invoked_name):
+                        excluded[OTHER_INVOKED_NAME] += 1
+                        continue
                     invocations.append(Invocation(
                         timestamp=timestamp, uuid=uuid, channel=CHANNEL_COMMAND,
                         args=truncate(_command_args(text), ARGS_TEXT_LIMIT),
@@ -271,6 +295,9 @@ def extract_invocations(
                     if not isinstance(blk_input, dict):
                         continue
                     if not matches_skill(blk_input.get("skill"), bare):
+                        continue
+                    if not matches_invoked_name(blk_input["skill"], invoked_name):
+                        excluded[OTHER_INVOKED_NAME] += 1
                         continue
                     invocations.append(Invocation(
                         timestamp=timestamp, uuid=uuid, channel=CHANNEL_SKILL_TOOL,
@@ -356,6 +383,8 @@ def build_slice(
             "generated_at": generated_at,
             "skill": args.skill,
             "skill_name": bare_skill_name(args.skill),
+            "invoked_name": args.invoked_name,
+            "other_invoked_name_calls": excluded.get(OTHER_INVOKED_NAME, 0),
             "transcripts_dir": str(args.transcripts_dir),
             "limit": args.limit,
             "scanned_files": scanned_files,
@@ -372,10 +401,16 @@ def build_slice(
             # context に常駐するが、注記が要るのは slice を読む段階だけ。ADR 0031)
             "notes": [
                 "判定は record 構造 (assistant の Skill tool_use / user の slash 展開) で"
-                "行い行 grep はしない。計上されなかった件数は excluded に理由別で残る",
+                "行い行 grep はしない。実呼出しでないとして計上しなかった件数は excluded に"
+                "理由別で残る",
                 "total_invocations が呼出回数、matched_files は file 数 (混同しない)",
                 "観測窓を持たない — 監査対象は「最後に呼ばれた n 件」であって期間ではない。"
                 "matched_files が 0 なら実呼出なしで監査は成立しない",
+                "invoked_name が null なら prefix を問わず同名の別 skill の呼出しも数える。"
+                "値があれば matched_files / emitted_files / total_invocations / "
+                "distinct_scopes と transcripts はその呼ばれ方の呼出しだけで決まり、"
+                "形が違って外した呼出しの数が other_invoked_name_calls に出る。"
+                "excluded は呼ばれ方を問わず数える",
             ],
         },
         "transcripts": [
@@ -402,6 +437,13 @@ def collect(args: argparse.Namespace) -> dict:
     観測窓を持たない (mtime cutoff をかけない) のは、監査対象が「最後に呼ばれた
     n 件」であって期間ではないため。呼出しが 30 日以上前でも監査は成立する。
     """
+    if args.invoked_name is not None and not args.invoked_name.strip():
+        args.invoked_name = None  # 空文字は「指定なし」として扱う
+    if (args.invoked_name is not None
+            and bare_skill_name(args.invoked_name) != bare_skill_name(args.skill)):
+        raise InvokedNameRejected(
+            f"invoked_name {args.invoked_name!r} の skill 名が skill {args.skill!r} と違う。"
+            "同じ skill の呼ばれ方 (`<plugin>:<skill>` か `<skill>`) を渡す")
     generated = resolve_now(args.now)
     hits: list[TranscriptHit] = []
     excluded: collections.Counter = collections.Counter()
@@ -415,7 +457,8 @@ def collect(args: argparse.Namespace) -> dict:
         if transcript_kind != "main":
             continue
         scanned += 1
-        invocations, file_excluded, anchor = extract_invocations(jsonl, args.skill)
+        invocations, file_excluded, anchor = extract_invocations(
+            jsonl, args.skill, args.invoked_name)
         excluded.update(file_excluded)
         if not invocations:
             continue
@@ -461,6 +504,7 @@ def run(
     transcripts_dir: str = str(DEFAULT_TRANSCRIPTS_DIR),
     output_dir: str = str(DEFAULT_OUTPUT_DIR),
     now: str | None = None,
+    invoked_name: str | None = None,
 ) -> dict:
     """tool 側の入口。slice は返さず、書いた path と特定結果の meta だけを返す。
 
@@ -474,6 +518,7 @@ def run(
     args.transcripts_dir = Path(transcripts_dir)
     args.output_dir = Path(output_dir)
     args.now = now
+    args.invoked_name = invoked_name
 
     slice_json = collect(args)
     return {"path": emit(slice_json, args), "meta": slice_json["meta"]}

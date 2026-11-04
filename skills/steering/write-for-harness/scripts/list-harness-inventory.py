@@ -9,7 +9,7 @@ component の分類の正本。write-for-harness (手順 1 の対象の振り分
 と claude-config-review (「ファイル種類判定」節の type の判定) がこの script の出力を使う。
 
 - 引数なし: `git ls-files` の file (repo root 相対) を分類する。分類できなかった file は出さない
-- path を渡す: 渡した path を、渡した表記のまま分類する。分類できなかった path は stderr へ `分類外: <path>` を 1 行ずつ出す。
+- path を渡す: 渡した path を cwd 基準の絶対 path (`..` は畳み、symlink は解かない) にして分類し、出力は渡した表記のまま出す。分類できなかった path は stderr へ `分類外: <path>` を 1 行ずつ出す。
   git を使わないので、repo の外の path (`~/.claude/` 系) も渡せる
 
 | component | パターン |
@@ -17,7 +17,7 @@ component の分類の正本。write-for-harness (手順 1 の対象の振り分
 | hook | `**/hooks/hooks.json`、`**/hooks/**/*.sh`、`**/hooks/**/*.py` (`hooks/` の下の `tests/` にある file は除く) |
 | skill | `**/SKILL.md` |
 | claude-md | `**/CLAUDE.md` |
-| rules | `**/rules/*.md` (`.claude/rules/` を含む) |
+| rules | `**/.claude/rules/**/*.md` (`.claude/` の外の `rules/` は含めない) |
 | agent | `**/.claude/agents/*.md` と、plugin root (`.claude-plugin/` を持つディレクトリ) 直下の `agents/*.md` |
 | settings | `**/settings*.json` |
 
@@ -32,11 +32,13 @@ invariant:
 3. `agents/*.md` は、親が `.claude/` か plugin root のときだけ agent にする
 4. path を渡したとき、分類できなかった path は stderr へ 1 件 1 行で出す
 5. 引数なしで git が動かなければ exit 1
+6. `.md` は `.claude/rules/` の下 (サブディレクトリを含む) にあるときだけ rules にする
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from fnmatch import fnmatch
@@ -60,6 +62,13 @@ def _is_agent(path: Path) -> bool:
     return owner.name == ".claude" or (owner / ".claude-plugin").is_dir()
 
 
+def _is_rules(path: Path) -> bool:
+    if path.suffix != ".md":
+        return False
+    dirs = path.parts[:-1]
+    return any(dirs[i:i + 2] == (".claude", "rules") for i in range(len(dirs) - 1))
+
+
 def classify(path: Path) -> str | None:
     """path の component。どのパターンにも当たらなければ None。"""
     if _under_hooks(path) and (
@@ -70,7 +79,7 @@ def classify(path: Path) -> str | None:
         return "skill"
     if path.name == "CLAUDE.md":
         return "claude-md"
-    if path.suffix == ".md" and path.parent.name == "rules":
+    if _is_rules(path):
         return "rules"
     if _is_agent(path):
         return "agent"
@@ -101,7 +110,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(args: argparse.Namespace) -> int:
     if args.paths:
         for given in args.paths:
-            component = classify(Path(given).expanduser())
+            # cwd が `.claude/` の中だと、相対 path の表記に `.claude` が現れないので cwd を足して判定する。
+            # abspath は `..` を畳み、symlink は解かない (resolve() だと symlink 表記の path が別の場所の判定になる)
+            component = classify(Path(os.path.abspath(Path(given).expanduser())))
             if component:
                 print(f"{given} - {component}")
             else:
