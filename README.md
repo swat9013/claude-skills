@@ -137,15 +137,15 @@ Agent tool 経由で skill やメインの Claude から委譲される、専用
 
 ## 同梱している hook
 
-Bash / Write の危険操作を実行前に deny する PreToolUse guard 群 (`hooks/` に配置、登録は `hooks/hooks.json`)。deny 条件に当たらない入力はすべて素通しし、Claude Code 標準の permission フローに委ねる。**入力そのものを読めなかったときは素通しせず deny する** (fail-closed。下記 python3 と jq の前提を参照)。
+Bash / Write の危険操作を実行前に deny する PreToolUse guard 群 (`hooks/` に配置、登録は `hooks/hooks.json`)。deny 条件に当たらない入力はすべて素通しし、Claude Code 標準の permission フローに委ねる。**入力そのものを読めなかったときは素通しせず deny する** (fail-closed。下記の前提を参照)。
 
 hook は install した環境でそのまま動くが、以下を前提にしている。
 
-- **`jq` が PATH にあること** (git 系の guard `guard-git.sh` が使う)。guard は **原則 fail-closed** で、payload を読めない (jq が無い / JSON が不正) ときは判定不能として **deny 側に倒れる**。例外は `guard-worktree-escape.py` の 1 本だけ (素通しの損害が git で回復可能なため fail-open。判断の正本は本 repo の `docs/adr/0046-guard-fail-closed-by-default.md`)。jq が無い環境では **git コマンドが拒否される**。hook を使うなら jq を入れる
+- guard は **原則 fail-closed** で、payload を読めない (JSON が不正) ときは判定不能として **deny 側に倒れる**。例外は `guard-worktree-escape.py` の 1 本だけ (素通しの損害が git で回復可能なため fail-open)
 - **Python 3.9 以上の `python3` が PATH にあること**。hook の多くは python で書かれており、`#!/usr/bin/env python3` で起動する (macOS の Command Line Tools が入れる `/usr/bin/python3` で動く)。`python3` が無い環境では hook が起動に失敗し、Claude Code はその失敗を判断なしとして扱うので、**その guard は効かないまま tool が実行される**
 - **guard の方針は作者の運用に合わせて固定されている**。例: `git push --force` (`--force-with-lease` を除く) を deny、`bash`/`sh`/`zsh` の直接起動を deny。合わない場合は該当 script を編集する
 - **protected branch の防御は hook では持たない**。main/master への直接 push の禁止は GitHub / GitLab の branch protection 側で設定する前提 (hook はローカルにしか効かないため)
-- **plugin は WebFetch の外向き通信を判定しない**。auto mode の classifier が走る環境では classifier が判定するが、classifier が走らない mode や、広い `WebFetch(domain:...)` allow を置いた環境では判定する層が無い
+- **plugin は WebFetch の外向き通信を判定しない**。auto mode では、`permissions` の allow / ask / deny に当たらない WebFetch は classifier の判定に回る (2026-11-04 に Claude Code v2.1.318 の headless 実行で、classifier の拒否を 1 回確認した)。classifier は secret を載せた URL を通すこともある。Manual (`default`) mode では、対話 session なら未許可のドメインに prompt が出て人が決め、headless なら拒否される。`bypassPermissions` のように classifier が走らない mode や、広い `WebFetch(domain:...)` allow を置いた環境では判定する層が無い
 - **`guard-worktree-escape.py` は `~/.claude/state/worktree-guard/` に session ごとの作業 root を書く** (7 日で自動削除)。書けない環境では guard が無効化されるだけで、tool 実行は妨げない
 
 ## 更新

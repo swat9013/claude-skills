@@ -19,7 +19,7 @@ args は issue 置き場 (省けば下の文書の宣言) と、issue ごとの 
 - issue を閉じる open CL を控える。数える CL も見つけ方も `body-rewrite.md` の「open CL の確かめ」に従う (`closedByPullRequestsReferences` は上で読んだものを使う)
 - open issue の題名を `gh issue list -R <issue 置き場> --state open --limit 1000 --json number,title` で 1 回だけ引いて file に受け (件数が `--limit` に届いたら上げて引き直す)、close の確かめと §5 の follow-up issue の重複探しで使い回す
 - close の 3 種 (重複・既に直っている・前提が変わった) は、この題名の一覧と、`git fetch` 後の `origin/<既定 branch>` で本文が名指す file・識別子を `git show` / `git grep` した結果の 2 つだけで確かめる。どちらにも当たらなければ、3 種のどれでもないとみなす — 決定記録や過去 PR を広く読みに行くと、1 件の triage の費用が上限なく増える (この限りは close の確かめに当てる。close 以外の区分の判定では、§2 が定義する規範 (決定記録を含む) をこの限りに縛らずに読む。決定記録は対象 repo の `docs/agents/domain.md` が案内する置き場から引き、案内が無ければ読まない — 規約の path や既定の名前で探すと、置き場を宣言で入れ替えた repo では別の場所を読む)。cwd は人の checkout でありうるので HEAD は動かさない
-- `wontfix` は、本文の中身を `docs/agents/issue-tracker.md` の「follow-up issue の起票」節の「単位の外」の箇条と、その節に repo が足した補足に照らして決め、節の外は読みに行かない — 補足を外すと、起票する側だけが補足を当て、閉じる判定と起票の判定の基準が割れる
+- `wontfix` は、本文の中身を `docs/agents/issue-tracker.md` の「follow-up issue の起票」節の「単位の外」の箇条と、その節に repo が足した補足に照らして決め、節の外は読みに行かない — 補足を外すと、起票する側だけが補足を当て、閉じる判定と起票の判定の基準が割れる。節はあるが太字の見出し語「単位の外」で始まる箇条が欠けているときだけ、`${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/filing-criteria-defaults.md` の同じ箇条を基準として読む — skill の手順で起票する側も同じ既定の値を読むので、その起票と判定が割れない
 - 同じ session で呼ばれ直したとき、この skill の手順で Read する plugin 内の file (`${CLAUDE_SKILL_DIR}` から辿る leaf と `references/`) は、前の実行で読んだ結果が context に見えていれば読み直さない (compaction で要約されていれば読み直す) — plugin 内の file は実行の間で変わらない。対象 repo の宣言 (`docs/agents/*.md`)・tracker の状態 (本文・コメント・label・open CL・題名の一覧)・`git fetch` は実行ごとに引き直す — 前の実行の後に、人や呼び出し元が cwd を更新し、issue を起票し、label を付け替え、CL を出しうるので、前の結果を使うと古い状態で振り分ける。基準は `body-rewrite.md` の「基準の保存」に従って実行ごとに決める。前の実行で会話へ返した文面も持ち越さない — §6 のブロックには同じ文面でも逐語で書き直し、§6 の「既にある」コメントにも数えない (呼び出し元が投稿するのは今回返したブロックの文面で、会話へ返しただけの文面は tracker に無い)
 
 ## 2. 振り分ける
@@ -31,7 +31,7 @@ issue ごとに 1 つの区分に決める。規範とは対象 repo の CLAUDE.
 | 1 | 判断が要らない、または既存の規範で決まる | 内側 |
 | 3 | 規範はまだ決めていないが、判断がこの issue の中で閉じる。自分で決め、決めたことと退けた案を本文に書く | 内側 |
 | close | 重複している・既に直っている・前提が変わった | 内側 (reopen で戻せる) |
-| `wontfix` | 対象 repo の `docs/agents/issue-tracker.md`「follow-up issue の起票」節が起票しないとした種類 (欠陥を伴わない改善など) に当たる。起票元のレビューが付けた区分ではなく、本文の中身で決める | 内側 (reopen で戻せる) |
+| `wontfix` | §1 の `wontfix` の項が決める基準が起票しないとした種類 (欠陥を伴わない改善など) に当たる。起票元のレビューが付けた区分ではなく、本文の中身で決める | 内側 (reopen で戻せる) |
 | 2 | 判断がこの issue の外へ一般化する (同じ種類の判断が次の issue でも来る) のに、決めるための一般則が規範に無い。一般則を決めることは規範を作ることなので、人に返す | 外側 |
 | 4 (判断) | 原則 leaf が人に返すとした種類の判断 (人と決める論点) が残る。人手でしか進まない作業も残っていてよい — 論点が決まれば、作業は本文に残る | 外側 |
 | 4 (人手) | 決める論点は残らず、人手でしか進まない作業 (権限で塞がれた操作・人の資格情報が要る操作・物理的な手作業) だけが残る | 外側 |
@@ -63,7 +63,7 @@ issue ごとに 1 つの区分に決める。規範とは対象 repo の CLAUDE.
 
 1. **本文**: 書き換え案があれば、`${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/body-rewrite.md` の「書き戻し」の順で書き戻す。手順 1 で外す label は、既に付いている `ready-for-agent` だけ (検査を通る前の本文に `ready-for-agent` を残さない。ほかの状態の label は下の 4 で外す)。ほかの状態の label が付いていなければ、同じ操作で `needs-triage` を付ける — 外すだけだと、手順 2 か 5 で止めたときに状態の無い issue が残る。手順 2 か 5 で止めたら、その issue の以降の操作をせず、同書「停止の扱い」の 4 項目を停止として返す。同書の「open CL の確かめ」で止めたときも以降の操作をせず、同書「停止の扱い」の先頭段落が渡すとしたものを停止として返す。旧本文の記録の投稿に失敗したら、基準の file の中身を逐語で添えて返す。書き換え案が無く `ready-for-agent` で終える issue は、`${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/state-label.md` の「本文を書き換えずに `ready-for-agent` で終えるとき」の比較を、§1 の基準の file を基準にしてここで当てる (付ける状態の label は `needs-triage`)。食い違えば以降の操作をせず、`body-rewrite.md`「停止の扱い」の 4 項目を停止として返す — 手順 2・3 の書き込みより前に比べないと、停止した issue に古い本文に対する起票と根拠のコメントが残る
 2. **follow-up issue** (§3 で文案を控えたとき): この起票は repo の issue の規範の起票の節ではなく、ここの手順に従う。題名は `<負けた規範の path>: <文案の題名>` にする — 文案の題名は呼ぶたびに書かれて揺れるので、重複は path で照らす。§1 で受けた題名の一覧から、同じ `<負けた規範の path>:` で始まる issue を探す。あれば起票せずに発端 (この issue の番号) をコメントで足す。無ければ `gh issue create -R <issue 置き場> --title <題名> --body-file <file> --label needs-triage` で起票し、起票した番号と題名を一覧の file に追記する (同じ実行の続く issue で二重に起票しない)。本文には文案どおり `## 範囲` の節を置き (範囲の無い issue は次の検査で差し戻される)、その節の直前に独立した 1 行 `発端: #<この issue の番号>` を置く
-3. **根拠**: 区分と根拠をコメントにする。区分 3 は決めたことと退けた案、close は重複先・直した変更・変わった前提、`wontfix` は当てた規範の path と見出し、起票しない種類と判定した理由を 1 行で書く — label だけでは理由が次に読む人へ残らない。既に `ready-for-agent` だけが付き、本文を書き換えず、根拠が直近の triage のコメントと変わらない issue にはコメントを足さない (同じ根拠が積み重なるだけになる)
+3. **根拠**: 区分と根拠をコメントにする。区分 3 は決めたことと退けた案、close は重複先・直した変更・変わった前提、`wontfix` は当てた規範の path と見出し、起票しない種類と判定した理由を 1 行で書く (既定の値を当てたときは、節に箇条が無いので既定の値を当てた旨と当てた箇条の文面を書く — plugin の file の path は tracker の読み手に届かない) — label だけでは理由が次に読む人へ残らない。既に `ready-for-agent` だけが付き、本文を書き換えず、根拠が直近の triage のコメントと変わらない issue にはコメントを足さない (同じ根拠が積み重なるだけになる)
 4. **状態**: `ready-for-agent` は `gh issue edit <N> -R <issue 置き場> --add-label ready-for-agent --remove-label <付いている状態の label>` の 1 回で付け替える (状態の label は `needs-triage`・`needs-info`・`needs-grilling`・`ready-for-human`。本文を書き換えず、既に `ready-for-agent` だけが付いているなら付け替えない)。2 回に分けると、間で止まったときに状態の無い issue か、`ready-for-agent` と別の状態が併存する issue が残る。close は先に `gh issue close <N> -R <issue 置き場>` で閉じ、その後で状態の label を外す — 間で止まっても、閉じた issue に古い label が残るだけで済む。`wontfix` は閉じた後の 1 回の `gh issue edit` で、`--add-label wontfix` と状態の label の `--remove-label` をまとめる。この edit が失敗したら停止として返す — `wontfix` の無い closed issue は、次の起票の重複探しから漏れる
 
 ## 6. 返す

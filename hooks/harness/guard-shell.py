@@ -9,6 +9,13 @@
     リダイレクト付き・option が前に付く `bash -x ./x.sh`) は deny の
     理由文で直接パス起動へ案内して、正しい綴りへ直す。
 
+    複合行の `<shell> -n` の rewrite は、`cd` の語を持つ呼び出しでは deny へ替える (設計規則 (3)。
+    `guard-cd-relative-glob-read.py` も同じ呼び出しを書き換えうる形で、hook が別々の `updatedInput` を
+    返すとどちらが残るか決まらず、落ちた側の補正が効かない)。guard-cd が書き換えるかまでは見ない —
+    判定を写すか guard-cd を読み込むと hook どうしが依存し、guard-cd は public plugin に載らないので
+    そこで読み込みが落ちる。語の位置も見ないので、`cd` だけの行・引数が `cd` の行・guard-cd の無い
+    public plugin の行も deny になる。この往復は受け入れる (見直しの条件は ADR 0118 の不変条件 (3) の行)。
+
 fail-posture: **fail-closed** (#250 決定 3 / #596 / ADR 0046)。payload を読めなかったときは
 判断保留 = 素通しにせず deny する。読み取り失敗を素通しにすると command が空文字になり、
 下の全判定が不成立のまま passthrough して bash/sh/zsh の直接実行が無検査で通る。
@@ -33,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _prelude import (  # noqa: E402
     allow,
     allow_rewritten,
+    command_segments,
     continues_on_another_line,
     decide,
     deny,
@@ -44,6 +52,7 @@ from _prelude import (  # noqa: E402
     strip_here_documents,
     substitute_lines,
     tool_input_text,
+    write_stdout_text,
 )
 
 # bash/sh/zsh -n <file> は構文チェックのみ (実行しない) で安全。allow 済の syntax-check.sh
@@ -99,6 +108,15 @@ def syntax_check_bin() -> str:
     return os.environ.get("HOME", "") + "/" + SYNTAX_CHECK_TILDE[len("~/"):]
 
 
+def has_cd_word(command: str) -> bool:
+    """語のどれかが `cd` か。`/usr/bin/cd` も guard-cd は `cd` と読むので同じ語に揃える。"""
+    return any(
+        word.rsplit("/", 1)[-1] == "cd"
+        for words in command_segments(command)
+        for word in words
+    )
+
+
 def judge(stdin_text: str) -> NoReturn:
     payload = read_payload_or_deny(stdin_text)
     # 末尾の改行は落とす (shell の `$(...)` と同じ)。書き換えの出力に効く
@@ -113,7 +131,7 @@ def judge(stdin_text: str) -> NoReturn:
         if wrapper_exists:
             shell = _each_line(lambda line: line.split(" ", 1)[0], command)
             target = substitute_lines(SYNTAX_CHECK_PREFIX, "", command).rstrip("\n")
-            allow_rewritten({"command": f"{SYNTAX_CHECK_TILDE} {shell} {target}"})
+            allow_rewritten(payload["tool_input"], f"{SYNTAX_CHECK_TILDE} {shell} {target}")
         allow("bash/sh/zsh -n は構文チェックのみで実行しないため許可")
 
     # 複合行に混ざった `<shell> -n <file>` も wrapper 形へ書き換える。`bash -n a.sh && shellcheck a.sh`
@@ -130,14 +148,19 @@ def judge(stdin_text: str) -> NoReturn:
         rewritten = substitute_lines(COMPOUND_SYNTAX_CHECK_PREFIX, rf"\1{SYNTAX_CHECK_TILDE} \2 ", command)
         rewritten = rewritten.rstrip("\n")
         if not matches_any_line(DIRECT_INVOCATION, rewritten):
-            rewrite({"command": rewritten})
+            if has_cd_word(command):
+                deny(
+                    "cd の語を含む呼び出しの構文チェックは書き換えない（cd 後の読み取りを書き換える hook と重なりうる）。"
+                    "構文チェックを別の Bash 呼び出しに分ける。cd より後ろにあったものは cd 先を含めた path で書く。"
+                )
+            rewrite(payload["tool_input"], rewritten)
 
     # bash/sh/zsh <script> で「絶対パス (/) または明示相対 (./ ../) のスクリプトファイル」を実行
     # する場合は、deny でなく interpreter prefix を除去した直接パス起動へ書き換えて allow する
     # (permission=意図表明 / hook=変換)。bare name (`bash deploy.sh`) は PATH 検索/cwd 依存で意味が
     # 変わるため対象外とし下の deny で `./` 付き起動を案内する。
     if single_command and matches_any_line(SCRIPT_PATH_INVOCATION, command):
-        allow_rewritten({"command": substitute_lines(INTERPRETER_PREFIX, "", command).rstrip("\n")})
+        allow_rewritten(payload["tool_input"], substitute_lines(INTERPRETER_PREFIX, "", command).rstrip("\n"))
 
     # here-document の本体は実行されないので、掴むと誤 deny になるだけで防御にならない。
     # 本体を落とした写しは **deny の判定にだけ使う** — 上の allow / rewrite に使うと、本体に
@@ -159,5 +182,5 @@ def main(stdin_text: str) -> tuple[int, str]:
 
 if __name__ == "__main__":
     exit_code, stdout_text = main(read_stdin_text())
-    sys.stdout.write(stdout_text)
+    write_stdout_text(stdout_text)
     sys.exit(exit_code)

@@ -2,6 +2,8 @@
 
 `inventory-claude-md` が組み立てる棚卸しレポートの記入例 (概略)。**固定 schema の正本は SKILL.md 手順 3** で、本 file はその具体化 — 各 section を実際にどう書き下すかが掴めないときに Read する。
 
+例の証拠欄が引く診断表の行: [既定どおりの行 (no-op)](../../write-for-harness/references/patches.md#diag-no-op) / [禁止の形で書かれた規範](../../write-for-harness/references/patches.md#diag-prohibition)
+
 ```
 # CLAUDE.md 棚卸しレポート
 
@@ -54,7 +56,7 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 
 ### 7. CLAUDE.md:31  「エラーメッセージは読んでから対処する」
 - bucket: delete
-- 証拠: 診断表「既定どおりの行 (no-op)」に当たる / micro-test (1 場面・各 1 回): 場面「テストが失敗した直後に次の手を決める」/ あり: 失敗出力を読んで原因箇所を特定してから修正 / なし: 同じく失敗出力を読んでから修正 → 取る行動が一致 / est_tokens: 12
+- 証拠: 診断表「既定どおりの行 (no-op)」に当たる / micro-test (1 場面・各 1 回): 場面「テストが失敗した直後に次の手を決める」/ あり: 失敗出力を読んで原因箇所を特定してから修正 / なし: 同じく失敗出力を読んでから修正 → 取る行動が一致 / est_tokens: 12 (estimator: <token_cost.estimator を転記>)
 - 提案: 削除
 - 適用手順: 対象 file (CLAUDE.md) の該当行を編集
 

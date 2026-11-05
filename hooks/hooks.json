@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-git.sh",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-git.py",
             "if": "Bash(git:*)"
           },
           {

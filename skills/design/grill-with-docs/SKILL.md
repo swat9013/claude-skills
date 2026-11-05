@@ -10,7 +10,7 @@ Skill tool で `swat-skills:grilling` と `swat-skills:domain-modeling` を呼�
 
 ## 設計 doc から始める
 
-最初のラウンドの前に、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」を Read し、問い詰める対象が触れる file に適用される設計 doc を決める。当たる設計 doc があればそれを Read し、設問を設計 doc の保証・不変条件・境界・状態の変更として立てる。当たる設計 doc が無ければ本節は当たらない — skill や規範の文面から始めると、設計 doc が既に決めた境界と食い違う案を出し、設問が設計の外で回る。
+最初のラウンドの前に、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」を Read し、問い詰める対象が触れる file に適用される設計 doc を決める。当たる設計 doc があればそれを Read し、設問を設計 doc の保証・設計規則・境界・状態の変更として立てる。当たる設計 doc が無ければ本節は当たらない — skill や規範の文面から始めると、設計 doc が既に決めた境界と食い違う案を出し、設問が設計の外で回る。
 
 ## 原則を当てる
 
@@ -44,6 +44,6 @@ Skill tool で `swat-skills:grilling` と `swat-skills:domain-modeling` を呼�
 - user が agent の推奨や、agent が自律で下して記録した判断 (CL の説明文などに残したもの) を覆したときも、その判断を導いた規範を同じ判定にかけ、規範を直す文案を出す — 規範を直さないと、同じ種類の判断で同じ誤りが繰り返される
 - codify できるなら、書き込む先と規範の文案を、その判断を問う設問に推奨と並べて逐語で出す — user が読んでいない文面を規範に書かない。規則は対象 repo の中の指示文 (その領域を既に扱う file があればその file、無ければ新しい file) に書く。対象 repo の外にある規範 (plugin の原則 leaf など) は直さず、対象 repo の規範に project の判断として書く — 外の規範は他の project とも共有されるので、この project の判断で書き換えると他の project の判断まで変わる。ADR にするのは、戻しにくく・文脈なしでは意外で・実際の代替案から選んだ決定だけにする
 - 承認された文案は、その規範を引く issue 本文の書き換えより先に反映する — 反映できなかった規範を本文が引くと、実在しない規範を指す参照が残る。問い詰めの中では、その設問で承認された時点で反映する (用語集の更新と同じ)。指示文は `${CLAUDE_SKILL_DIR}/../../steering/write-for-harness/references/caller-contract.md` を Read し、その契約に従って `swat-skills:write-for-harness` を Skill tool で invoke する。ADR は write-for-harness が扱わないので、対象 repo の ADR の規約に従って書く (問い詰めの中なら domain-modeling の ADR の手順)。反映できなかったら、その規範を引く issue 本文の書き換えと label の変更を保留し、止まった操作と理由を user へ伝える (write-for-harness が止まったときに伝えるものは契約に従う)
-- 設計 doc の記述 (保証・不変条件・境界・状態をはじめ、設計 doc が持つ構造) を変える決定は、codify できるかによらず設計 doc へ書く — 書かずに閉じると、設計 doc が決定と食い違ったまま残る。書く前に `${CLAUDE_SKILL_DIR}/../sud-design/SKILL.md` の「1. 置き場を決める」のうち設計 doc を束ねるディレクトリの README の規約を読む項目と「4. 既存設計を更新する」、`${CLAUDE_SKILL_DIR}/../sud-design/references/artifacts.md` の節「決定の見直し条件」と却下肢を該当節に織り込む段を Read し、その手順と書き方に従う。文面は決定に根拠・退けた案・見直し条件を添え、書き込む先 (設計 doc の file と節) と並べて、その決定を問う設問に逐語で出し、承認された文面だけをそのまま書く — user が読んでいない文面を書くと、設計 doc が人の決定ではなく agent の要約になる。反映の時点・issue 本文の書き換えより先に反映すること・反映できなかったときの保留は、上の規範の反映と同じにする
+- 設計 doc の記述 (保証・設計規則・境界・状態をはじめ、設計 doc が持つ構造) を変える決定は、codify できるかによらず設計 doc へ書く — 書かずに閉じると、設計 doc が決定と食い違ったまま残る。書く前に `${CLAUDE_SKILL_DIR}/../sud-design/SKILL.md` の「1. 置き場を決める」のうち設計 doc を束ねるディレクトリの README の規約を読む項目と「4. 既存設計を更新する」、`${CLAUDE_SKILL_DIR}/../sud-design/references/artifacts.md` の節「決定の見直し条件」と却下肢を該当節に織り込む段を Read し、その手順と書き方に従う。文面は決定に根拠・退けた案・見直し条件を添え、書き込む先 (設計 doc の file と節) と並べて、その決定を問う設問に逐語で出し、承認された文面だけをそのまま書く — user が読んでいない文面を書くと、設計 doc が人の決定ではなく agent の要約になる。反映の時点・issue 本文の書き換えより先に反映すること・反映できなかったときの保留は、上の規範の反映と同じにする
 - 対象が issue なら、本文には決定を書き直さず、codify した規範・書いた設計 doc、または判断を決めた既存の規範の path と見出しを引く。本文に書き換える箇所が他に無くても、引く 1 行を足す書き換えにする
 - 終わりに、反映した規範と書いた設計 doc の path とそれを引く issue を挙げ、それらが既定 branch に届くまでその issue を実装する側からは読めないことを user へ伝える

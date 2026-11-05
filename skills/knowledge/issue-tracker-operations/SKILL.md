@@ -15,5 +15,6 @@ skill の手順が issue tracker に行う操作の手順と、操作を撃つ�
 | [state-label](references/state-label.md) | issue の状態の label を付け替えるとき |
 | [close-reopen](references/close-reopen.md) | issue を close / reopen するとき |
 | [parent-child](references/parent-child.md) | 子 issue を親 issue に結ぶとき・issue を子に分けたとき |
+| [filing-criteria-defaults](references/filing-criteria-defaults.md) | 対象 repo の「follow-up issue の起票」節の基準の箇条を、既定の値の見出し語と照らすとき |
 
-issue の起票と自由文のコメントの手続きは持たない。起票は対象 repo の issue の規範に従う。
+issue の起票と自由文のコメントの手続きは持たない。起票は対象 repo の issue の規範に従う。持つのは、節から欠けた基準の箇条の既定の値だけ。

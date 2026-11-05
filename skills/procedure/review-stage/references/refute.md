@@ -40,5 +40,5 @@
 - adversarial verification: 攻撃の経路を弾いている箇所 (検査・型・caller の前提) の file:line / 出どころを issue・commit message・PR 本文・docstring と名指しした主張について、そこに宣言されていないことを示す <claim-sources> か差分の該当行 (暗黙の主張と既存の契約は、出どころに書かれていなくても攻める主張なので、この種類の具体物では反証しない)
 - 原則: file:line / 弾いている caller
 - Spec: spec を満たしている実装の file:line
-- 設計: 差分が設計 doc の保証・不変条件・境界に沿っていることを示す設計 doc の file:line / 差分が変えた構造を設計 doc が既に記述していることを示す設計 doc の file:line / Evidence に添えられた、設計 doc に優先する規範に差分が沿っていることを示すその規範の file:line
+- 設計: 差分が設計 doc の保証・設計規則・境界に沿っていることを示す設計 doc の file:line / 差分が変えた構造を設計 doc が既に記述していることを示す設計 doc の file:line / Evidence に添えられた、設計 doc に優先する規範に差分が沿っていることを示すその規範の file:line
 ```

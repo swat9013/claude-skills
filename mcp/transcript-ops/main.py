@@ -37,7 +37,7 @@ mart の `contract.notes`) にする (ADR 0031: context 常駐コストの削減
 
 invariant 一覧 (テストが項目ごとに拒否か値の検査を 1 本持つ):
 
-1. 登録する tool の顔ぶれは固定 (追加と存続は消費者の実在を条件とし、消費者が消えた tool は撤去する — これはレビューで見る。設計 doc の不変条件 (7))
+1. 登録する tool の顔ぶれは固定 (追加と存続は消費者の実在を条件とし、消費者が消えた tool は撤去する — これはレビューで見る。設計 doc の設計規則 (7))
 2. tool の返り値は path (または paths) + meta と、本文を含まない要約 (件数・index など) だけで、
    mart / slice の本文 (candidates 等) を載せない
 3. commands / marts が投げる domain error はすべて `ANTICIPATED_ERRORS` に入り、文言が LLM へ届く

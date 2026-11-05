@@ -26,12 +26,34 @@ cwd 自体が汚染されうるため、cwd だけでは逸脱を判別できな
     確かめた (残り 25 件の transcript は手元に無い)。この 1 件は review の出力を作業ツリーの外へ
     保存しようとした Write で、28 秒後に `/tmp/` へ書き直して進んだ (#1116 では 26 件中 23 件が
     60 秒以内に次の呼び出しで成功)。損害は往復 1 回
-  - この経路は既知の誤検出の例外としてここに記録するだけで、hook の判定には例外を入れていない
-    (判定を変えるかは #2059)
+  - この経路は判定の例外にした (#2059)。agent_id / agent_type の無い main session の Edit / Write /
+    NotebookEdit は、対象 path を main checkout の `git check-ignore` が ignored と答えるなら deny
+    しない。subagent の path 汚染 (本 hook が防ぐ上流バグ) は agent_id 有りの呼び出しなので deny の
+    まま残り、tracked / 未追跡で ignore されない file への main session の逸脱も deny のまま残る。
+    main checkout の working tree の外 (配下にある別の worktree・初期化済みの submodule・`.git` の
+    中) も、main checkout の答えでは差分への混入を判定できないので deny のまま残る。ignored な file は main
+    checkout の差分を汚さず、本 hook が守る「正しい木の外で編集する」逸脱の損害 (差分への混入) が
+    生じない。退けた案:
+      - cwd が linked worktree の main session は一律 deny しない: main session 自身の tracked file
+        への逸脱まで通る
+      - `.claude-dispatcher/workspaces/` 配下の兄弟 file だけを許す: 外部ツールの path を hook に
+        焼き込み、別ツールの gitignore 済み出力で同じ誤検出が再発する
+      - 例外を作らず既知の誤検出として残す: 誤検出で deny される往復が worker ごとに続く
   - 未確認なのは、`EnterWorktree` / `claude --worktree` / `isolation: "worktree"` を使わずに
     手で `git worktree add` した worktree で作業する session (claude-dispatcher の worker が
     これに当たる) を本体 guard が isolated と扱うか。上の 26 件は本 hook が先に止めたので、
     本体 guard が同じ Write を止めるかは観測できていない。扱うと確認できたら本 hook は退役できる
+
+probe: linked worktree を cwd に `claude -p` を起動し、`--settings` で PreToolUse の payload を file へ
+  書き出す hook を足す。general-purpose の subagent に Bash の `pwd` と Primary working directory を、
+  Explore の subagent に Glob で探した CLAUDE.md の絶対 path を答えさせ、答えと payload の cwd が
+  worktree でなく main checkout を指せばバグが再現している。
+  確かめた結果: 2026-11-04・v2.1.318 で各 1 回 (model は haiku)、どちらも worktree を指し再現せず。
+  どちらの payload も agent_id と agent_type を持っていた (ignored の例外が subagent を見分ける根拠。
+  再現しなかった実行の観測で、バグが起きたときの payload は未確認)。
+  重複先の #36182 / #11239 は同日も OPEN で、再現が確率的か経路が別かは分かっていないので、
+  1 回の不再現を上流の修正とは読まない。上流の修正と読むのは、両 issue が修正で close され、
+  かつその時点の version でこの手順が再現しないとき
 
 そこで信頼できる唯一の情報源であるメインセッションの cwd を session_id キーの
 状態ファイルに記録し (session_id は親と subagent で共通)、tool 呼び出し時に照合する:
@@ -51,7 +73,9 @@ deny するのはバグの signature に一致する場合のみ:
   - 別 repo / scratchpad / $HOME など main checkout 外への操作
   - Read / Glob / Grep (symlink 経由の reference Read は正規フロー。
     Read を matcher に含めるのは状態の鮮度維持のため)
-  - git 情報が取れない・状態が無く cwd も worktree でない等、確証が持てないケース
+  - main session の Edit / Write / NotebookEdit で、対象が main checkout の working tree の ignored な path
+  - git 情報が取れない・状態が無く cwd も worktree でない・`git check-ignore` の答えが得られない
+    (起動失敗・timeout・exit 0 / 1 以外) 等、確証が持てないケース
 
 fail-posture: **fail-open — ADR 0046 の「guard は原則 fail-closed」に対する明示的な例外**。
 本 hook が原則から外れるのは、原則の根拠 (素通しの損害は不可逆・deny の損害は回復可能、と
@@ -64,7 +88,8 @@ fail-posture: **fail-open — ADR 0046 の「guard は原則 fail-closed」に�
      規律**であって、bypass primitive でも権限昇格でもない。素通しで通るのは「正しい木の外で
      編集してしまう」ことであり、guard 機構が守る境界を越えるものではない
   3. **素通しの損害が回復可能**: 逸脱した編集は main checkout の working tree に残るだけで、
-     git が全量を追跡している。取り消しも移送も後から効く
+     git が全量を追跡している。取り消しも移送も後から効く。ignored な file は git が追跡しないので
+     この限りでないが、main checkout の差分に出ないので本 hook が守る損害の外にある
 
 この 3 点が崩れたら (例: 発火条件を絞れる / 守る対象が security 相当になる) posture の
 再評価が要る。原則の適用を免れているのは見落としではなく認定された例外である。
@@ -110,6 +135,10 @@ import time
 
 STATE_DIR_ENV = "WORKTREE_GUARD_STATE_DIR"
 STATE_TTL_SECONDS = 7 * 24 * 3600
+CHECK_IGNORE_TIMEOUT_SECONDS = 5
+# repo を指す変数だけを除く。git 設定の env (`GIT_CONFIG_GLOBAL` 等) は利用者の ignore 規則の一部で、
+# テストの隔離もこれに依る
+REPO_SELECTING_GIT_ENV = {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"}
 # 書き込み系 tool と、その対象 path を持つ tool_input の key
 GUARDED_WRITE_TOOLS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
 
@@ -181,7 +210,8 @@ def emit_deny(tool: str, target: str, main_root: str, session_root: str) -> None
 
 
 # --- git の位置 (git を起動せずファイルシステムから引く) ----------------
-# hook は tool 呼び出しのたびに走るので、git の subprocess は呼ばない (#1435)。
+# hook は tool 呼び出しのたびに走るので、git の subprocess は呼ばない (#1435)。例外は deny を
+# 返す直前の main session の書き込みの 1 経路だけ (`may_be_ignored`)。
 # 探索は git の discovery (`git rev-parse` が祖先の `.git` を探す手順) に倣う。
 # 倣っていない差分 (GIT_DIR 等の env / safe.directory / 探索の停止) と扱わない形態は、
 # module docstring の「限界」。
@@ -276,6 +306,45 @@ def main_checkout_root(linked_root: str) -> str | None:
 
 def is_under(path: str, root: str) -> bool:
     return path == root or path.startswith(root + os.sep)
+
+
+def in_main_working_tree(target: str, main_root: str) -> bool:
+    """target の置き場が main checkout 自身の working tree なら True。
+
+    配下でも別の worktree・初期化済みの submodule・`.git` の中は False。どれも main checkout の
+    ignore 規則が当たりうるが、main checkout の答えではそこの差分への混入を判定できない。
+    位置を引けないとき (壊れた `.git` file・読めない `commondir`) は確証が持てないので True で、
+    判定を git の答えへ渡す。
+    """
+    directory = os.path.dirname(target)
+    while not os.path.isdir(directory):  # これから作る file の親はまだ無い
+        directory = os.path.dirname(directory)
+    try:
+        location = git_location(directory)
+    except ValueError:
+        return True
+    return location is None or location[0] == main_root
+
+
+def may_be_ignored(main_root: str, target: str) -> bool:
+    """main checkout の `git check-ignore` が ignored でないと答えたときだけ False。
+
+    判定できないとき (起動失敗・timeout・exit 0 / 1 以外) は True で、素通しに倒す。
+    """
+    import subprocess  # deny の直前でだけ要る。tool 呼び出しごとの起動に import の費用を乗せない
+
+    # 渡っていると main checkout でなくそちらの repo の答えになる
+    env = {k: v for k, v in os.environ.items() if k not in REPO_SELECTING_GIT_ENV}
+    try:
+        answer = subprocess.run(
+            ["git", "-C", main_root, "check-ignore", "-q", "--", target],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=CHECK_IGNORE_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # ValueError: symlink の loop の先では realpath が NUL 入りの path を残して返す
+        return True
+    return answer.returncode != 1
 
 
 # --- session 状態 (session_id → メインセッションの worktree root) ---------
@@ -413,6 +482,9 @@ def judge(stdin_text: str) -> None:
     for root in allowed_roots:
         main_root = main_checkout_root(root)
         if main_root and is_under(target, main_root):
+            if (tool in GUARDED_WRITE_TOOLS and not is_subagent
+                    and in_main_working_tree(target, main_root) and may_be_ignored(main_root, target)):
+                passthrough(hook_event)
             emit_deny(tool, target, main_root, root)
     passthrough(hook_event)
 

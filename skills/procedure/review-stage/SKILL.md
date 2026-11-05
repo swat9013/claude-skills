@@ -15,7 +15,7 @@ CL を出す前の差分を、差分の重さで選んだ **レビュー段階**
 | adversarial verification | 差分が宣言する主張 (issue・docstring・既存の契約・暗黙の主張) を壊しにいき、破れた主張 | adversarial-verifier subagent |
 | 原則 | 規約違反 (repo の規約を逐語で引用できる違反) と症状 (rubric に照らした書き方の判断呼び) | reviewer subagent |
 | Spec | 発端の issue との食い違い | reviewer subagent |
-| 設計 | 対象 repo の設計 doc への conformance (保証・不変条件・境界に反していないか) と design drift (設計 doc が先に直っていない構造の変更) | reviewer subagent |
+| 設計 | 対象 repo の設計 doc への conformance (保証・設計規則・境界に反していないか) と design drift (設計 doc が先に直っていない構造の変更) | reviewer subagent |
 
 adversarial verification は欠陥探し・Spec と攻める対象が重なるが、観点をまたいで指摘を統合しない (手順 5)。
 

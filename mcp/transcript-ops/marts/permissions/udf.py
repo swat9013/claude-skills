@@ -426,7 +426,7 @@ def automode_reason_label(text: str) -> str | None:
 def hook_command_key(command: str) -> str:
     """hook command の照合キー (**最後に**現れる script file の basename)。
 
-    設定側は `"${CLAUDE_PLUGIN_ROOT}"/hooks/harness/guard-git.sh` のように変数を
+    設定側は `"${CLAUDE_PLUGIN_ROOT}"/hooks/harness/guard-git.py` のように変数を
     含み、観測側は展開済み絶対 path で現れるため、文字列一致では紐づかない。
 
     先頭ではなく末尾を採るのは、`export PATH=...; <runner>.js <entry>.js` のような

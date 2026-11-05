@@ -34,7 +34,7 @@ mart meta に転記するだけでよい (実測: full ingest 16.9 秒 / 差分 
 
 store file 名は `store-v<N>-<lake digest>.sqlite3` で、lake の digest が 1 lake = 1 store
 を実装する — 1 つの store を別 lake で共有すると「lake から消えた file の row を消す」規則が
-互いの row を消し合う (設計の正本は設計 doc の [不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査))。
+互いの row を消し合う (設計の正本は設計 doc の [設計規則と検査](../../../docs/design/transcript-observation/README.md#設計規則と検査))。
 
 `SyncReport`: `ingested_files` / `unchanged_files` / `removed_files` /
 `unreadable_files` / `unrecognized_nested_files` / `workflow_journal_files` / `records` /
@@ -112,7 +112,7 @@ projection の欠損はその mart の窓を通過しないので、数えると
 
 不変条件は I1 冪等 / I2 差分 sync == full rebuild / I3 format isolation / I4 未知の record も
 spine に入る / I5 store は lake の純関数。検査との対応の正本は設計 doc の
-[不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査)。以下は store がそれを守るための実装の注記。
+[設計規則と検査](../../../docs/design/transcript-observation/README.md#設計規則と検査)。以下は store がそれを守るための実装の注記。
 
 race 対策は検査ではなく**順序**で保証する: fingerprint は read の前に `stat` し、
 読込完了後にのみ記録する。読込中に伸びた file は fingerprint が合わず次回必ず再取得。
@@ -129,13 +129,13 @@ drop & rebuild は lock を握ったまま走るので、前方一致だと stor
 **旧世代の lock file は回収しない** (0 byte / 世代なので放置してよい)。
 
 削除は `PRAGMA secure_delete` 込みで行う。row を消しても内容は free page に残るので、
-[cache invariant](../../../docs/design/transcript-observation/README.md#不変条件と検査) をこの PRAGMA で物理層まで通す。
+[cache invariant](../../../docs/design/transcript-observation/README.md#設計規則と検査) をこの PRAGMA で物理層まで通す。
 
 ## main と subagent
 
 `<project>/*.jsonl` は main、`<project>/<session>/` の下は adapter の `is_subagent_transcript` に当たる file が subagent で、subagent の
 record は親の `session_id` を持つ (session 単位の mart は `transcript_kind` で母集団を選ぶ)。
-意味の正本は設計 doc の [不変条件と検査](../../../docs/design/transcript-observation/README.md#不変条件と検査)。実装の入口:
+意味の正本は設計 doc の [設計規則と検査](../../../docs/design/transcript-observation/README.md#設計規則と検査)。実装の入口:
 
 - `<session>/` の下の file を subagent の transcript・workflow の進行ログ・置き場の判定に
   当たらない file に分けるのは adapter の `session_file_kind` が正本で、

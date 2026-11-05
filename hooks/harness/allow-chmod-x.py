@@ -22,7 +22,7 @@ invariant:
     3. 改行で続けた 2 行目・`PLAIN_COMMAND_CHARS` の外の文字・chmod 以外の command・一部だけ
        allow prefix に入る複数 path は allow しない
     4. recursive (`-R` / `--recursive`) は allow しない
-    5. payload を読めない / tokenize できないときは allow しない
+    5. payload を読めない / tokenize できない / git が「repo でない」以外で答えないときは allow しない
     6. 1 は symlink を辿った実体の path で、2 は字面・実体と、辿る途中で通る symlink の各 hop の
        path で判定する (symlink 越しに外へ +x を付けない。辿りきれない path は allow しない)。
        実体が自動発火の場所の別名 (場所そのものの symlink / entry の symlink・hardlink) を通じて
@@ -30,7 +30,7 @@ invariant:
        自動発火 path の segment は大文字小文字を区別せずに照らす
 
 fail-posture: allow-hook なので fail-safe 固定 (ADR 0046)。payload を読めない / コマンドを
-    tokenize できないときは allow せずに passthrough する。
+    tokenize できない / git が答えないときは allow せずに passthrough する。
 
 Registration: hooks/hooks.json PreToolUse / Bash matcher / if: Bash(chmod:*)
 """
@@ -61,6 +61,13 @@ from _prelude import (  # noqa: E402
 PLAIN_COMMAND_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./+=,:@%~- \t'\""
 )
+
+GIT_TIMEOUT_SECONDS = 3
+# `git rev-parse` が repo を探して見つからないときの文面。run_git_or_pass が LC_ALL=C で英語に固定する。
+# `(or any` まで見る: `not a git repository: <path>` は GIT_DIR や `.git` file の先が壊れた repo の文面
+NOT_A_REPO_MESSAGE = "not a git repository (or any"
+# 継承すると `-C` の repo でなく、これらが指す repo に答えが変わる
+REPO_SELECTING_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 
 
 # --- chmod command parse ----------------------------------------------------
@@ -160,19 +167,33 @@ def _absolute(raw: str, cwd: str) -> str:
     return p
 
 
-def repo_root_of(cwd: str) -> str | None:
+def run_git_or_pass(cwd: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """cwd で git を走らせる。timeout・起動の失敗・読めない出力では、allow せずに判定を終える。"""
+    env = {name: value for name, value in os.environ.items() if name not in REPO_SELECTING_ENV}
+    try:
+        return subprocess.run(
+            ["git", "-C", cwd, *args],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS, check=False,
+            env={**env, "LC_ALL": "C"},
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        passthrough()
+
+
+def repo_root_or_pass(cwd: str) -> str | None:
+    """cwd の repo root。repo の外なら None。repo の外と確定できない失敗は allow せずに判定を終える。
+
+    git の失敗をすべて None にすると、plugin の repo root を引けないまま hooks dir の別名の照合が
+    抜けて、plugin 配下の target が allow へ落ちる (#2298)。
+    """
     if not cwd or not os.path.isdir(cwd):
         return None
-    try:
-        proc = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    proc = run_git_or_pass(cwd, "rev-parse", "--show-toplevel")
+    if proc.returncode == 0:
+        return proc.stdout.strip() or None
+    if NOT_A_REPO_MESSAGE in proc.stderr:
         return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip() or None
+    passthrough()
 
 
 def is_under(path: str, root: str) -> bool:
@@ -265,20 +286,17 @@ def symlink_hops(path: str) -> list[str] | None:
     return hops
 
 
-def git_hooks_dir(cwd: str) -> str | None:
-    """cwd の repo が実際に使う hooks dir (worktree / core.hooksPath を反映した絶対 path)。"""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-path", "hooks"],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    # git < 2.31 は `--path-format` を知らずに字面のまま出力する。絶対 path 1 行でなければ None
+def git_hooks_dir_or_pass(cwd: str) -> str:
+    """cwd の repo が実際に使う hooks dir (worktree / core.hooksPath を反映した絶対 path)。
+
+    引けなければ別名を照合できないので、allow せずに判定を終える (fail-safe。ADR 0046)。
+    """
+    proc = run_git_or_pass(cwd, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
+    # git < 2.31 は `--path-format` を知らずに字面のまま出力する。絶対 path 1 行だけを受ける
     out = proc.stdout.strip()
-    return out if out and "\n" not in out and os.path.isabs(out) else None
+    if proc.returncode != 0 or not out or "\n" in out or not os.path.isabs(out):
+        passthrough()
+    return out
 
 
 def auto_trigger_locations(home: str) -> list[str]:
@@ -403,7 +421,7 @@ def judge(stdin_text: str) -> NoReturn:
         passthrough()
 
     cwd = str(payload.get("cwd") or "")
-    repo_root = repo_root_of(cwd)
+    repo_root = repo_root_or_pass(cwd)
     if repo_root:
         repo_root = os.path.realpath(repo_root)
     home = os.path.realpath(os.path.expanduser("~"))
@@ -411,13 +429,9 @@ def judge(stdin_text: str) -> NoReturn:
     plugin = plugin_root()
     home_literal = os.path.expanduser("~")
     trigger_locations = auto_trigger_locations(home_literal)
-    # allow prefix を持つ repo (cwd の repo と本 plugin の repo) の hooks dir も自動発火の場所。
-    # 引けなければ照合できないので allow しない (fail-safe。ADR 0046)
-    for repo in {r for r in (repo_root, repo_root_of(plugin)) if r}:
-        hooks_dir = git_hooks_dir(repo)
-        if hooks_dir is None:
-            passthrough()
-        trigger_locations.append(hooks_dir)
+    # allow prefix を持つ repo (cwd の repo と本 plugin の repo) の hooks dir も自動発火の場所
+    for repo in {r for r in (repo_root, repo_root_or_pass(plugin)) if r}:
+        trigger_locations.append(git_hooks_dir_or_pass(repo))
 
     # 自動発火の判定は字面 (literal_path)・辿る途中の各 symlink hop・実体の 3 つに当てる。実体は、
     # 自動発火の場所の別名 (場所そのものの symlink / entry の symlink・hardlink) を通じて自動発火の

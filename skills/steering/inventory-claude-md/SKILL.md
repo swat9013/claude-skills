@@ -74,21 +74,21 @@ observation の schema は script docstring 参照。以下の順に組み立て
 | **move-to-path-scoped** | 特定ディレクトリ配下の作業でのみ必要 | `.claude/rules/<topic>.md` + `paths:` frontmatter |
 | **move-to-skill** | 特定タスク・状況でのみ必要な手順 | 既存 skill 追記 / 新規 skill |
 | **move-to-lint** | 決定的検査に置換できる規則 (行数 / path / 重複 / 参照実在等) | repo の gate/hook (配線は repo 側の仕事) |
-| **delete** | 参照切れ / 陳腐化 / 解決済み問題の残骸 / 既定どおりの行 (no-op) / 環境を見れば分かる事実 | 削除 |
-| **merge** | 他行と重複 / 散らばった定義 | 統合先の行番号を提示 |
+| **delete** | 参照切れ / 陳腐化 / 解決済み問題の残骸 / 下の対応表で delete に当たる行 | 削除 |
+| **merge** | 他行と重複 / 下の対応表で merge に当たる行 | 統合先の行番号を提示 |
 | **rewrite** | 置き場は今のままで、文面を書き換える (下の対応表で rewrite に当たる行) | 対象行の書き換え案 (診断表の行が示す方向) |
 
 **行の分類は診断表で行う**: 手順 4 で Read する `write-for-harness` の patches.md の診断表で各行を分類し、次の対応で bucket に移す。
 
 | 診断表の行 | bucket |
 |---|---|
-| 既定どおりの行 (no-op) / 事実で、環境を見れば分かる | delete |
-| 同じ概念の言い直し / 散らばった定義 | merge |
-| 事実で、一部の分岐でしか要らない | move-to-path-scoped / move-to-skill |
-| 分割 | move-to-skill |
-| 弱い表記・弱い語 / 禁止の形 / 手順の列挙 | rewrite |
+| [既定どおりの行 (no-op)](../write-for-harness/references/patches.md#diag-no-op) / [事実で、環境を見れば分かる](../write-for-harness/references/patches.md#diag-fact-from-environment) | delete |
+| [同じ概念の言い直し](../write-for-harness/references/patches.md#diag-restated-concept) / [散らばった定義](../write-for-harness/references/patches.md#diag-scattered-definition) | merge |
+| [事実で、一部の分岐でしか要らない](../write-for-harness/references/patches.md#diag-fact-some-branches) | move-to-path-scoped / move-to-skill |
+| [独立した leading word を持つ規律、またはほかの skill からも要る規律](../write-for-harness/references/patches.md#diag-independent-discipline) | move-to-skill |
+| [弱い表記・弱い語](../write-for-harness/references/patches.md#diag-weak-wording) / [禁止の形](../write-for-harness/references/patches.md#diag-prohibition) / [手順の列挙](../write-for-harness/references/patches.md#diag-procedure-list) | rewrite |
 
-- 「同じ概念の言い直し / 散らばった定義」は、診断表ではパッチが「残す」の行の但し書き (統合) に書かれている。但し書きに当たる行を先に merge にし、残りの「残す」の行を keep-inline にする。上の対応に無いそれ以外の行は、bucket を自分で割り当てず informational に理由付きで落とす
+- 上の対応の merge の 2 つは、診断表ではパッチが「残す」の行の但し書き (統合) に書かれている。但し書きに当たる行を先に merge にし、残りの「残す」の行を keep-inline にする。上の対応に無いそれ以外の行は、bucket を自分で割り当てず informational に理由付きで落とす
 - move-to-lint と、参照切れ・陳腐化による delete は診断表の外 (決定的検査への置換と、参照の実在) で判定する
 - **no-op の delete 候補は micro-test で確かめたものだけを出す**: 候補の行ごとに手順 2-1 の micro-test にかける。振る舞いが変わらなかった行だけを delete に載せ、変わった行は診断表の他の行で分類し直す。micro-test を回せなかった行と手順 2-1 の上限から外れた行は、delete に載せず informational に「no-op の疑い・未検証」と書く
 

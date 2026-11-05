@@ -22,7 +22,7 @@ fail-posture: 縮退時は注入せずに終わる (passthrough で固定)。den
 
 Registration: **plugin の hooks/hooks.json** SessionStart (matcher `"*"` = startup / resume / clear /
     compact / fork の全 source。guard-worktree-escape.py と同じ group) と SubagentStart (matcher なし =
-    全 agent)。規範が全 repo に共通なので、根拠は他 repo でも成り立つ (不変条件 (5))。compact の後にも
+    全 agent)。規範が全 repo に共通なので、根拠は他 repo でも成り立つ (設計規則 (5))。compact の後にも
     載せるのは、compact で注入した context が残るかを host の仕様が定めていないため。
     量: 注入文 1 本 (上限は tests/test_inject_least_code.py) が、セッションの開始と subagent の起動のたびに
     1 回載る。コードを書かない subagent にも載せるのは、対象の agent の一覧を持つと agent を足すたびに

@@ -28,7 +28,7 @@ args に plugin prefix (`swat-skills:` 等) が付いていれば除去し、**�
 
 `<skill-path>` に適用される設計 doc を、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」で決める。置き場の宣言は `<repo-root>` のものを読む。当たる設計 doc が無ければ、報告の 1 に「設計 doc なし」と書く。
 
-解決した SKILL.md と当たった設計 doc を Read し、以下を checklist 化する。設計 doc からは保証・不変条件を同じ 3 項目へ足す:
+解決した SKILL.md と当たった設計 doc を Read し、以下を checklist 化する。設計 doc からは保証・設計規則を同じ 3 項目へ足す:
 
 - **目的**: skill が何を成果物とするか
 - **成功条件**: 完了条件・報告要件 (明示されていなければ手順の終端から導出)

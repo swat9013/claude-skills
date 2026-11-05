@@ -27,17 +27,17 @@ suite の有無は、skill が属する plugin の root にある `evals/<skill 
 
 | 行の分類 | パッチ |
 |---|---|
-| 振る舞いの規範。既知の語彙を強い表記で書いている | 残す。同じ概念を複数の行で言い直していれば、1 語に統合する |
-| 振る舞いの規範。既知の語彙だが、表記が弱い (定着していない音訳など) か、語そのものが弱い (thorough など) | 書き換え。原語、または強い語にする |
-| 振る舞いの規範。repo で作った語彙を使っている | 残す。定義が散らばっていれば 1 箇所にまとめる (統合) |
-| 禁止の形で書かれた規範 | 書き換え。肯定の形にする。肯定の形で書けない hard guardrail は、目標の行動と対にして残す |
-| 手順を並べることで作業量を決めている | 書き換え。完了条件にする |
-| 事実で、どの分岐でも要る | 残す |
-| 事実で、一部の分岐でしか要らない | 外出し (`references/` へ) |
-| 事実で、環境を見れば分かる | 削除。環境から引かせる |
-| 既定どおりの行 (no-op) | 削除。eval suite がある skill は下の「no-op の suite 検証」で、それ以外 (suite の無い skill と skill 以外の component) は下の「no-op の micro-test」で、挙動が変わらないと確かめたものだけ |
-| 独立した leading word を持つ規律、またはほかの skill からも要る規律 | 分割。報告だけにする |
-| 既存の skill の内容を本文に書き直している | 統合。その skill の呼び出しに置き換える。報告だけにする — 置き換え先の skill が呼び出せるか (model から起動できるか) と、呼び出し先との対の明文化を確かめてから決めるため |
+| <a id="diag-strong-vocabulary"></a>振る舞いの規範。既知の語彙を強い表記で書いている | 残す。<a id="diag-restated-concept"></a>同じ概念を複数の行で言い直していれば、1 語に統合する |
+| <a id="diag-weak-wording"></a>振る舞いの規範。既知の語彙だが、表記が弱い (定着していない音訳など) か、語そのものが弱い (thorough など) | 書き換え。原語、または強い語にする |
+| <a id="diag-repo-vocabulary"></a>振る舞いの規範。repo で作った語彙を使っている | 残す。<a id="diag-scattered-definition"></a>定義が散らばっていれば 1 箇所にまとめる (統合) |
+| <a id="diag-prohibition"></a>禁止の形で書かれた規範 | 書き換え。肯定の形にする。肯定の形で書けない hard guardrail は、目標の行動と対にして残す |
+| <a id="diag-procedure-list"></a>手順を並べることで作業量を決めている | 書き換え。完了条件にする |
+| <a id="diag-fact-every-branch"></a>事実で、どの分岐でも要る | 残す |
+| <a id="diag-fact-some-branches"></a>事実で、一部の分岐でしか要らない | 外出し (`references/` へ) |
+| <a id="diag-fact-from-environment"></a>事実で、環境を見れば分かる | 削除。環境から引かせる |
+| <a id="diag-no-op"></a>既定どおりの行 (no-op) | 削除。eval suite がある skill は下の「no-op の suite 検証」で、それ以外 (suite の無い skill と skill 以外の component) は下の「no-op の micro-test」で、挙動が変わらないと確かめたものだけ |
+| <a id="diag-independent-discipline"></a>独立した leading word を持つ規律、またはほかの skill からも要る規律 | 分割。報告だけにする |
+| <a id="diag-existing-skill-copy"></a>既存の skill の内容を本文に書き直している | 統合。その skill の呼び出しに置き換える。報告だけにする — 置き換え先の skill が呼び出せるか (model から起動できるか) と、呼び出し先との対の明文化を確かめてから決めるため |
 
 ## no-op の suite 検証
 

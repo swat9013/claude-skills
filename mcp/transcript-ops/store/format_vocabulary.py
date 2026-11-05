@@ -90,6 +90,6 @@ def forbidden_names() -> frozenset[str]:
 if __name__ == "__main__":
     # CLI 契約: 禁止語を 1 行 1 語・昇順で stdout へ出す。gate
     # (`scripts/gate/verify-query-format-isolation.py`) は本 module を import せず、
-    # この出力だけに依存する (Gate 設計 doc の不変条件 (7))。
+    # この出力だけに依存する (Gate 設計 doc の設計規則 (7))。
     for _name in sorted(forbidden_names()):
         print(_name)

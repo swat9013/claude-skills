@@ -88,7 +88,7 @@ REPO_SCOPE_ALL = contract.REPO_SCOPE_ALL
 
 # mart と slice の母集団は main session の transcript だけ。subagent を含めたい
 # 消費者がいないので、選ぶ引数を公開しない (設計 doc transcript-observation の
-# 不変条件 (10))。meta.transcript_kind にもこの値を出す
+# 設計規則 (10))。meta.transcript_kind にもこの値を出す
 TRANSCRIPT_KIND = transcript_kind_mod.DEFAULT
 _TRANSCRIPT_KINDS = transcript_kind_mod.kinds_param(TRANSCRIPT_KIND)
 

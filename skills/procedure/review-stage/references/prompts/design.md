@@ -29,6 +29,6 @@
   - Location: <file:line>
   - Finding: <食い違いを 1 文>
   - Evidence: <差分の該当箇所 + 設計 doc の該当行 (file:line) の逐語>
-  - Impact scenario: <設計 doc のどの保証・不変条件・境界・構造と、どう食い違うか>
+  - Impact scenario: <設計 doc のどの保証・設計規則・境界・構造と、どう食い違うか>
   - Suggestion: <直し方。無ければ省く>
 - 規約・spec との一致と正しさの欠陥は別のレビューの担当なので報告しない
