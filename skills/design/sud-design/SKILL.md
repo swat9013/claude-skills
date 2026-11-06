@@ -57,6 +57,7 @@ system.md / usecases.md / domain.puml の 3 成果物は既定で全部作る。
 2. [references/verification.md](references/verification.md) を Read し、検証する:
    - 遷移列シナリオ 2〜3 本 (必須)。表現できない点が出たらモデル側を直す
    - 状態機械を持つ設計は `uv run ${CLAUDE_SKILL_DIR}/scripts/check-statechart.py <置き場>/statechart.puml` が exit 0 になるまで、[verification.md](references/verification.md) 段 2 (状態×イベント組合せの網羅検査) の直し方で直す
+   - 状態機械を持つ設計は、段 2 の後に [verification.md](references/verification.md) 段 3 (文章の制約を状態機械に当てる) を通す
 3. `.puml` を描画する。対象リポジトリに PlantUML の描画 gate (再描画コマンド) があればその生成側を使い、無ければ:
 
    ```bash
@@ -71,7 +72,7 @@ system.md / usecases.md / domain.puml の 3 成果物は既定で全部作る。
 設計済みの対象に構造変更 (目的・境界・ユースケース・entity・多重度・状態機械の変更) が入るときは、**設計ドキュメントを先に直してから実装する**。実装が先に着地すると、設計 doc は実装の後追い要約に落ちて正本でなくなる。
 
 - どの変更がどの file の正本かは README の索引表で引く。同じ内容を複数 file へ書き足さず、正本 1 つに書いて他からは参照する — `principle-artifact-register`
-- `domain.puml` / `statechart.puml` を直したら再描画と組合せ検査を回す (手順は「3.」と同じ)
+- `domain.puml` / `statechart.puml` を直したら再描画と組合せ検査を回す (手順は「3.」と同じ)。状態機械を持つ設計で、状態機械かそれに関わる文章を変えたら、段 2 を通してから、変えた箇所と、それに触れる規則に [verification.md](references/verification.md) 段 3 を当てる
 - 過去の決定を覆すときは decision/ の旧 file を書き換えず、新しい決定 file を起こして旧 file を Superseded にする
 - 更新で入る決定にも、[references/artifacts.md](references/artifacts.md) の「決定の見直し条件」に従って見直し条件を添え、見直し条件もユーザーに決めてもらう
 

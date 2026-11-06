@@ -1,6 +1,6 @@
 # ドメインモデルの検証
 
-ドメインモデル図は描いた時点では仮説にすぎない。実装前に 3 段で検証する。段 1 は必須、段 2 は状態機械を持つ設計で必須、段 3 は opt-in。
+ドメインモデル図は描いた時点では仮説にすぎない。実装前に 3 段で検証する。段 1 は必須、段 2 と段 3 は状態機械を持つ設計で必須。
 
 ## 段 1: 遷移列シナリオ (必須)
 
@@ -31,34 +31,14 @@ uv run ${CLAUDE_SKILL_DIR}/scripts/check-statechart.py <置き場>/statechart.pu
 - exit 1 の出力は違反か検査不能を名指しする。**未定義の組合せ (`[statechart uncovered]`) は、定義漏れなら遷移を足し、意図した未定義なら `' uncovered: <state> x <event> — <理由>` を statechart.puml に足す**。理由を書けない組合せは定義漏れの側。**自分以外へ出ていく遷移 (ラベル無しの自動遷移を含む) が無い状態 (`[statechart dead end]`) は、図全体の終わりにあたる状態なら `State --> [*]` で final state と宣言し、そうでなければ遷移を足す**。final state を 1 つでも宣言すると全状態に final state へ届くことが要求されるので、終わりの無い状態機械では行き止まりにも遷移を足す側で直す。**final state へ届かない状態 (`[statechart no termination]`) は、届く遷移を足す**。**同じ状態・同じイベント (イベント無しの自動遷移を含む) で遷移先が分かれる遷移 (`[statechart nondeterministic]`) は、guard で排他に分けるか、遷移を 1 本にする**。検査不能 (`[statechart empty]` など) なら、図を `--help` の対応記法の範囲で書き直す
 - 宣言が残骸化した場合 (遷移を後から足した・改名した) も同じ script が落とすので、状態機械を変えたら再実行する。残骸の宣言は消すか、改名後の名前に直す
 
-## 段 3: 不変条件の反例探索 (opt-in)
+## 段 3: 文章の制約を状態機械に当てる (状態機械を持つ設計で必須)
 
-設計規則のうち状態の性質を述べるもの (集約の不変条件。「同一 issue の非終端実体は 0..1」のような、状態機械単体では表現できない制約) が 3 つ以上あるなら、Hypothesis の RuleBasedStateMachine で反例探索を足す価値がある。手書きシナリオが 2〜3 本の遷移列を固定で確かめるのに対し、こちらは遷移列を自動生成して不変条件の破れを探す。
+段 2 は `statechart.puml` の形だけを見るので、設計 doc の文章 (`domain.puml` の note の設計規則を含む、`statechart.puml` の外の全部) にしか無い制約と出来事は、どの検査にも掛からない。段 2 が exit 0 になったら、その文章を読み、次を順に確かめる。
 
-- 実装は不要 — 型も value object も持たない 50 行程度の Python で、遷移を `@rule`、不変条件を `@invariant` として書く
-- 置き場は設計ディレクトリ配下 (`<置き場>/model_test.py` 等)。設計段階のモデル検証であり、実装のテストではない
-- 実行: `uv run --with pytest --with hypothesis pytest <file>`
-- 骨格:
+1. **出来事**: 状態を変えうる出来事 (外部からの停止・削除・再接続を含む) が `statechart.puml` のイベントにあるか
+2. **規則**: 状態か遷移に関わる設計規則と保証を 1 文ずつ取り出し、状態と遷移の名で言い直す (例: 「返金済みの注文は請求しない」→「`Refunded` から `Charged` へ向かう遷移が無い」)。言い直すのに要る状態・guard・action が `statechart.puml` にあるか
+3. **反例**: 規則ごとに、初期状態から規則を破る遷移列を探す。アクターの操作の前に外部のイベントが起きる遷移列を試し、状態機械か集約が 2 つ以上あれば組み合わせた順序を試す
+4. **破れない理由**: 反例が出なかった規則は、それを守っている guard・遷移か、`domain.puml` の多重度・集約の境界を名指しする
+5. **`uncovered` の理由**: 理由の文が、手順 1〜2 で読んだ制約と食い違わないかを読む
 
-```python
-from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
-
-
-class DesignModel(RuleBasedStateMachine):
-    def __init__(self):
-        super().__init__()
-        self.orders: dict[str, str] = {}  # id -> phase
-
-    @rule()
-    def assign(self):
-        ...  # 遷移の事前条件と効果を、設計 doc の状態機械のとおりに書く
-
-    @invariant()
-    def one_open_order_per_issue(self):
-        ...  # 集約の不変条件
-
-
-TestDesignModel = DesignModel.TestCase
-```
-
-違反が出たら Hypothesis が最小化した遷移列を出す — それを段 1 のシナリオとして README に書き足し、モデルを直す。
+欠けた出来事・状態・guard、反例、名指しできない規則、食い違う理由が出たら、直す案と一緒にユーザーへ示し、決定を受けて直す — 設計 doc の中身を決めるのはユーザーなので。既定は `statechart.puml` を直す側で、規則を直すのは規則そのものが誤りだとユーザーが決めたときだけにする — 反例を消すために規則を弱めると、決定済みの保証が読まれないまま変わる。直したら段 2 を exit 0 まで回し直し、反例は段 1 のシナリオとして README に足す (2〜3 本に数えない)。検証の結論の次の行に、当てた規則と試さなかった組み合わせを書く — 手で探した結果は、破れないことの証明にならない。README に足す文面は、書く前にユーザーへ示す。
