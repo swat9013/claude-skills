@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # grill-with-docs
 
-Skill tool で `swat-skills:grilling` と `swat-skills:domain-modeling` を呼び、両方の手順で対話を進める。用語の提案と用語集への採否は、domain-modeling の本文と用語集の書式より「用語の見出し語は leading word から選ぶ」節を優先する。
+Skill tool で `swat-skills:grilling` と `swat-skills:domain-modeling` を呼び、両方の手順で対話を進める。用語の提案と用語集への採否は、domain-modeling の本文と用語集の書式より「用語の見出し語は term of art から選ぶ」節を優先する。
 
 ## 設計 doc から始める
 
@@ -25,11 +25,14 @@ Skill tool で `swat-skills:grilling` と `swat-skills:domain-modeling` を呼�
 - **降りる**: user の入力が events 層か patterns 層にある (起きたこと・繰り返すこと) なら、繰り返すか・繰り返すと見込めるかを先に問い、leaf の既定が求める層まで降りた設問を立てる — 入力の層で設問を閉じると、出来事ごとの手当てを決めて終わり、繰り返しを生む仕組みと前提が問われないまま残る
 - **昇る**: 決定が structures 層か mental models 層を変えるなら、その決定で消えるはずの patterns 層の繰り返しを設問で特定し、効いたかを確かめる観測として決定に添える。添えた観測は節「決まった判断を規範へ codify する」の文案に含め、同節の手順で出して承認を得てから書く。設計 doc の見直し条件に書くときは同節が Read させる見直し条件の規約に従い、その規約で観測できない繰り返しは issue の判定条件に置く (判定条件は解けたかを確かめる条件で、決定の書き直しには当たらない) — 観測を添えないと、変えた構造や前提が効いたかを後から確かめる手がかりが残らない
 
-## 用語の見出し語は leading word から選ぶ
+## 用語の見出し語は term of art から選ぶ
 
-用語を新設・改名するときは、正準の語を提案する前に、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-intention-revealing-names.md` を Read し、その規則で語を選ぶ。用語集への載せ方と設問での出し方は次に従う。
+用語を新設・改名するときは、正準の語を提案する前に、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-intention-revealing-names.md` を Read し、その規則で語を選ぶ。語の聞き方・用語集への載せ方・設問での出し方は次に従う。
 
-- 候補は grilling の設問で推奨の語として出す。複数あれば並べ、推奨を 1 つ選ぶ
+- 候補が無く語を作りそうなときと、候補が割れたときは、subagent に聞く。会話の文脈を渡さず、ファイルを読ませず事前の知識だけで答えさせる — 定義を読んでいない読み手の反応を見るためで、文脈があると語ではなく文脈から意味を読む。CLAUDE.md は subagent にも載るので、そこに出る語の答えは根拠にしない
+  - 語を導く: 語を伏せて分野と概念の定義だけを渡し、定着した語を確信度と一緒に挙げさせる。語は作らせず、無ければ「無し」と答えさせる
+  - 語を確かめる: 別の subagent に候補の語と分野だけを渡し、その分野での意味を答えさせる。答えた意味を leaf の一致の基準で概念と照らす
+- 候補は grilling の設問で推奨の語として出す。複数あれば並べ、推奨を 1 つ選ぶ。subagent に聞いたら、答えを推奨に添える
 - 用語集が既に採っている語があれば、一致を測る分野はその分野に揃える — 分野が混ざると、読み手は語ごとに違う分野の意味で読む。用語集の既存の語と衝突する語は当てはまらない語として扱う
 - ずれる語・衝突する語・広すぎる語と退けた作語は、`_Avoid_` に理由付きで書く (例: `_Avoid_: 再請求フロー (作語), collection (債権回収の意味に定着), retry (再試行全般に広がり、催促と間隔を呼び出さない)`)
 - leaf が求める初出の日本語の注記は、用語集の項では定義文が兼ねる

@@ -11,7 +11,7 @@
 | 削除 | 項目を消す | 対象 file の中。他 file にまたがる削除は報告だけにする |
 | 統合 | 同じ概念を言い直している複数の項目を 1 つにまとめる | 対象 file の中。他 file にまたがる統合は報告だけにする |
 | 外出し | 一部の分岐でしか要らない内容を、本文から `references/` の file へ移し、本文には読む条件を書いた参照だけを残す。読まれる分岐でしか context に載らないので、毎ターンの load は増えない | 対象 skill の dir 配下の `references/` に**新しく作る** file だけ。既存の別 file への移動と、`references/` を持たない component (CLAUDE.md・rules・hook 注入文・agent 定義) での外出しは報告だけにする |
-| 分割 | 規律を、独立して呼べる skill として切り出す。切り出した skill の description が毎ターンの load になる代わりに、他の skill からも呼べる | 編集しない。報告に、切り出す範囲と、その skill の leading word を書く |
+| 分割 | 規律を、独立して呼べる skill として切り出す。切り出した skill の description が毎ターンの load になる代わりに、他の skill からも呼べる | 編集しない。報告に、切り出す範囲と、その skill の trigger 語を書く |
 
 報告だけにしたパッチは編集せず、案として呼び出し元へ報告する。宣言された変更そのものが報告だけのパッチに当たったときの返し方は、SKILL.md 手順 5 の「反映を終えられなかったとき」に従う。
 
@@ -36,7 +36,7 @@ suite の有無は、skill が属する plugin の root にある `evals/<skill 
 | <a id="diag-fact-some-branches"></a>事実で、一部の分岐でしか要らない | 外出し (`references/` へ) |
 | <a id="diag-fact-from-environment"></a>事実で、環境を見れば分かる | 削除。環境から引かせる |
 | <a id="diag-no-op"></a>既定どおりの行 (no-op) | 削除。eval suite がある skill は下の「no-op の suite 検証」で、それ以外 (suite の無い skill と skill 以外の component) は下の「no-op の micro-test」で、挙動が変わらないと確かめたものだけ |
-| <a id="diag-independent-discipline"></a>独立した leading word を持つ規律、またはほかの skill からも要る規律 | 分割。報告だけにする |
+| <a id="diag-independent-discipline"></a>独立した trigger 語を持つ規律、またはほかの skill からも要る規律 | 分割。報告だけにする |
 | <a id="diag-existing-skill-copy"></a>既存の skill の内容を本文に書き直している | 統合。その skill の呼び出しに置き換える。報告だけにする — 置き換え先の skill が呼び出せるか (model から起動できるか) と、呼び出し先との対の明文化を確かめてから決めるため |
 
 ## no-op の suite 検証

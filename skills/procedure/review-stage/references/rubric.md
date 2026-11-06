@@ -30,7 +30,7 @@
 
 - **名前が中身を言っていない** (Mysterious Name) — 正直な名前が出てこないなら設計が曖昧な兆候。`principle-intention-revealing-names`
 - **記号・略号・番号 (`α` / `S-1` / `tmp2`) が識別子や概念名に使われている** — 分野で定着した記法でないなら、意図を言い当てる語へ置けるか。略号なら省略前の名前が先に定義されているか。`principle-intention-revealing-names`
-- **定着した語 (leading word) がある概念に、新しく作った語を当てている** — 既存の語で呼べるか。`principle-intention-revealing-names`
+- **定着した語 (term of art) がある概念に、新しく作った語を当てている** — 既存の語で呼べるか。`principle-intention-revealing-names`
 - **ドメイン概念が primitive や string のまま持ち回られている** (Primitive Obsession) — 名前を持つ小さな型を与える余地があるか。値を扱う箇所が 1 つなら primitive のままでよい。`principle-intention-revealing-names`
 - **振る舞いを切り替える boolean 引数 (flag argument) が足されている** — 呼び出し側に意図を書かせる形か。呼び出し側が実行時の値を受け渡すだけのとき (設定値・test の parametrize) と、値そのものとして渡す boolean (`set_enabled(True)`) は対象外。`principle-signature-intent`
 - **同じ数個の引数の組が複数の関数のシグネチャに繰り返し現れる** (Data Clumps) — 1 つの型にまとめられるか。組を受け取る関数が 1 つなら、引数のまま残すのが正解。`principle-signature-intent`

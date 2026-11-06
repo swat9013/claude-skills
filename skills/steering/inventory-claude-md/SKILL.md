@@ -85,7 +85,7 @@ observation の schema は script docstring 参照。以下の順に組み立て
 | [既定どおりの行 (no-op)](../write-for-harness/references/patches.md#diag-no-op) / [事実で、環境を見れば分かる](../write-for-harness/references/patches.md#diag-fact-from-environment) | delete |
 | [同じ概念の言い直し](../write-for-harness/references/patches.md#diag-restated-concept) / [散らばった定義](../write-for-harness/references/patches.md#diag-scattered-definition) | merge |
 | [事実で、一部の分岐でしか要らない](../write-for-harness/references/patches.md#diag-fact-some-branches) | move-to-path-scoped / move-to-skill |
-| [独立した leading word を持つ規律、またはほかの skill からも要る規律](../write-for-harness/references/patches.md#diag-independent-discipline) | move-to-skill |
+| [独立した trigger 語を持つ規律、またはほかの skill からも要る規律](../write-for-harness/references/patches.md#diag-independent-discipline) | move-to-skill |
 | [弱い表記・弱い語](../write-for-harness/references/patches.md#diag-weak-wording) / [禁止の形](../write-for-harness/references/patches.md#diag-prohibition) / [手順の列挙](../write-for-harness/references/patches.md#diag-procedure-list) | rewrite |
 
 - 上の対応の merge の 2 つは、診断表ではパッチが「残す」の行の但し書き (統合) に書かれている。但し書きに当たる行を先に merge にし、残りの「残す」の行を keep-inline にする。上の対応に無いそれ以外の行は、bucket を自分で割り当てず informational に理由付きで落とす

@@ -4,7 +4,7 @@ Claude に渡す指示文の**文面**をどう書くかの決定規則。skill 
 
 責務境界:
 
-- **文書構成** (情報の 3 段梯子・外出しの branching test・pruning・leading words による圧縮・description の invocation 別書式) の正本は `swat-skills:writing-for-agents`。**文面 (指示の効かせ方) の正本は本書**で、両者が食い違ったら本書に従う。leading word による圧縮をどこまで当てるか (事実の知識と repo で作った語彙には当てない) は本書が持つ。leading word の選び方と表記は原則 leaf `principle-intention-revealing-names` が持つ
+- **文書構成** (情報の 3 段梯子・外出しの branching test・pruning・term of art による圧縮・description の invocation 別書式) の正本は `swat-skills:writing-for-agents` (同 skill の leading word のうち、事前学習の知識に定着した語が term of art に当たる)。**文面 (指示の効かせ方) の正本は本書**で、両者が食い違ったら本書に従う。term of art による圧縮をどこまで当てるか (事実の知識と repo で作った語彙には当てない) は本書が持つ。term of art の選び方と表記は原則 leaf `principle-intention-revealing-names` が持つ
 - **skill ファイルとしての作法** (frontmatter・invocability・配置・trigger 語彙・参照の実在) は [components/skill.md](components/skill.md) が正本。本書は「その本文に何をどう書くか」だけを扱う
 - **どのモデルを選ぶか** (能力帯・単価比・モデル ID・`model:` frontmatter の選定・long-context 現象) は [models.md](models.md) が正本。本書にモデル ID は書かない
 - 対象モデルの差分は末尾のモデル別 reference に降りて読む。対象モデルの決め方は [models.md](models.md) の「文面の基準モデル」が正本
@@ -62,10 +62,10 @@ Claude に渡す指示文の**文面**をどう書くかの決定規則。skill 
 - 圧力下で破られる**規律**の失敗には禁止則を書く。出力の**形**が崩れる失敗には手順・雛形を書く。判断の質を担保したい対話・思考系には**原則**を並べる
 - 迷ったら原則側に倒す。指示追従が強いモデルではルールを増やすほど文字通り従い、書き漏れた領域が空白になる
 - 禁止則と原則のどちらを選んでも、束縛力は micro-test で確かめる (メタ規則「指示の効果は測ってから確定する」)
-- **leading word による圧縮を当てるのは、事前学習の知識にある語彙で書く振る舞いの規範だけ。**
+- **term of art による圧縮を当てるのは、事前学習の知識にある語彙で書く振る舞いの規範だけ。**
   - 事実の知識 (path・規約・固有名・過去の決定) は概念から導けないので、言い換えて圧縮しない — 圧縮すると導けない情報だけが黙って落ちる
   - repo で作った語彙の規範も圧縮しない — 事前学習の知識を呼び出せないので、縮めると意味が抜ける。定義を 1 箇所に残す
-  - leading word の表記は原則 leaf `principle-intention-revealing-names` (`../../../knowledge/principle-index/references/leaves/principle-intention-revealing-names.md`) を Read し、表記の規則に従う
+  - term of art の表記は原則 leaf `principle-intention-revealing-names` (`../../../knowledge/principle-index/references/leaves/principle-intention-revealing-names.md`) を Read し、表記の規則に従う
 
 ## モデル別の差分
 
