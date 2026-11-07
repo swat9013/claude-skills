@@ -42,37 +42,35 @@ checklist とは別に、設計 doc のうち対象 skill の決定に添えて�
 
 ### 2. 実呼出 transcript の特定
 
-`mcp__plugin_swat-skills_transcript-ops__find_invocations` を `skill` (対象 skill 名)・`limit`(= n)・`invoked_name` (手順 1 で選んだ skill の呼ばれ方) で呼ぶ。**自前で grep しない** — マーカーの完全一致・queue-operation の二重記録・wrapper transcript・built-in slash の echo はすべて tool 側が record 構造で処理済みで、行 grep で再現すると必ずどれかを踏む。
+Skill tool で `swat-skills:transcript-query` を invoke し、named query `find-invocations` を `--consumer skill-usage-audit`・`--param skill=<対象 skill 名>`・`--param limit=<n>`・`--param invoked_name=<手順 1 で選んだ skill の呼ばれ方>`・`--since <今日の 7 日前>` で呼ぶ。監査するのは最後に呼ばれた n 件で、期間ではない — この問いの窓は呼出しを絞らず、形式の照合の範囲にだけ効くので、直近に絞るほど最近の形式の変化で止まれる。`empty_window` が返ったら `--since` を外して呼び直し、形式の照合が全期間で通ったと報告に添える。**自前で grep しない** — 呼出しかどうかは問いの側が record の構造で判定するので、行 grep では再現できない。
 
-- 返り値の `path` に slice JSON が出るので Read する (**本体は返らない**)
-- `meta.matched_files` が 0 なら「実呼出なし・監査不能」を報告フォーマットで報告して終了する
+- 返り値は invoke が返す本文の「返り値の読み方」で読み、`path` の成果物を Read する (**本体は返らない**)。列と `meta` の読み方は成果物の `contract` が持つ
+- 本文の読み方に従っても `stopped` が解けないときと、道具を取得できないときは、理由を報告して終了する — 手順 3 以降は呼出しの位置に依存し、transcript を自前で読むと内部の形式に依存する
+- `meta.matched_files` と `meta.other_invoked_name_calls` がともに 0 なら「実呼出なし・監査不能」を報告フォーマットで報告して終了する。`degradation` の劣化の件数が 0 でなければ、実呼出なしと断定せず件数を添える
+- `meta.matched_files` が 0 で `meta.other_invoked_name_calls` が 0 でなければ、渡した `invoked_name` と実際の呼ばれ方が違うとみて user に確かめてから呼び直す (install 時の名前が plugin.json の `name` と違うことがある)
 - `meta.emitted_files` が n 未満ならある分だけで進め、その旨を報告に明記する
-- **`meta.total_invocations` が呼出回数、`matched_files` は file 数**。両者を混同しない
-- `transcripts[]` は読む順に並ぶ (scope ごとの最新 1 件を先取り → 残りを mtime 降順)。環境差 (GitHub/GitLab、tracker 等) を確保するための順序なので、上から使う
-- `meta.excluded` は「マーカーは在るが実呼出しではない」hit の内訳。**呼出回数には入らない**。ここが大きいときは監査対象 skill が自分の transcript に頻繁に引用されている (SKILL.md 本文の提示等) というだけで、逸脱の証拠ではない
-- `invoked_name` は、配布 skill なら `<plugin>:<skill-name>` (`<plugin>` は `<repo-root>/.claude-plugin/plugin.json` の `name`。その file が無ければ、どの名前で呼ばれているかを user に確かめる)、project-local skill なら `<skill-name>` — 渡さないと同名の別 skill の呼出も数えられ、選んだ SKILL.md の基準で監査することになる。絞った後の件数の読み方は slice の `meta.notes` に従う
-- `meta.matched_files` が 0 でも `meta.other_invoked_name_calls` が 0 でなければ、実呼出なしとせず、渡した `invoked_name` と実際の呼ばれ方が違うとみて user に確かめてから呼び直す (install 時の名前が plugin.json の `name` と違うことがある)
+- `invoked_name` は、配布 skill なら `<plugin>:<skill-name>` (`<plugin>` は `<repo-root>/.claude-plugin/plugin.json` の `name`。その file が無ければ、どの名前で呼ばれているかを user に確かめる)、project-local skill なら `<skill-name>` — 渡さないと、選んだ SKILL.md の基準で別の skill の呼出しを監査することになる
 - 呼ばれ方で選んだ skill を見分け切れないとき (project-local skill を選んだ — 他の repo の project-local skill や `~/.claude/` の skill・command も同じ `<skill-name>` で呼ばれる / 手順 1 で呼ばれ方の同じ候補が並んだ) は、報告の 2 の各 transcript に「同名の skill の呼出が混ざりうる」と添え、手順 4 で逸脱を分類する前に、逸脱した呼出が選んだ skill のものかを transcript で確かめる
-- 各 transcript の `invocations[]` (呼出ごとの `timestamp` / `uuid` / `channel` (`skill_tool` / `command`) / `args` / `is_sidechain`) は、手順 3 の subagent に渡す anchor になる。`is_sidechain: true` は subagent 側からの呼出し
+- 各行の `path` が transcript の絶対 path で、`invocations` (呼出ごとの位置) が手順 3 の subagent に渡す anchor になる
 
 ### 3. 各 transcript の監査 (subagent 並列委譲)
 
 transcript 1 件 = subagent 1 体で、`subagent_type: swat-skills:transcript-auditor` を同じ message で並列に起動する。`name` は付けず、Agent tool の `model` / `effort` 引数も渡さない — 報告は各 subagent の最終メッセージで届き、深さは agent 定義が固定している。prompt に渡すのは次の 4 つだけにする:
 
 - 対象 transcript の**絶対 path**
-- 手順 2 で得たその transcript の `invocations[]` (呼出の anchor)
+- 手順 2 で得たその transcript の `invocations` (呼出の anchor)
 - 手順 1 の監査基準 checklist
 - 対象 skill の手順の一覧 — 手順 1 で Read した SKILL.md の手順を番号と見出し (見出しの無い手順は先頭文) で並べたもの。監査 subagent はこれを工程の単位にするので、全 subagent に同じものを渡す (transcript ごとの消費を同じ区切りで突き合わせるため)
 
 報告の項目・工程の境界の決め方・transcript の読み方は agent 定義が持つので、prompt に書き写さない (写すと 2 箇所の指示が食い違ったときにどちらが効くか決まらない)。
 
-監査 subagent は Bash を持たず、集計しない。報告が届いた transcript ごとに、報告の「工程ごとの境界」を `stages` (`[{"stage": <工程名>, "from_uuid": <最初の record>, "to_uuid": <最後の record>}, ...]`) にし、`transcript` (絶対 path) と `stages` を引数に渡して `mcp__plugin_swat-skills_transcript-ops__sum_stage_usage` を呼び、返り値の `path` を Read する。監査 subagent が「境界不明」とした工程は `stages` から外す (形の崩れた要素があると tool が呼出全体を拒否し、境界の分かる工程まで計測できなくなる)。工程ごとの値は次のように手順 4 以降の消費として使う。
+監査 subagent は Bash を持たず、集計しない。報告が届いた transcript ごとに、報告の「工程ごとの境界」を `stages` (`[{"stage": <工程名>, "from_uuid": <最初の record>, "to_uuid": <最後の record>}, ...]`) にし、named query `sum-stage-usage` を `--consumer skill-usage-audit`・`--param transcript=<絶対 path>`・`--param 'stages=<stages の JSON>'` で呼び (手順 2 の呼出しが通った形に揃え、`--since` を外して通ったならここでも外す。JSON の中の `'` は `'\''` と書く)、返り値の `path` を Read する。監査 subagent が「境界不明」とした工程は `stages` から外す (形の崩れた要素があると問いが止まり、境界の分かる工程まで計測できなくなる)。工程ごとの値は成果物の `rows` にあり、次のように手順 4 以降の消費として使う。
 
-- 所要は `duration_seconds`、subagent 数は `subagents.count`、token 概算は `tokens` (input + output + cache_creation)、cache read は `cache_read_input_tokens` を別掲、subagent の token は `subagents.tokens`
-- `null` の値・`error` を持つ工程・監査 subagent が「境界不明」とした工程・tool が error を返した transcript の全工程は「計測不能」と理由 (`error` / `reason` と `unmatched_tool_use_ids`) で書く — 0 と書くと、消費が無かった工程と区別できない
-- `sum_stage_usage` を呼べない (tool が見つからない・MCP server に繋がらない) ときは、全 transcript の消費を「計測不能」と書き、swat-skills plugin を `sum_stage_usage` を持つ版にしてから再実行するよう報告に添える。逸脱の監査はそのまま進める
-- transcript ごとの消費は工程の値の合計にする。計測不能の工程があれば部分和と書き、その工程名を添える。`meta.unresolved_agent_ids` が空でなければ、起動元に辿れない subagent の消費がどの工程にも入っていないので、subagent 数と subagent の token も部分和と書いて agent id を添える。`meta.unrecognized_nested_files` が 0 でなければ、transcript の path から `.jsonl` を外した dir の下で subagent の transcript にも workflow の進行ログにも当たらない jsonl があり、数えから外れた subagent がいる可能性があるので、同じく部分和と書いてその件数を添える (両方に当たれば両方を添える)
-- 報告の実行日時が「不明」なら `sum_stage_usage` の返り値の `meta.mtime` で補い、file の mtime で代用したと書く。tool が error を返して補えないときは不明のまま、手順 4 の版差分は現行版で評価する
+- 所要は `duration_seconds`、subagent 数は `subagents.count`、token 概算は `tokens`、cache read は `cache_read_input_tokens` を別掲、subagent の token は `subagents.tokens`
+- 上の値のうち `null` のもの・`error` に値がある工程・監査 subagent が「境界不明」とした工程は「計測不能」と理由 (`error` / `duration_reason` / `subagents.reason` と `subagents.unmatched_tool_use_ids`) で書く — 0 と書くと、消費が無かった工程と区別できない
+- 本文の読み方に従っても `stopped` が解けない transcript と、道具を取得できないときの全 transcript は、全工程を「計測不能」と `stopped` の値か取得の失敗の理由で書く。逸脱の監査はそのまま進める
+- transcript ごとの消費は工程の値の合計にする。計測不能の工程があれば部分和と書き、その工程名を添える。`meta.unresolved_agent_ids` が空でなければ subagent 数と subagent の token も部分和と書いて agent id を添え、`degradation.unrecognized_nested_files` が 0 でなければ同じく部分和と書いてその件数を添える (両方に当たれば両方を添える)。`degradation` のほかの劣化の件数が 0 でなければ、件数を添える
+- 報告の実行日時が「不明」なら手順 2 のその行の `mtime` で補い、file の mtime で代用したと書く。`mtime` が空なら不明のままにし、手順 4 の版差分は現行版で評価する
 
 `swat-skills:transcript-auditor` の名前が解決しないときは、`general-purpose` で代わりに起こさない — 代わりに起こすと model・effort・tools が呼出元の値へ黙って戻り、指名した深さで監査したように見える。手順 4 以降はすべて監査 subagent の報告に依存するので、次の 3 つを返して終了する: 停止理由 (Agent tool の error が挙げた available agents)・手順 1 の checklist と手順 2 の slice の path・次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから再実行する)。
 
@@ -101,7 +99,7 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 #### 最適化候補
 
-逸脱の原因分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。手順 3 で `sum_stage_usage` から得た工程ごとの消費と、監査 subagent の報告にある手戻りを突合し、次の形に当たる工程を候補にする:
+逸脱の原因分類とは別軸で、**仕様どおりだが高コスト**な工程を挙げる。手順 3 で `sum-stage-usage` から得た工程ごとの消費と、監査 subagent の報告にある手戻りを突合し、次の形に当たる工程を候補にする:
 
 - 指摘数・対象数に比例して subagent が増える委譲
 - 差分に絞れる工程での全量再走査
@@ -112,7 +110,7 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 候補には消費の実測値 (所要 / subagent 数 / token 概算 / cache read / subagent の token) を添える — 実測の無い候補は次の改善ループで順位を付けられない。subagent の token は token 概算と合算しない。token 概算 (`tokens`) は main 側の消費だけを数えるので、subagent を起こした工程が重いかは subagent の token も含めて判断する — token 概算だけで判断すると、委譲の重い工程が過小に見えて候補から漏れる。候補が出なかったときは、消費構造のどこを見てそう判断したかを書く。
 
-手順 1 で控えた見直し条件は、最適化候補の有無にかかわらず 1 件ずつ照らす。見直し条件が観測する量を、手順 3 の工程ごとの消費か監査 subagent の報告から取って閾値と比べ、超えたかを書く。観測した量が閾値を超えた見直し条件は、それが当たる工程を最適化候補に加える。どちらからも取れない量は「計測不能」と理由を書く。照らすのはこの監査の値だけにする — 過去の値は持たず、改善の前後は次の監査が同じ見直し条件に照らして比べる。
+手順 1 で控えた見直し条件は、最適化候補の有無にかかわらず 1 件ずつ照らす。置かない理由を添えた決定は照合から外す — 測れる量が無いので、載せても計測不能が並ぶだけになる。見直し条件が観測する量を、手順 3 の工程ごとの消費か監査 subagent の報告から取って閾値と比べ、超えたかを書く。観測した量が閾値を超えた見直し条件は、それが当たる工程を最適化候補に加える。どちらからも取れない量は「計測不能」と理由を書く。照らすのはこの監査の値だけにする — 過去の値は持たず、改善の前後は次の監査が同じ見直し条件に照らして比べる。
 
 **最適化候補は手順 5 の改善対象に入れない。** 工程の作り替えは対象 skill の再設計にあたるので、報告に載せて別ループへ送る。
 

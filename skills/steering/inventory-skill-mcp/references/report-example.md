@@ -7,6 +7,7 @@
 
 観測窓: 2026-06-17 〜 2026-07-17 (30 日) / 総 invocation 245 / distinct sessions 42
 判定可能性: sufficient (総数 >= 30)
+観測の劣化: なし / absent_optional_paths: なし
 
 ## delete-candidate
 

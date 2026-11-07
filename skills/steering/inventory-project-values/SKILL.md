@@ -10,7 +10,7 @@ description: 実行中 project の transcript から手入力プロンプトを�
 
 3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は `open_predicates` の解釈と文章の具体化のみ**):
 
-1. **決定的観測**: `scan_prompts` tool が transcript を走査し、手入力 prompt だけの mart JSON を出す (手順 1)。`select_candidates` tool が mart を長さ・repo・正規形の完全一致で絞り込み、読み順を確定した slice を出す (手順 2)。どちらの tool も「どれがフィードバックか」「どれが規範か」を**知らない**
+1. **決定的観測**: named query `scan-prompts` が transcript を走査し、手入力 prompt だけの mart を出す (手順 1)。`select-prompt-candidates` が手入力 prompt を長さ・repo・正規形の完全一致で絞り込み、読み順を確定した slice を出す (手順 2)。どちらの問いも「どれがフィードバックか」「どれが規範か」を**知らない**
 2. **LLM 具体化 (このメインコンテキスト)**: slice を読み、同一規範ごとに束ねた候補・反映 diff 案を証拠 anchor 付きで組み立てる。**判定はしない** (手順 3)
 3. **人間判定**: 採否を選ぶのは常に人間。候補ごとに AskUserQuestion で提示し (手順 4)、**承認された候補だけ**を反映する (手順 5)
 
@@ -18,54 +18,55 @@ description: 実行中 project の transcript から手入力プロンプトを�
 
 ## スコープ (改変不可の境界)
 
-- **読み対象**: `~/.claude/projects/**/*.jsonl` (標準 transcript) のみ。走査・抽出は tool の責務で、LLM が transcript を直接読むことはしない。**cwd の repo の prompt だけ**を候補にする (手順 2 の repo 既定解決)
+- **読み対象**: `~/.claude/projects/**/*.jsonl` (標準 transcript) のみ。走査・抽出は `transcript-query` の責務で、LLM が transcript を直接読むことはしない。**cwd の repo の prompt だけ**を候補にする (手順 2 の repo 既定解決)
 - **書き対象**: **cwd repo の `CLAUDE.md` / `.claude/rules/`** のみ。rules の器のうち、既存 rules への追記の先は `.claude/rules/**/*.md` (サブディレクトリを含む。3-5 で読む範囲と同じ)、新規に起こす rules の作成先は `.claude/rules/<topic>.md`。どちらの器に置くかは**手順 4 で人間が選ぶ** (skill が器を決めるのは禁止。手順 5)。**AskUserQuestion での人間承認後にだけ**行う。変更の届け方 (作業ツリー / branch / PR) は実行 project の運用に従い、本 skill は決めない
 - **除外**: `~/.claude/CLAUDE.md` (global) / cwd repo 以外のファイル
 - **非依存**: claude-mem / dotfiles / herdr。すべて標準 transcript と cwd repo 内 file のみ
 
 ## 引数
 
-引数なし (`/inventory-project-values`)。観測窓・絞り込み条件は手順 1 / 2 の tool 引数で調整する (既定は直近 30 日 × 60 字以上 × cwd repo)。
+引数なし (`/inventory-project-values`)。観測窓・絞り込み条件は手順 1 / 2 の named query の引数で調整する (既定は直近 30 日 × 60 字以上 × cwd repo)。
 
 ## 手順
 
-### 1. 観測 tool 起動 (決定的)
+### 1. mart の観測 (決定的)
 
-`mcp__plugin_swat-skills_transcript-ops__scan_prompts` を引数なしで呼ぶ。
+Skill tool で `swat-skills:transcript-query` を invoke し、named query `scan-prompts` を `--consumer inventory-project-values` で呼ぶ。
 
-- `days` で観測窓を上書き (省略時 30 日)
-- 返り値の `path` に mart JSON (`/tmp/inventory-values/mart-<timestamp>.json`) が出る。**mart 本体は返らない**
-- **mart は生データ** — bucket も発話型も持たない。返り値の `meta.excluded` に除外理由別の内訳が出るので、`no_prompt_source` が急増していたら CLI schema 変更を疑う (観測の劣化が silent zero にならない設計)。**「急増」の判定には前回 mart が要る**。手元に無ければ `total_prompts` との比を劣化判定の代用にせず、レポートに「前回 mart が無く判定不能」と書く
-- **`meta.store` の劣化シグナルは、mart の `contract` の注記が劣化シグナルと名指す key だけ**。これらが 0 でなければ**観測が劣化している**ので、手順 6 のレポートヘッダへ転記する (key ごとの意味は contract の注記が持つ)。contract の注記が劣化シグナルと名指さない key は、0 でなくても転記しない。注記は返り値に無いので、mart JSON を Read の `limit` 100 で先頭から読み、届かなければ `offset` を 100 行ずつ進めて (`meta` の次に `contract` が来る)、`contract.notes` の配列を閉じ括弧まで読んだら止める — mart 全体は千 prompt 規模なので読まない
+- 観測窓は今の時刻までの直近 30 日を既定に `--since` / `--until` で渡す。手順 2 にも同じ値を渡す — 窓が割れると mart と slice の件数が食い違う
+- 返り値の `path` に mart (`/tmp/inventory-project-values/` の下) が出る。**mart 本体は返らない**
+- 読み方は成果物の `contract` が持つ。本書の `meta.<key>` は section `meta` の key を指す
+- `contract` と `meta` は返り値に無いので、mart を Read の `limit` 100 で先頭から読み、届かなければ `offset` を 100 行ずつ進めて、`meta` を閉じ括弧まで読んだら止める — mart 全体は千 prompt 規模なので読まない
+- **mart は生データ** — bucket も 3-1 の発話型も持たない。`meta.excluded` に除外理由別の内訳が出るので、`no_prompt_source` が急増していたら CLI schema 変更を疑う (観測の劣化が silent zero にならない設計)。**「急増」の判定には前回 mart が要る**。手元に無ければ `total_prompts` との比を劣化判定の代用にせず、レポートに「前回 mart が無く判定不能」と書く
+- 返り値の `degradation` と `absent_optional_paths` を、invoke が返す本文の「返り値の読み方」で読む。`degradation` の劣化の件数のうち 0 でないものは**観測が劣化している**ので、手順 6 のレポートヘッダへ転記する。`absent_optional_paths` は形式の変化を区別できない path なので、値を同じヘッダへ転記する
 
-`meta.total_prompts` が 0 なら「観測不能」を報告して終了する (推測での穴埋めをしない)。
+`meta.total_prompts` が 0 なら「観測不能」を報告して終了する (推測での穴埋めをしない)。手順 1・2 の呼び出しが `stopped` を返したら本文の読み方に従い、呼び直しても答えが出ないとき (`empty_window` を含む) と道具の取得に失敗したときも、理由を添えて同じく終了する — transcript を自前で読むと内部の形式に依存する。
 
 mart は**全 project 横断**で作られる (transcript の lake は project 単位に分かれていない)。project への絞り込みは手順 2 が行う。
 
 ### 2. 候補の絞り込み (決定的)
 
-**読むのは tool が出す slice だけで、読み順も tool が決める。** mart は千 prompt / 数百 KB 規模になり、LLM に全件を読ませる前提は成立しない。
+**読むのは named query が出す slice だけで、読み順も named query が決める。** mart は千 prompt / 数百 KB 規模になり、LLM に全件を読ませる前提は成立しない。
 
-`mcp__plugin_swat-skills_transcript-ops__select_candidates` に `mart` = 手順 1 の path を渡して呼ぶ。
+named query `select-prompt-candidates` を手順 1 と同じ `--since` / `--until` と `--consumer` で呼ぶ。
 
-- 返り値の `path` に slice JSON (`/tmp/inventory-values/candidates-<timestamp>.json`) が出るので、それを Read する
+- 返り値の `path` に slice が出るので、それを Read する。読み方の注記は slice の `contract` が持つ
 - 読み順は **`text_chars` 降順 → timestamp → session_id → uuid** の全順序。`rank` の昇順に読む
-- `limit` で件数を打ち切れる。打ち切りは text_chars 降順で当たり、削られた件数は `meta.truncated_by_limit` に出る (silent cap にしない)。`limit` の外に出た候補は slice に出ないので、優先帯で拾い直せない
-- 各候補に `steering_pattern` (`correct` / `question` / `instruct` / `steer`) が付く。`steering_patterns.priority_order` は `limit` で残った候補から作られ、**読了予算で足切りするときの読み順**に使う — `correct` (訂正) は規範とのずれが露出した瞬間で、長さ順に読んで落とすと最も惜しい帯。`rank` 自体は動かない (読み順と提示順の分離は手順 4 と同じ)
+- `--param limit=<件数>` で件数を打ち切れる。打ち切りは text_chars 降順で当たり、削られた件数は `meta.truncated_by_limit` に出る (silent cap にしない)。`limit` の外に出た候補は slice に出ないので、優先帯で拾い直せない
+- 各候補に `steering_pattern` (`correct` / `question` / `instruct` / `steer`) が付く。section `steering_patterns` の `priority_order` は `limit` で残った候補から作られ、**読了予算で足切りするときの読み順**に使う — `correct` (訂正) は規範とのずれが露出した瞬間で、長さ順に読んで落とすと最も惜しい帯。`rank` 自体は動かない (読み順と提示順の分離は手順 4 と同じ)
 - `steering_pattern` は表層語だけの決定的分類で、**取りこぼす**。`correct` でない候補を訂正でないと読まない (優先帯は拾い上げの補助であって分類の正解ではない)
 
 #### 2-1. project scope (既定)
 
-`repo` 未指定時は **cwd の git remote** に解決する (`meta.repo_scope: "cwd"`)。他 project で実行したときに無関係な repo の prompt が候補に載らないための既定であり、社内 repo での実行時に個人 repo の prompt を混ぜないのが目的。
+条件 `repo` を渡さないと **cwd の git remote** に解決する (`meta.repo_scope: "cwd"`)。他 project で実行したときに無関係な repo の prompt が候補に載らないための既定であり、社内 repo での実行時に個人 repo の prompt を混ぜないのが目的。
 
-- 解決できない cwd (git 管理外) では**全 repo に倒さず失敗する**。`repo` か `all_repos: true` を明示する
-- **cwd は server プロセスのもの** (セッション起動時に固定)。棚卸し中に別 project へ移った場合は `repo_root` を明示して解決先を合わせる
-- `all_repos` は「repo をまたいで再出現する規範」を見るための逃げ道。**本 skill の反映先は cwd repo なので、`all_repos` の結果をそのまま反映しない** (他 project の発話を根拠に cwd repo の規範を作ることになる)
-- repo 別の内訳は slice の `repos` に出る
+- 解決できない cwd (git 管理外) では**全 repo に倒さず `bad_argument` で止まる**。`--param repo=<識別子>` (手順 1 の mart の section `repo` の値) か、人が選んだときだけ `--param repo=all` を渡す
+- `repo=all` は「repo をまたいで再出現する規範」を見るための逃げ道。**本 skill の反映先は cwd repo なので、`repo=all` の結果をそのまま反映しない** (他 project の発話を根拠に cwd repo の規範を作ることになる)
+- repo 別の内訳は slice の section `repo` に出る
 
 #### 2-2. 観測帯 (60 字以上)
 
-**既定の入口は 60 字以上の帯** (`min_chars`、default 60)。帯ごとの中身:
+**既定の入口は 60 字以上の帯** (`--param min_chars=<字数>`、既定 60)。帯ごとの中身:
 
 | 帯 | 中身 | 既定で候補か |
 |---|---|---|
@@ -77,17 +78,17 @@ mart は**全 project 横断**で作られる (transcript の lake は project �
 
 **短文帯 (59 字以下) は候補源に含めない。** 理由は復元不能性 — `OK` / `全部` / `A` は直前の AskUserQuestion や提案とセットでなければ規範を復元できず、mart は prompt 単位で直前の assistant turn を持たないため、単体では証拠にならない。60-120 字帯の発話は単体で意味が通るため、この境界を入口にする。**除外は silent にしない**: slice の `meta.excluded.below_min_chars` と `meta.band_histogram` を手順 6 のレポートにそのまま転記する。
 
-**長さは絞り込みには使えるが判定には使えない。** 301 字以上の帯にはエラーログ・調査資料の貼り付けが相当数混じる。「どれがフィードバックか」の判定は tool に持たせず、手順 3 の具体化と手順 4 の人間判定に委ねる。
+**長さは絞り込みには使えるが判定には使えない。** 301 字以上の帯にはエラーログ・調査資料の貼り付けが相当数混じる。「どれがフィードバックか」の判定は観測に持たせず、手順 3 の具体化と手順 4 の人間判定に委ねる。
 
 #### 2-3. 定型文の除外 (決定的)
 
-正規化 (URL → path → 数値 → 空白畳み) した**正規形が完全一致する群が 3 件以上**なら定型文として除外する。tool はハードコードした文面パターンを持たず、類似度計算もしない — 定型文は正規化後にバイト一致するのに対し、規範の再出現は表層語をほぼ共有しないため、両者は構造的に衝突しない。閾値 3〜5 で結果が変わらない (分布が二峰性) ため引数にも出さない。
+正規化 (URL → path → 数値 → 空白畳み) した**正規形が完全一致する群が 3 件以上**なら定型文として除外する。観測はハードコードした文面パターンを持たず、類似度計算もしない — 定型文は正規化後にバイト一致するのに対し、規範の再出現は表層語をほぼ共有しないため、両者は構造的に衝突しない。閾値 3〜5 で結果が変わらない (分布が二峰性) ため引数にも出さない。
 
-**`boilerplate_forms` は第 2 の候補源として必ず読む。** 除外は silent にせず、検出した正規形が件数・repo 数・実例 anchor 付きで slice に出る。**逐語反復された規範が定型判定される経路は実在する** (同じ FB を何度もコピペした場合)。「同じ文を n 回コピペしている」は未ルール化の強いシグナルでもあるため、一覧を読んで拾い戻す。拾い戻した候補は通常の候補と同じ形 (3-3) で手順 4 に載せる。
+**section `boilerplate_form` は第 2 の候補源として必ず読む。** 除外は silent にせず、検出した正規形が件数・repo 数・実例 anchor 付きで slice に出る。**逐語反復された規範が定型判定される経路は実在する** (同じ FB を何度もコピペした場合)。「同じ文を n 回コピペしている」は未ルール化の強いシグナルでもあるため、一覧を読んで拾い戻す。拾い戻した候補は通常の候補と同じ形 (3-3) で手順 4 に載せる。
 
 ### 3. 候補の具体化 (LLM)
 
-slice の `candidates` を `rank` 順に読み、**同一規範ごとに束ねた**候補を組み立てる。**判定はしない** — 出すのは候補・証拠・反映 diff 案まで。
+slice の section `candidate` を `rank` 順に読み、**同一規範ごとに束ねた**候補を組み立てる。**判定はしない** — 出すのは候補・証拠・反映 diff 案まで。
 
 **読了予算の規律**: slice も全件全文読みできるとは限らない。プレビュー等で足切りする場合:
 
@@ -96,7 +97,7 @@ slice の `candidates` を `rank` 順に読み、**同一規範ごとに束ね�
 
 #### 3-1. 探索観点 — 規範が乗る 4 つの発話型
 
-長文を要約するだけでは規範は出てこない。以下の型を**探すあて**として読む。型そのものは決定的に判定できないため tool には持たせておらず、ここが唯一の適用箇所:
+長文を要約するだけでは規範は出てこない。以下の型を**探すあて**として読む。型そのものは決定的に判定できないため観測には持たせておらず、ここが唯一の適用箇所:
 
 | 型 | 見分け方 | 実例 |
 |---|---|---|
@@ -111,7 +112,7 @@ slice の `candidates` を `rank` 順に読み、**同一規範ごとに束ね�
 
 #### 3-2. 同一規範の束ね (頻度シグナル)
 
-候補は 1 発話 = 1 候補ではなく、**同一規範の束ね**単位で作る。束ねるのは LLM の役割 — tool は長さと repo でしか並べられない (定型文は正規化後にバイト一致するが、規範の再出現は表層語をほぼ共有しないため、tool の定型判定とは別物)。
+候補は 1 発話 = 1 候補ではなく、**同一規範の束ね**単位で作る。束ねるのは LLM の役割 — 観測は長さと repo でしか並べられない (定型文は正規化後にバイト一致するが、規範の再出現は表層語をほぼ共有しないため、観測の定型判定とは別物)。
 
 **再出現回数が判定材料の中心**になる。同じ規範が繰り返し指示されているのは「まだ harness に定着していない」ことの直接の証拠であり、昇格すれば再出現は自然に止む。
 
@@ -202,11 +203,11 @@ invoke ごとに、契約の「委譲後の変更 path の照合」節の手順�
 
 ### 6. Markdown レポート組み立て
 
-`/tmp/inventory-values/report-<timestamp>.md` に mart / slice と並置で書く。以下の**固定 schema**:
+`/tmp/inventory-project-values/report-<timestamp>.md` に mart / slice と並置で書く。以下の**固定 schema**:
 
-1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (手順 1 の `meta.store` の劣化シグナルのうち 0 でないもの。すべて 0 なら「劣化なし」と明記)
+1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (手順 1 の `degradation` の劣化の件数のうち 0 でないもの。すべて 0 なら「劣化なし」と明記) / `absent_optional_paths` の値
 2. **除外の明示**: slice の `meta.excluded` (`below_min_chars` / `other_repo` / `boilerplate`) と `meta.band_histogram` を転記し、「短文帯 N 件・他 repo N 件・定型 N 件を意図的に対象外にした」ことを明記する。`meta.truncated_by_limit` が非 0 ならその件数も出す
-3. **定型一覧**: `boilerplate_forms` を件数付きで転記し、拾い戻した候補があればどれかを書く (拾い戻しゼロならその旨を書く。読んだことが復元できる形にする)
+3. **定型一覧**: section `boilerplate_form` を件数付きで転記し、拾い戻した候補があればどれかを書く (拾い戻しゼロならその旨を書く。読んだことが復元できる形にする)
 4. **候補 section** (器の分類別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 規範の言い換え / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / `undecided (保留)` / `undecided`。保留は `器が決まらない` の候補を人間が issue 起票の提案で止めたもので、承認も却下も出ていないので `undecided` に当たる)。承認済み・未反映と no-placement の候補には、手順 5 がレポートに残すとしたものを書く
 5. **informational**: 次の 3 種の slice record を、それぞれ理由付きで載せる + 読了 provenance — 4 発話型のどれにも当てはまらず候補にしなかったもの / 貼り付け境界で規範を復元できなかったもの / 読了予算で足切りしたもの
 6. **summary 表**: 番号 × 出現回数 × 器の分類 × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形。採用した候補の判定結果列には、手順 5 の結果 (反映済み / 承認済み・未反映 / no-placement) を書く。保留の候補は `undecided (保留)`、打ち切りで答えの出なかった候補は `undecided` と書き、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く

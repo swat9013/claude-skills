@@ -105,8 +105,8 @@ cwd が **swat-skills repo 本体** (plugin の配布元) なら停止する。�
 
    - 出力の `value` が `"1"` のときだけ入っているとする。`from` は実効値を決めている file (`local` / `shared`)、`{"from":"none"}` は 2 file とも key が無いことを示す。手順 4-4 で追加と書き換えのどちらを提案するか、実効値を決めている file が書き先かは、この 2 つで決める
    - コマンドが失敗したら未充足と判定せず、env 群は手順 4-4 で尋ねずに手順 8 へ回す。失敗の原因は、jq が見つからないなら jq の不在、それ以外は error が挙げる file が settings として解釈できない (空・JSON でない・`env` が object でない) こと
-4. **群の確認と提案**: 「最小集合」節の 4 群 (skill script / MCP tool / deny / env) と「sandbox block」節の 1 群を現状と突き合わせ、中身がすべて入っている群を除いて、入れるかを AskUserQuestion (複数選択) で尋ねる。選択肢には群ごとに入れない場合の影響を書く:
-   - skill script / MCP tool: swat-skills の script や tool を呼ぶたびに permission ask が出る
+4. **群の確認と提案**: 「最小集合」節の 3 群 (skill script / deny / env) と「sandbox block」節の 1 群を現状と突き合わせ、中身がすべて入っている群を除いて、入れるかを AskUserQuestion (複数選択) で尋ねる。選択肢には群ごとに入れない場合の影響を書く:
+   - skill script: swat-skills の script を呼ぶたびに permission ask が出る
    - deny: 取り返しがつかない操作を permission 層で止める entry が無くなる
    - env: 新しい model で todolist tool が出ず、playbook の step が UI の list に載らない (skip は最終返答にだけ残る)
    - sandbox: Bash が Claude Code 内蔵 sandbox の OS 境界なしで動く。入れる場合の前提も添える — macOS は追加不要、Linux / WSL2 は `bubblewrap` と `socat` が要り、無いまま入れると `failIfUnavailable: true` で起動に失敗する (前提の充足は setup が検査せず、ユーザーの判断に委ねる)
@@ -165,7 +165,6 @@ swat-skills の hook は一括 stage (`git add -A` 等) を止めない。秘匿
 | 群 | entry | 根拠 |
 |---|---|---|
 | skill script | install 済み swat-skills の `skills/<category>/<name>/scripts/` 配下で、SKILL.md 本文から直接起動される script すべて。列挙の起点は手順 4-1 で決めた plugin root | swat-skills の skill が直接呼ぶ script の事前承認。書き方は「path 解決」節の 2 本立て。列挙は実行のたびに SKILL.md 本文から行い、固定の一覧を持たない |
-| MCP tool | 同梱 MCP server が提供する tool すべて。entry 形は `mcp__plugin_swat-skills_<server>__<tool>` で、`<server>` の列挙元は plugin の `.mcp.json`、`<tool>` はその server が実際に公開している tool | skill script 行と同じく「swat-skills を使う前提」で全環境共通。**本表に列挙は書かない** — server が tool を増やすたびに表の更新が要ることになる |
 | deny | `Bash(rm -rf /)` `Bash(rm -rf /*)` `Bash(rm -rf ~)` `Bash(rm -rf ~/)` `Bash(rm -rf $HOME)` `Bash(git push --force:*)` `Bash(git push -f:*)` `Bash(git reset --hard:*)` および pipe-to-shell 4 形 `Bash(curl * \| sh)` `Bash(curl * \| bash)` `Bash(wget * \| sh)` `Bash(wget * \| bash)` | 取り返しがつかない操作 / 明確なセキュリティリスクの最後の砦 |
 | env | `"env": {"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"}` (固定。install 形態で分岐しない) | 入れないと、一部の model では todolist tool が出ず、playbook が step を写す先が無くなる |
 

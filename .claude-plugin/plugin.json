@@ -37,6 +37,7 @@
     "./skills/procedure/create-formal-verification-skill",
     "./skills/procedure/maintain-formal-verification-skill",
     "./skills/knowledge/principle-index",
+    "./skills/knowledge/transcript-query",
     "./skills/knowledge/python-single-file-script",
     "./skills/knowledge/shell-script",
     "./skills/procedure/review-stage",

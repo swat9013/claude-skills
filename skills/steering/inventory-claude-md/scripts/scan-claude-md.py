@@ -18,8 +18,8 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
   提供のみ、閾値 enforce はしない。
 - 静的トークンコスト (token_cost): **行単位**の概算 token 数と section 別の合計。
   CLAUDE.md 系は session 開始で無条件に載るので、行数ではなく token が実コスト。
-  実績側 (どの file が何 session に注入されたか) は transcript-ops の
-  `scan_overhead` が出し、突合は LLM 段階が行う (#478 P2)。
+  実績側 (どの file が何 session に注入されたか) は transcript-query の
+  named query `overhead` が出し、突合は LLM 段階が行う (#478 P2)。
 
 原則 (map #209 / #214): **決定的にできる推論は script へ、意味判断だけを LLM へ、
 判定は人間に**。script は bucket (keep-inline / move-to-path-scoped /
@@ -84,10 +84,10 @@ URL_RE = re.compile(r"^(https?|ftp|mailto):", re.IGNORECASE)
 # 動的展開文字列 (dollar var / パイプ / スペース含み等) を link_target として除外
 DYNAMIC_MARKERS = ("$", "{", "}", "|", "`", " ")
 
-# token 概算の係数。**transcript-ops の `adapter/transcript.py` と同じ規則**で、
+# token 概算の係数。**transcript-query の `views.sql` の係数と同じ規則**で、
 # 変えるなら両方を同時に変える (片方だけ動かすと、同じ file の静的コストと注入実績が
 # 別スケールになり突合できない)。parity は `tests/test_scan_claude_md.py` が検査する。
-# script は PEP 723 の単一ファイルで adapter を import できないため写しになる。
+# script は DuckDB の macro を呼べないため写しになる。
 CJK_RE = re.compile("[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef]")
 ASCII_CHARS_PER_TOKEN = 4.0
 CJK_CHARS_PER_TOKEN = 1.0

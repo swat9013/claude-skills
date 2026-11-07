@@ -22,6 +22,8 @@
 | `permissions.defaultMode` | デフォルトのプロンプト挙動。候補値は schema / 公式 docs を参照 (散文に列挙すると drift する) |
 | `hooks` | event ごとの hook 登録 ([hook](./hook.md)) |
 | `env` | セッションに注入する環境変数 |
+| `promptCacheTtl` | main の会話の prompt cache の TTL (`5m` / `1h`)。省くと subscription は 1 時間、API key は 5 分 |
+| `subagentPromptCacheTtl` | subagent と background の要求の prompt cache の TTL (`5m` / `1h`)。agent 定義の `cacheTtl` より優先する |
 
 詳細仕様は [sources](./sources.md) 経由で公式 docs を確認する。
 

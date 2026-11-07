@@ -14,6 +14,7 @@ Claude Code の仕様が不明 / 古い / 矛盾しているとき、および h
 | skill 作成のベストプラクティス | https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices | skill (SKILL.md) の書き方のベストプラクティス |
 | CLAUDE.md の書き方 | https://code.claude.com/docs/en/memory | CLAUDE.md / `.claude/rules/` の書き方と読み込み |
 | Claude Code GitHub | https://github.com/anthropics/claude-code | changelog / issues / PR |
+| Claude Code の更新履歴 (手元) | `~/.claude/cache/changelog.md` | 版ごとの変更。どの版で挙動が変わったかは web より先にここを読む |
 | Claude Agent SDK | https://github.com/anthropics/claude-agent-sdk | Agent SDK |
 
 ## エスカレーション戦略

@@ -59,7 +59,7 @@ stdout は次の key を持つ JSON 1 つ。
 - `増分なし:` — 前巡の head から差分が無い。観点を起動せず、手順 3 の前巡 Act on の判定 (全件 `未解消`) だけを行って手順 5 へ進む
 - `増分に絞れず:` — amend / rebase で前巡の head が祖先でなくなり、`base` を起点 branch との merge-base へ広げた巡。`git diff <base>...<head>` は増分ではなく起点 branch からの全差分になる。段階・`<prev>`・`再レビュー:` 行・前巡の引き継ぎは再レビューのまま扱う。手順 2 の `--round` には `re-review-widened` を渡す。手順 3 では、今巡の指摘のうち前巡の指摘 (Act on / Consider / Noted / Dismissed) と Finding と Evidence の引用で一致するものを新規に数えず、前巡の側に寄せる
 
-差分と commit 一覧を巡ごとに 1 度確定する。`--log-base` は再レビューの巡 (`増分に絞れず:` の無いもの) だけ、前巡の出力の `reviewed:` 行の左側を渡す — 主張の出どころの commit message の起点になる。手順 1 の `base` は再レビューの巡では前巡の head なので、そこから取ると、攻撃役が前巡までの commit message から挙げた主張を、反証者が出どころに無いと読み違える。`増分に絞れず:` の巡は `base` が起点 branch との merge-base なので、log は差分と同じ範囲の commit だけを含む (初回の `base` から取ると、rebase の後は差分に無い upstream の commit message が混ざる)。
+差分と commit 一覧を巡ごとに 1 度確定する。`--log-base` は再レビューの巡 (`増分に絞れず:` の無いもの) だけ、前巡の出力の `reviewed:` 行の左側を渡す — 主張の出どころと、原則の reviewer・反証者が読む commit 本文の起点になる。手順 1 の `base` は再レビューの巡では前巡の head なので、そこから取ると、攻撃役が前巡までの commit message から挙げた主張を、反証者が出どころに無いと読み違える。`増分に絞れず:` の巡は `base` が起点 branch との merge-base なので、log は差分と同じ範囲の commit だけを含む (初回の `base` から取ると、rebase の後は差分に無い upstream の commit message が混ざる)。
 
 ```bash
 ${CLAUDE_SKILL_DIR}/scripts/prepare-inputs.py collect --base <base> --head <head> [--log-base <前巡の reviewed: 行の左側>]
@@ -158,7 +158,7 @@ range は SHA で渡す (branch 名や単一 commit を渡すとそれ自体の�
 
 ### 原則・Spec・設計
 
-reviewer は `Agent` tool で `subagent_type: swat-skills:reviewer` を指名し、**`name` を付けずに**起動する (`name` は起動後に追加の依頼を送る宛先が要る役割にだけ付けるもので、結果を受け取るだけの reviewer には要らない)。Agent tool の結果が reviewer の出力ではなく起動の通知だったときは (reviewer が background で起動されるとこうなる)、結果は完了通知で届く。reviewer の model と effort は agent 定義が持つので `model` / `effort` を渡さない。
+reviewer は `Agent` tool で `subagent_type: swat-skills:reviewer` を指名し、**`name` を付けずに**起動する (`name` は起動後に追加の依頼を送る宛先が要る役割にだけ付けるもので、結果を受け取るだけの reviewer には要らない)。reviewer の model と effort は agent 定義が持つので `model` / `effort` を渡さない。
 
 この名前が解決しないときは `general-purpose` で代替しない — 代替すると reviewer が呼び出し元の model と effort へ黙って戻り、指名した深さでレビューしたように見える。原則と Spec と設計を走らせず、その巡で走らせる予定だった reviewer の観点 (`## 原則` / `## Spec` / `## 設計`) の注記へ `reviewer 未起動: <error が挙げた available agents>` と書く。欠陥探しと adversarial verification のうち起動できた観点があれば、その結果で手順 3 以降を通す (同じ message で起動できた観点の結果を捨てない)。0 本の巡と `再レビュー:` 行の値は「全観点の待ち合わせと停止」と手順 5 が決める。次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから呼び直す) は `reviewer 未起動:` の注記の末尾に書く — 出力の外に書くと、出力を保存して PR へ残す呼び出し元の手元から落ちる。
 
@@ -176,7 +176,9 @@ prompt は `prompts` の `adversarial` の file の path だけにする。そ�
 
 ### 全観点の待ち合わせと停止
 
-欠陥探し・adversarial verification・原則・Spec・設計のうち、その巡で起動した観点 (reviewer・攻撃役と `code-review`) の結果が全部届いてから手順 3 へ進む。
+欠陥探し・adversarial verification・原則・Spec・設計のうち、その巡で起動した観点 (reviewer・攻撃役と `code-review`) の最終報告が全部届いてから手順 3 へ進む。最終報告が届いたとは、その観点の報告の本文 (指摘の一覧か、指摘なしの旨か、`入力を読めず:` の行) を会話の中で読める状態をいう。本文の届く先は tool の戻り・完了通知の `<result>`・それらとは別の message のどれかで、tool の戻りや `<result>` が起動の通知か別の message の案内なら、それは本文ではない — 案内された message の本文を読む。完了通知の `<summary>` と `<status>` は担い手が止まった事実だけを示す — 指摘を持たないので、そこから節を書くと、届いていない報告の指摘が出力から黙って落ちる。
+
+起動した観点を 1 つずつ挙げて本文の有無を確かめ、本文の無い観点が残る間は、完了通知だけが届いた観点も含めて、手順 3 へ進まず、その観点の節も書かずに待つ。本文は別の作業の tool 呼び出しが続く間は届かないことがあるので、先に別の作業を進めたときも、終えてから同じように確かめる。
 
 その巡で走らせる観点のうち、起動できたものが 0 本の巡 (走らせる予定の担い手がすべて skip か未起動か入力を読めなかった巡。docs 段階では reviewer の未起動だけで当たる) は、手順 3 へ進まずに手順 5 の停止出力を返す — 観点が 1 本も走っていないので、`要` や `不要` で返すとレビューを通っていない差分が通ったように読まれる。`再レビュー:` 行の値は手順 5 が決める。`停止理由:` 行には、起動できなかった観点ごとに手順 2 で書くはずだった注記 (`欠陥探し skip:` / `reviewer 未起動:` / `adversarial verification 未起動:` / `入力を読めず:`) を `; ` で区切って並べ、末尾に、起動できなかった担い手が解決する状態にしてから (入力を読めなかった観点は、読めなかった path を確かめてから) 呼び直す旨を書く。走らせる観点が元から無い巡 (`増分なし:` の巡) はこの規則に当たらない。
 

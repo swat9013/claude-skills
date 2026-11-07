@@ -23,10 +23,10 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
 - **`CLAUDE.local.md` の位置づけ**: memory 階層 4 層目の project-local (個人 override)。本 skill は **root 直下 (`<repo>/CLAUDE.local.md`) のみ**を対象にする (reference `claude-md.md` の memory 階層表が project-local として挙げるのはこの 1 path。project 層と違いサブディレクトリへの言及が無い)。observation JSON では `sources.claude_md.local` (`label: "project-local"`) に独立キーで出るので、**source class は path の文字列判定でなく JSON のキーから読む**
 - **書き対象**: 手順 5 で人間が承認した候補の反映先 (`<repo>/CLAUDE.md` / `<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/**/*.md` / repo 内の既存 skill の SKILL.md) だけ。書くのは `write-for-harness` で、本 skill は反映先と候補を渡す。レポートは `/tmp/inventory-claude-md/` に置く
 - **除外**: `~/.claude/CLAUDE.md` (global) は読みも書きもしない。global 昇格は本 skill の機能外 — 人間が chezmoi 側で別途行う
-- **transcript の扱い**: bucket 判定の材料 (行・section・参照) はすべて静的 repo 内 file から取る。transcript は**注入実績 (どの file が何 session に載ったか) と compaction 実害だけ**を `scan_overhead` 経由で読む (手順 1b)。行単位の実績は transcript に存在しないため、行の内容判断が transcript に依存することはない
+- **transcript の扱い**: bucket 判定の材料 (行・section・参照) はすべて静的 repo 内 file から取る。transcript は**注入実績 (どの file が何 session に載ったか) と compaction 実害だけ**を named query `overhead` 経由で読む (手順 1b)。行単位の実績は transcript に存在しないため、行の内容判断が transcript に依存することはない
 - **非依存**: claude-mem / dotfiles / swat-skills 固有 gate 実装。**git の tracked/untracked も観測しない** (script は git に依存しない)
 
-**汎用スキル制約**: 参照するのは Claude Code 標準ファイルと `write-for-harness` (references の Read と、反映段での invoke) のみ。repo 固有の gate 構成 (pre-commit gate script の有無) には触らない — 「lint 化可能か」の判断は LLM 段階で提案するが、配線は repo 側の別作業。
+**汎用スキル制約**: 参照するのは Claude Code 標準ファイルと `write-for-harness` (references の Read と、反映段での invoke) と `transcript-query` (手順 1b の invoke) のみ。repo 固有の gate 構成 (pre-commit gate script の有無) には触らない — 「lint 化可能か」の判断は LLM 段階で提案するが、配線は repo 側の別作業。
 
 ## 引数
 
@@ -50,15 +50,14 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-claude-md.py --repo-root .
 
 ### 1b. 注入実績の観測 (決定的)
 
-`mcp__plugin_swat-skills_transcript-ops__scan_overhead` を引数なしで呼ぶ (repo は cwd に既定解決する。解決できないときは失敗するので、別 project を見るなら `repo_root` を明示する)。
+`swat-skills:transcript-query` を Skill tool で invoke し、named query `overhead` を直近 30 日の観測窓と出力 dir の名前 `inventory-claude-md` で呼ぶ。数える session は cwd の repo のものに絞られる。
 
-- 返り値の `path` に mart JSON が出るので Read する (**本体は返らない**)
-- `memory_files[]` が **file 別の注入 session 数**。path は repo 相対で、worktree・複数 checkout に散った同一 file は 1 行に畳まれている (`absolute_paths_folded` が畳んだ数)
-- `compaction` が **捨てられた token** (`dropped_tokens`)。`cumulative_dropped_tokens` は session ごとの最大値で、boundary をまたいで足した値ではない
-- `static_context.sources` は「何が重いか」の内訳 (`memory_file` / `skill_listing` / `mcp_instructions` / ...)。CLAUDE.md 系が静的コストのどれくらいを占めるかはここで見る
-- **tool は bucket を出さない**。実績は file 粒度までで、行粒度の実績は transcript に存在しない
+- 返り値の `path` に成果物の JSON が出るので Read する (**本体は返らない**)。中身は `rows` の 1 行で、列の読み方は同じ JSON の `contract` が持つ
+- `memory_files[]` が **file 別の注入 session 数**
+- `compaction` が **捨てられた token** (`dropped_tokens`)
+- `static_context.sources` は「何が重いか」の内訳 (`memory_file` / `skill_listing` / `mcp_instructions` / ...)。root `CLAUDE.md` の量は手順 1 の `token_cost` で見る
 
-この観測が取れなくても (mart が空・観測窓に session が無い等) 手順 2 以降は成立する — 静的観測だけで bucket 候補は組める。取れなかったことをレポート §4「観測範囲外」に明記する。
+この観測が取れなくても (道具の取得の失敗・呼び直しても残る `stopped`・`sessions_observed` か `memory_files[]` が 0 件) 手順 2 以降は成立する — 静的観測だけで bucket 候補は組める。取れなかったら手順 2 の `memory_files[]` との突き合わせを止め、取れなかったことと理由をレポート §4「観測範囲外」に明記する。`empty_window` は窓を広げずに取れなかった扱いにする。transcript-query の「返り値の読み方」が 0 件を証拠に使えないとする値が返り値にあれば、その値を同じ節に書き、`memory_files[]` の行の不在を注入 0 session の証拠に使わない。
 
 ### 2. observation JSON を読んで bucket 候補を提示 (LLM)
 
@@ -105,8 +104,8 @@ observation の schema は script docstring 参照。以下の順に組み立て
 **コスト × 実績の使い方 (候補の重み付け。bucket の決定ではない)**:
 
 - 候補の行群には `token_cost.per_line_est_tokens` を合算した **est_tokens を必ず添える**。「毎 session この行群に払っている概算 token」が、同じ bucket の候補間の優先順位になる
-- `.claude/rules/<topic>.md` は `memory_files[]` と突き合わせる。**注入 0 session の file は `memory_files[]` に行として現れない** (mart は観測した注入だけを載せ、repo の file 一覧を知らない)。判定は**差分で行う** — 手順 1 の `sources.rules[]` が列挙した file のうち `memory_files[]` に無いものが「窓内で 1 度も注入されていない」。それは規範が届いていない証拠なので、`move-to-path-scoped` の glob 見直し (or `keep-inline` への差し戻し) を提案する
-- 逆に `sessions_injected` が観測 session のほぼ全数に届いている path-scoped rule は、実質常時ロードなので CLAUDE.md 本体と同じコスト扱いで読む (`meta.sessions_observed` が分母)
+- `.claude/rules/<topic>.md` は `memory_files[]` と突き合わせる。**注入 0 session の file は `memory_files[]` に行として現れない**。判定は**差分で行う** — 手順 1 の `sources.rules[]` が列挙した file のうち `memory_files[]` に無いものが「窓内で 1 度も注入されていない」。それは規範が届いていない証拠なので、`move-to-path-scoped` の glob 見直し (or `keep-inline` への差し戻し) を提案する
+- 逆に `sessions_injected` が観測 session のほぼ全数に届いている path-scoped rule は、実質常時ロードなので CLAUDE.md 本体と同じコスト扱いで読む (行の直下の `sessions_observed` が分母)
 - `compaction.dropped_tokens` が大きい環境では、静的コストの削減提案 (`move-to-path-scoped` / `delete`) に「compaction 実害」を根拠として添えられる。**逆は言えない** — compaction は静的コストだけで起きるものではないので、「この行のせいで compaction した」とは書かない
 - **token 数は概算** (`token_cost.estimator` を転記する)。桁の比較にだけ使い、「N token を超えたら移設」のような閾値判定はしない
 
@@ -142,7 +141,7 @@ observation の schema は script docstring 参照。以下の順に組み立て
     - 提案 (1-2 行、証拠に紐づく)。新しい `.claude/rules/<topic>.md` を起こす move-to-path-scoped の候補は、作成先 path と `paths:` の glob も逐語で書く — 手順 6 はこの 2 つを候補から写すので、無ければ no-placement になる
     - 適用手順 (bucket 別分岐、下表参照)
 3. **informational**: bucket vocabulary の**どれにも該当しない**行の一覧と理由 (bucket vocabulary の適用先が不明な行 / 用途不明な行)。**汎用性が高く見える行もここに落とす** — 「(参考) global 昇格の余地あり — 判定は chezmoi 側で人間実施」と書き、bucket 候補としては出さない (global は本 skill の機能外)
-4. **観測範囲外 (人間確認へ回す)**: 参照実在検査が fail-safe で判断不能だった行 (`exists: null`) / inline code span の path 参照 / observation JSON の穴 / **観測境界の外にある file** (サブディレクトリの `CLAUDE.local.md` 等、存在しても JSON に出ないもの)。**bucket 判定の証拠として使わない**行をここに集める
+4. **観測範囲外 (人間確認へ回す)**: 参照実在検査が fail-safe で判断不能だった行 (`exists: null`) / inline code span の path 参照 / observation JSON の穴 / **観測境界の外にある file** (サブディレクトリの `CLAUDE.local.md` 等、存在しても JSON に出ないもの) / 手順 1b が取れなかった理由と、証拠に使えない返り値の値。**bucket 判定の証拠として使わない**行をここに集める
 5. **meta 観測**: CLAUDE.md / `CLAUDE.local.md` 自体の物理計測 (行数 / 見出し階層 / @import 数)。observation JSON の `meta.root_meta` と `meta.local_meta` を**それぞれ転記**する (`meta` は root と local の 2 本立てで、subdirs / rules は含まない)。**`status = "missing"` の側は数値を転記せず「(無し)」と書く** — `summarize_meta` は不在時に全項目 0 を返すので、そのまま載せると「存在するが 0 行」と読めてしまう。閾値 enforce はしない — 「参考値」として提示のみ
 6. **summary 表**: 番号 × bucket × 対象 × scope × 採否。「3 と 7 だけ採用」と言える形。scope 列で `project` と `project-local` を区別する (適用手順が分岐するため)。採否列は手順 5・6 の結果 (反映済み / 見送り / 承認済み・未反映 / no-placement / `undecided` / 問わない bucket は `-`) を、手順 6 を終えた時点で書き込む。承認済み・未反映・no-placement の候補は、手順 6 がレポートに残すとしたものを候補 section に書く。`undecided` があれば、表の下に件数と番号の一覧を 1 行書く
 

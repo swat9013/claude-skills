@@ -1,6 +1,6 @@
 # 状態の label の付け替え
 
-issue の状態を表す label (状態の label) を付け替える手順。外す label・付ける label・止めたときの宛先は呼び出し元の手順が決め、本書は付け替え方だけを持つ。label は名前で書いてあり、対象 repo の `docs/agents/triage-labels.md` が別の綴りを宣言していればその綴りで付け外しする。コマンドは対象 repo の `docs/agents/issue-tracker.md` の CLI 規約に従い、規約が無ければ GitHub (`gh`) の綴りの例を tracker の綴りへ読み替える。
+issue の状態を表す label (状態の label) を付け替える手順。裁いた行き先の label と付け替えで外す label・止めたときの宛先は呼び出し元の手順が決め、本書は付け替え方だけを持つ。label は名前で書いてあり、対象 repo の `docs/agents/triage-labels.md` が別の綴りを宣言していればその綴りで付け外しする。コマンドは対象 repo の `docs/agents/issue-tracker.md` の CLI 規約に従い、規約が無ければ GitHub (`gh`) の綴りの例を tracker の綴りへ読み替える。
 
 - **状態の label** は `needs-triage`・`needs-info`・`needs-grilling`・`ready-for-agent`・`ready-for-human` で (`needs-grilling` に当たる label が無い repo では残りの 4 つ)、open の issue はちょうど 1 つを持つ。例外は issue を閉じる open CL があり、`ready-for-agent` を外した後の issue で、状態の label を持たないのが正しい (状態は open CL で表す) — ここに状態の label を付け足すと、実装中の issue が triage に戻る。種別の label (`tracking-issue` など) は状態の label ではないので、本書の付け替えでは付け外ししない
 - **付け替えは 1 回の操作で行う。** 外す label と付ける label を `gh issue edit <N> -R <issue 置き場> --add-label <付ける label> --remove-label <外す label>` の 1 回にまとめる — 2 回に分けると、間で止まったときに状態の無い issue か、状態を 2 つ持つ issue が残る。付ける label が既に唯一の状態の label なら撃たない

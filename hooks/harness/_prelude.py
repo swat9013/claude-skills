@@ -3,8 +3,8 @@
 Why: harness hook は 12 本以上あり、どれも「stdin の JSON を読む」「`hookSpecificOutput`
 envelope を stdout へ出す」を各自で綴っている。逐語重複そのものは 40〜50 行と小さいが、
 実害は行数ではなく **fail-posture がコピー元の偶然で決まること**にある — #250 の決定後に
-追加された 4 本 (guard-rm-force / guard-find / guard-xargs / guard-bulk-stage) は、いずれも
-根拠コメントが「guard-find.sh と同じ側へ倒す」のような参照であって脅威モデルではない。
+追加された 4 本の guard は、いずれも根拠コメントが「他の guard と同じ側へ倒す」のような参照で
+あって脅威モデルではない。
 
 本 module は posture を**関数の選択**として表に出す: hook 冒頭 1 行が
 `read_payload_or_deny()` なら fail-closed、`read_payload_or_pass()` なら fail-open と読める。
@@ -185,7 +185,7 @@ def passthrough() -> NoReturn:
     """判断を出さずに `judge` を抜ける。settings の permission 層と他の guard に委ねる。
 
     判断は出さないが**出力はする** (#587)。無出力で exit した hook は transcript に
-    attachment を残さず、`scan_permissions` の hook 軸では `fire_count: null` になる —
+    attachment を残さず、named query `permissions` の hook 軸では `fire_count: null` になる —
     「壊れて静かに死んだ guard」と「窓内に出番が無かった guard」が棚卸しで同じ見え方に
     なる。`permissionDecision` を持たない `hookSpecificOutput` は仕様上合法で、通常の
     permission フローへ完全に委ねる (意味論は無出力と同じ) が、非空 stdout なので
@@ -734,50 +734,27 @@ def strip_here_documents(command: str) -> str:
     return "".join(kept)
 
 
-# grep / sed の POSIX 文字クラスと Python の `\s` / `\w` で分類が割れる文字。macOS の
-# /usr/bin/grep (en_US.UTF-8) を全コードポイントで実測すると、`[[:space:]]` は `\s` から
-# 区切り制御文字 (\x1c-\x1f) と NEL (\x85) を除いた集合、`[[:alnum:]]` は Python の英数字から
-# Unicode カテゴリ No / Nl (`²` `Ⅳ` など) を除いた集合だった。
-_CLASS_SPLITTING_CONTROLS = "\x1c\x1d\x1e\x1f\x85"
-_CLASS_SPLITTING_CANDIDATE = re.compile("[\x1c-\x1f\x80-\U0010ffff]")
+# C locale の grep / sed の POSIX 文字クラスと Python の `\s` / `\w` で分類が割れる文字。非 ASCII の文字は C locale の
+# byte の読みと同じく、空白でも英数字でもない (#2299)。空白と読むと、語の中に非 ASCII を挟んだ破壊的な形が deny から
+# 外れる。`\x1c-\x1f` は `\s` にだけ当たる ASCII の区切り制御文字
+_CLASS_SPLITTING_CHARACTER = re.compile("[\x1c-\x1f\x80-\U0010ffff]")
 # 割れる文字の置き換え先。空白でも英数字でもなく、guard の regex の literal にも現れない
 _NEUTRAL = "\x00"
 
 
-class _NeutralizingTable(dict):
-    """`str.translate` の表。文字ごとの置き換え先を初出で決めて覚える (長い非 ASCII の行で
-    文字ごとに Python の callback を呼ぶと、guard 1 本で秒単位かかるため)。"""
-
-    def __missing__(self, codepoint: int) -> int:
-        char = chr(codepoint)
-        if char in _CLASS_SPLITTING_CONTROLS:
-            target = ord(_NEUTRAL)
-        else:
-            import unicodedata  # 非 ASCII を含む行でだけ要る
-
-            target = ord(_NEUTRAL) if unicodedata.category(char) in ("No", "Nl") else codepoint
-        self[codepoint] = target
-        return target
-
-
-_NEUTRALIZING_TABLE = _NeutralizingTable()
-
-
-def _posix_class_view(line: str) -> str:
-    """`\\s` が `[[:space:]]`、`[^\\W_]` が `[[:alnum:]]` と同じ文字に当たる写し (長さは元と同じ)。"""
-    if _CLASS_SPLITTING_CANDIDATE.search(line) is None:
-        return line
-    return line.translate(_NEUTRALIZING_TABLE)
+def posix_class_view(line: str) -> str:
+    """`\\s` が C locale の `[[:space:]]`、`[^\\W_]` が `[[:alnum:]]` と同じ文字に当たる写し (長さは元と同じ)。"""
+    return _CLASS_SPLITTING_CHARACTER.sub(_NEUTRAL, line)
 
 
 def matches_any_line(pattern: re.Pattern, text: str) -> bool:
     """`printf '%s\\n' "$TEXT" | grep -qE` と同じく、どれかの行が `pattern` に一致するかを返す。
 
     行ごとに照合するので `^` `$` は行の端に当たり、否定の文字クラスも改行を越えない。
-    `pattern` の `\\s` / `\\S` / `\\w` は grep の `[[:space:]]` / `[^[:space:]]` /
+    `pattern` の `\\s` / `\\S` / `\\w` は C locale の grep の `[[:space:]]` / `[^[:space:]]` /
     `[[:alnum:]_]` と同じ文字に当たる。
     """
-    return any(pattern.search(_posix_class_view(line)) for line in text.split("\n"))
+    return any(pattern.search(posix_class_view(line)) for line in text.split("\n"))
 
 
 _GROUP_REFERENCE = re.compile(r"\\(\d)")
@@ -794,7 +771,7 @@ def substitute_lines(pattern: re.Pattern, replacement: str, text: str) -> str:
     for line in text.split("\n"):
         pieces: list[str] = []
         end = 0
-        for match in pattern.finditer(_posix_class_view(line)):
+        for match in pattern.finditer(posix_class_view(line)):
             pieces.append(line[end:match.start()])
 
             def group_text(reference: re.Match, match: re.Match = match) -> str:

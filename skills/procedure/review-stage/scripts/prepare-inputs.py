@@ -49,7 +49,7 @@ RE_REVIEW_ITEM_HEAD = (
     "増分に写っていないコード・文書の file を追加で読まないでください (それ以前は前巡が読み終えています)。"
 )
 RE_REVIEW_ITEM_TAIL = {
-    "principle": "規約 (CLAUDE.md・`.claude/rules/`・<declared-rules> の file) は増分の file に当たるものを読んでかまいません",
+    "principle": "規約 (CLAUDE.md・`.claude/rules/`・<declared-rules> の file) は増分の file に当たるものを読んでかまいません。<commit-messages> の file は前巡までの commit を含み、全部読んでかまいません",
     "design": "<design-docs> の設計 doc は読んでかまいません",
 }
 RE_REVIEW_LINE = "この差分は前巡のレビューへの修正です。修正が既存の主張を壊していないかを攻めてください"
@@ -65,7 +65,7 @@ def collect(base: str, head: str, log_base: str | None) -> dict:
     files = {
         "diff": ("diff.txt", ("diff", f"{base}...{head}")),
         "commits": ("commits.txt", ("log", f"{base}..{head}", "--oneline")),
-        "commit_messages": ("commit-messages.txt", ("log", f"{log_base or base}..{head}")),
+        "commit_messages": ("commit-messages.txt", ("log", f"{log_base or base}..{head}", "--format=medium")),
         "numstat": ("numstat.txt", ("diff", "--numstat", f"{base}...{head}")),
         "changed_files": ("changed-files.txt", ("diff", "--name-only", f"{base}...{head}")),
     }
@@ -193,7 +193,7 @@ def _claim_sources(commit_messages: str, spec: str, pr_body: str | None) -> str:
 
 def prompts(args: argparse.Namespace) -> dict:
     out = Path(args.dir)
-    diff, commits = out / "diff.txt", out / "commits.txt"
+    diff, commits, commit_messages = out / "diff.txt", out / "commits.txt", out / "commit-messages.txt"
     if not diff.is_file() or not commits.is_file():
         raise ValueError(f"{out} に collect の出力が無い")
     if "design" in args.perspective and not args.design_doc:
@@ -232,7 +232,8 @@ def prompts(args: argparse.Namespace) -> dict:
         changed = (out / "changed-files.txt").read_text(errors="replace").splitlines()
         declared, notes["principle"] = _declared_rules(repo_root, changed)
         texts["principle"] = _render("principle", {
-            **common, "RUBRIC": str(out / "rubric.md"), "DECLARED_RULES": "\n".join(declared) or "なし",
+            "DIFF": str(diff), "COMMIT_MESSAGES": str(commit_messages),
+            "RUBRIC": str(out / "rubric.md"), "DECLARED_RULES": "\n".join(declared) or "なし",
             "ADOPTION_RULES": adoption, "RE_REVIEW_ITEM": re_review_item("principle"),
         })
     if "spec" in args.perspective and spec:
@@ -247,7 +248,7 @@ def prompts(args: argparse.Namespace) -> dict:
     if "adversarial" in args.perspective:
         pr_body = Path(args.pr_body).read_text() if args.pr_body else None
         claim_sources = out / "claim-sources.md"
-        claim_sources.write_text(_claim_sources((out / "commit-messages.txt").read_text(errors="replace"), spec, pr_body))
+        claim_sources.write_text(_claim_sources(commit_messages.read_text(errors="replace"), spec, pr_body))
         result["claim_sources"] = str(claim_sources)
         critical = f"<critical-areas>\n{args.critical_areas}\n</critical-areas>" if args.critical_areas else ""
         texts["adversarial"] = _render("adversarial", {

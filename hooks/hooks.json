@@ -36,25 +36,6 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.py",
-            "if": "Bash(bash:*)"
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.py",
-            "if": "Bash(sh:*)"
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-shell.py",
-            "if": "Bash(zsh:*)"
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/guard-inline-python.py"
-          },
-          {
-            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/harness/allow-tmp-delete.py"
           },
           {

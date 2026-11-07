@@ -10,7 +10,7 @@ install 済みの skill / MCP を **transcript の tool_use 実績**と突合し
 
 3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は `open_predicates` の解釈と文章の具体化のみ**):
 
-1. **決定的観測 + 決定的ルール**: `scan_invocations` tool が分母列挙 + 抜粋 sampling + 提示分母 + token 経済を出し、機械判定可能な条件を評価して `rule_candidates` (`bucket_candidate` / `rule_fired` / `rule_inputs` / `open_predicates` / `near_misses`) を mart に書く。**tool は bucket を確定しない**
+1. **決定的観測 + 決定的ルール**: named query `invocations` が分母列挙 + 抜粋 sampling + 提示分母 + token 経済を出し、機械判定可能な条件を評価して `rule_candidates` (`bucket_candidate` / `rule_fired` / `rule_inputs` / `open_predicates` / `near_misses`) を mart に書く。**観測は bucket を確定しない**
 2. **LLM 具体化 (このメインコンテキスト)**: `open_predicates` に挙がった条件だけを判断して bucket を確定し、証拠 anchor 付き Markdown レポートを組み立てる。**採否は決めない**
 3. **人間判定**: 削除/見直し/保持を選ぶのは常に人間。**高確度候補** (手順 3) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む。**低確度候補**はレポート提示で止まる
 
@@ -20,26 +20,31 @@ install 済みの skill / MCP を **transcript の tool_use 実績**と突合し
 
 ## 手順
 
-### 1. 観測 tool 起動 (決定的)
+### 1. 観測を呼ぶ (決定的)
 
-`mcp__plugin_swat-skills_transcript-ops__scan_invocations` を引数なしで呼ぶ。
+`swat-skills:transcript-query` を Skill tool で invoke し、named query `invocations` を次の引数で呼ぶ。
 
-- 既定で直近 30 日を集計する。返り値の `path` に mart JSON (`/tmp/inventory-skill-mcp/mart-<timestamp>.json`) が出るので、それを Read する (**mart 本体は返らない**)
-- `days` で観測窓を上書き。`repo_root` で分母源 project を切替 (省略時は server プロセスの cwd)
-- 想定所要時間: 初回のみ transcript の取り込みに十数秒かかる。2 回目以降は差分だけを取り込むので 1 秒未満 + 集計時間
+- 観測窓: `--since` に 30 日前の時刻、`--until` に今の時刻を ISO 8601 で渡す
+- `--consumer inventory-skill-mcp`
+- 分母源 project を切り替えるときだけ `--param repo_root=<path>` を足す (省略時は呼び出しの cwd)
+- 想定所要時間: 呼ぶたびに transcript 全体を読むので、分の単位でかかる
 
-返り値の `meta.total_invocations` が 0 なら (transcript lake が無い / config が壊れている等) 「観測不能」を報告して終了。
+返り値は invoke した本文の「返り値の読み方」に従って読み、呼び直しても答えが無ければ理由を報告して終了する。窓に record が無くて止まったときは、既定の窓なら報告して終了し、手順 2 で狭めた窓ならその coverage を判定不能と併記して続ける。
+
+返り値の `path` の成果物を Read する (**mart 本体は返らない**)。mart は `rows` の 1 行で、以下の節の名前はその行の列を指す。同じ本文が観測の劣化と定める件数 (手順 2〜4 で使う) と `absent_optional_paths` (手順 4 で使う) は返り値に載るので控えておく。
+
+mart の `meta.total_invocations` が 0 なら「観測不能」を報告して終了。
 
 ### 2. mart を読んで bucket を確定する (LLM)
 
-mart の読み方の注記と **rule カタログ**は mart の `contract` が正本 (schema と規則を本書に再記述しない)。
+mart の読み方の注記と **rule カタログ**は成果物の `contract` が正本 (schema と規則を本書に再記述しない)。
 
 - `rule_candidates` が機械判定済みの候補。**`open_predicates` に挙がった条件だけを判断し**、満たすと判断したものだけ `bucket_candidate` を bucket として確定する。delete 系 bucket の根拠は `rule_fired` に置く — `sessions_presented == 0` の unit は「提示されていない」だけなので rule が発火せず `near_misses` に落ちる
 - `near_misses` は「あと 1 条件」で外れた unit と落選理由。**閾値・分母・巻き込みの当否を疑う証拠はここにしか出ない** — レポートの informational に転記する
-- `units` は invocation を 1 件以上持つ unit だけ。count 0 の unit は `denominators` と `rule_candidates` にしか現れない。count は session id + `tool_use.id` で dedupe 済みなので、session 内の複数回呼び出しはそのまま累計として読む
-- outcome breakdown は参考値として読み、**bucket 判定は count と success / error の実数で行う**。`is_error` からの user-reject 判定は best-effort で Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive を除ききれず、`unknown` は「観測できなかった」であって失敗ではない
+- `units` は invocation を 1 件以上持つ unit だけ。count 0 の unit は `denominators` と `rule_candidates` にしか現れない。count は呼び出しの累計で、session 内の複数回呼び出しもそのまま積んである
+- outcome breakdown は参考値として読み、**bucket 判定は count と success / error の実数で行う**。user-reject の判定は best-effort で Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive を除ききれず、`unknown` は「観測できなかった」であって失敗ではない
 
-**単位別 bucket vocabulary** (tool は候補ラベル `*-pending` までしか出さない。確定はここ):
+**単位別 bucket vocabulary** (観測は候補ラベル `*-pending` までしか出さない。確定はここ):
 
 | 単位 | bucket |
 |---|---|
@@ -53,7 +58,7 @@ mart の読み方の注記と **rule カタログ**は mart の `contract` が�
 **open_predicates の判断方法** (述語文そのものは contract の rule カタログが正本。ここは判断の**手順**だけ):
 
 - `rename_or_removal_in_window`: rename / 削除の commit 日 (`git log --diff-filter=D`) と invocation の timestamp を突き合わせる。invocation が rename 前なら参照元の修正は不要 (ADR / plan / 変更履歴の旧名は記録であり書き換えない)
-- `denominator_completeness`: **実行中セッションの available skill / MCP 一覧を思い出し**、mart の分母に無いが存在するものを `session-observed` タグ付きで report に載せる (claude.ai connectors / built-in skill が典型)。**判断ではなく転記**なので原則と矛盾しない。現 project 以外の `.claude/skills` / `.mcp.json` は tool が読まないので、他 project scoped の unit は `denominator-unknown` として報告し、棚卸しを project ごとに回してカバーする
+- `denominator_completeness`: **実行中セッションの available skill / MCP 一覧を思い出し**、mart の分母に無いが存在するものを `session-observed` タグ付きで report に載せる (claude.ai connectors / built-in skill が典型)。**判断ではなく転記**なので原則と矛盾しない。現 project 以外の `.claude/skills` / `.mcp.json` は観測が読まないので、他 project scoped の unit は `denominator-unknown` として報告し、棚卸しを project ごとに回してカバーする
 - `removable_independently`: 第三者 plugin 同梱の skill は `/plugin` 操作でしか触れない。単体で外せるかを手順 4 の分岐表と突き合わせて判断する
 
 **「推測:」prefix 分離の義務**: mart の証拠 (count / share / rank / 抜粋の user_prompt / tool_input / outcome) に紐づく記述には prefix を付けない。証拠に紐づかない一般論には `推測: ` prefix を付ける。証拠ゼロで根拠を書かない選択肢もある — 埋めるために推測で埋めない。
@@ -62,33 +67,34 @@ mart の読み方の注記と **rule カタログ**は mart の `contract` が�
 
 - 「session 開始で 1 度 load → 以降 session 全体で暗黙適用」型の skill (`principle-index` 等) は count 単独では実適用回数を過小評価する。`units[skill][].channels.command + .read > 0` の unit は「1 session 1 load 型」の可能性が高いと解釈する
 - coverage を評価するときは `sessions[]` を絞り込む: コード編集の思想系なら `has_code_edit == true` を分母、その中で loaded_skills に対象 skill を含む session を分子とする。設計議論系なら `has_plan_mode == true` の session を分母とする
-- **「編集前に呼んだか」を問うときは `first_skill_invoke_ts < first_code_edit_ts` の session だけを分子に取る** (session 中いつでも呼べば分子に入る coverage とは別の指標)。`first_skill_invoke_ts` は session 内の最初の skill invoke なので、`loaded_skills` が 2 件以上ある session では対象 skill 自身の順序が確定しない — その session は `query` の ad-hoc SQL で確かめるか、確定不能として分子から外したことを併記する
-- **どの skill を「思想系」とするかは LLM 判断**。tool は語彙を持たない (skill 名の一覧を tool に持たせると新設 skill を取りこぼす)
-- **coverage を出す前に「invoke を促す機構の稼働期間」と観測窓を突き合わせる**。機構 (SessionStart 注入 hook 等) の導入日 / 撤去日が観測窓の内側にあると、既定の 30 日窓は稼働前後を混ぜて coverage を歪める。導入日・撤去日は repo の `git log` で確認し、ずれていれば `days` を稼働期間に合わせて再スキャンしてから判定する。狭めた窓は母数が落ちるので、割合ではなく **分子/分母を n 付きで併記**する
+- **「編集前に呼んだか」を問うときは `first_skill_invoke_ts < first_code_edit_ts` の session だけを分子に取る** (session 中いつでも呼べば分子に入る coverage とは別の指標)。`first_skill_invoke_ts` は session 内の最初の skill invoke なので、`loaded_skills` が 2 件以上ある session では対象 skill 自身の順序が確定しない — その session は transcript-query の ad-hoc の問いで確かめるか、確定不能として分子から外したことを併記する
+- **どの skill を「思想系」とするかは LLM 判断**。観測は語彙を持たない (skill 名の一覧を観測に持たせると新設 skill を取りこぼす)
+- **coverage を出す前に「invoke を促す機構の稼働期間」と観測窓を突き合わせる**。機構 (SessionStart 注入 hook 等) の導入日 / 撤去日が観測窓の内側にあると、既定の 30 日窓は稼働前後を混ぜて coverage を歪める。導入日・撤去日は repo の `git log` で確認し、ずれていれば `--since` / `--until` を稼働期間に合わせて呼び直してから判定する。狭めた窓は母数が落ちるので、割合ではなく **分子/分母を n 付きで併記**する
 
-**token 経済 (`usage`) の使い方**: `usage.by_skill` は「呼ばれているが重い skill」を count と独立に見るための軸。count が低くても `output_tokens` / `cache_creation_input_tokens` が突出する unit は `review-candidate` の根拠になる (削除ではなく**縮小**の候補)。`by_skill` が帰属 turn だけの下限である点は mart の `contract.notes` が正本。
+**token 経済 (`usage`) の使い方**: `usage.by_skill` は「呼ばれているが重い skill」を count と独立に見るための軸。count が低くても `output_tokens` / `cache_creation_input_tokens` が突出する unit は `review-candidate` の根拠になる (削除ではなく**縮小**の候補)。`by_skill` が帰属 turn だけの下限である点は成果物の `contract.notes` が正本。
 
-標準フロー外の追加検査が要るときは `mcp__plugin_swat-skills_transcript-ops__query` に read-only SQL を投げる (単発に留める)。
+標準フロー外の追加検査が要るときは transcript-query の ad-hoc の問いへ進む (単発に留める)。
 
 ### 3. 高確度候補の抽出とセッション内提案
 
 bucket 確定後、以下をすべて満たす unit だけを高確度候補として抽出する:
 
-1. `rule_fired` に `unused_skill` / `unused_mcp_server` / `unused_plugin` のいずれかが入っている (機械判定可能な条件は tool が確認済み)
+1. `rule_fired` に `unused_skill` / `unused_mcp_server` / `unused_plugin` のいずれかが入っている (機械判定可能な条件は観測が確認済み)
 2. `open_predicates` の全条件を**決定的観測だけで**満たすと判断できた (`推測:` prefix を要しない)
 3. 適用手順が単一の既定分岐で完結する
+4. 手順 1 で控えた観測の劣化の件数がすべて 0 (0 件の unit を不使用の証拠に使えるのは、観測が劣化していないときだけ)
 
 高確度候補は候補ごとに証拠 1-2 行 (`rule_inputs` の count / sessions_presented / 分母 source) + 適用手順 (手順 4 の単位別分岐表) を添えて **AskUserQuestion で選択肢を提示する** (例:「obsidian plugin は 30 日 0 invocation (skill 3/3 未使用・同梱 MCP も 0)。uninstall しますか?」。選択肢は「適用する / 見送る (レポート記載のみ) / 保留」相当)。
 
 - **承認されたらそのまま同セッション内で適用に進む**。適用は単位別分岐に従う: swat-skills 本体 / third 分は swat-skills repo の運用に従って反映、他 plugin の `/plugin` 操作・MCP config 編集・claude.ai connectors disconnect 等の人間側操作は具体的手順を提示して受け渡す
-- 却下・保留された候補、および 3 条件を満たさない候補はすべて手順 4 のレポートへ回す。「保留」と答えた候補は、打ち切りの有無によらず `undecided` とする。「count 1 だしほぼ確実」のように基準を緩めたくなったものもレポート側に落とし、緩和は rule 実装か本 SKILL.md の改訂として行う
+- 却下・保留された候補、および 4 条件を満たさない候補はすべて手順 4 のレポートへ回す。「保留」と答えた候補は、打ち切りの有無によらず `undecided` とする。「count 1 だしほぼ確実」のように基準を緩めたくなったものもレポート側に落とし、緩和は rule 実装か本 SKILL.md の改訂として行う
 - 人が提示を打ち切ったら、答えの出ていない候補 (示して答えが無い候補と、まだ示していない候補) を `undecided` とし (対象は本手順で提示する高確度候補だけで、提示せずレポートへ回した候補は含めない)、承認された候補だけで適用へ進む — `undecided` は見送りと分けて手順 4 のレポートに件数と一覧を残す
 
 ### 4. Markdown レポート組み立て
 
 `/tmp/inventory-skill-mcp/report-<timestamp>.md` に mart と並置で書く。以下の**固定 schema**:
 
-1. **ヘッダ**: 観測窓 / 総 invocation 数 / distinct sessions / 判定可能性 (`sufficient_for_relative_judgment`)。総 invocation が閾値未満のとき (新規 install / 長期休止後の初回等) は全 unit を `insufficient-data` としてヘッダで宣言し、informational 提示に留める (`relative_judgment_available` が外れて rule も発火しない)
+1. **ヘッダ**: 観測窓 / 総 invocation 数 / distinct sessions / 判定可能性 (`sufficient_for_relative_judgment`) / 手順 1 で控えた観測の劣化の件数のうち 0 でないもの (あれば 0 件の unit を不使用の証拠に使わず、その unit を `insufficient-data` にする) / `absent_optional_paths`。総 invocation が閾値未満のとき (新規 install / 長期休止後の初回等) は全 unit を `insufficient-data` としてヘッダで宣言し、informational 提示に留める (`relative_judgment_available` が外れて rule も発火しない)
 2. **候補 section** (bucket 別に列挙):
     - 対象 (unit id) / 単位 (skill / MCP server / plugin)
     - count / share / rank / percentile

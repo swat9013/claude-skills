@@ -4,12 +4,12 @@
 置く理由: backstop
 
 `reset --hard` と force push は、失った変更を戻せないので、抜け道があると承知のうえで止める (ADR 0108)。
+ref の削除 (`branch -D` / `tag -d` / `push --delete`) は、deny されない別の書き方で同じ削除が通るので止めない (同 ADR)。
 次の deny はどの置く理由にも当たらず、外すと決まっている (実装は各 issue で行う):
 
 - `clean -f` / checkout・restore による作業ツリーの復元 (#1288 の決定): stash や cp で同じ効果が出るうえ、
   守る対象 (agent が作っていない未 commit 変更) は worktree の隔離が構造で守るので、backstop として残す
   価値が往復の費用を上回らない
-- `branch -D` / `tag -d` / `push --delete` (ADR 0108。実装は #1752)
 
 fail-posture: **fail-closed** (ADR 0046)。payload を読めなかったときは素通しせず deny する。読み取り失敗を
 素通しにすると command が空文字になり、下の判定が全部不成立のまま passthrough して、本 hook が塞いでいる
@@ -37,6 +37,7 @@ from _prelude import (  # noqa: E402
     matches_any_line,
     normalized_command,
     passthrough,
+    posix_class_view,
     read_payload_or_deny,
     read_stdin_text,
     strip_here_documents,
@@ -49,7 +50,7 @@ from _prelude import (  # noqa: E402
 #   - permission rule: 照合はコマンド先頭からの prefix なので `Bash(git push --force:*)` のような deny に
 #     `git -C x push --force` は当たらない (docs/reference/settings-knowledge.md の「permission rule の照合は
 #     コマンドの綴りに依存する」と同じ構造の穴)
-#   - 本 hook: 行頭アンカー判定 (`^git branch` / `^git push` 等) が前置で外れる
+#   - 本 hook: 行頭アンカー判定 (`^git push`) が前置で外れる
 # そこで判定用に前置を剥がした写し (subject) を作る。**原文 (command) は書き換えない** — 剥がすのは deny 判定を
 # 届かせるためで、allow の射程は広げない (下の push の allow を参照)。
 # 限界: 値が空白を含む引用形 (`git -c "user.name=Foo Bar" push --force`) は 1 token として剥がせず素通りする。
@@ -89,20 +90,13 @@ _CHECKOUT_RELATIVE_PATH = re.compile(r"\.\.?(/.*)?")
 # 短縮 flag の束ね (`-f` / `-SW` 等)
 _SHORT_FLAGS = re.compile(r"-[A-Za-z]+")
 
-_BRANCH_COMMAND = re.compile(r"^\s*git\s+branch\s")
-_TAG_COMMAND = re.compile(r"^\s*git\s+tag\s")
-_FLAG_D = re.compile(r"(^|\s)-D(\s|$)")
-_FLAG_DELETE = re.compile(r"(^|\s)--delete(\s|$)")
-_FLAG_FORCE = re.compile(r"(^|\s)--force(\s|$)")
-_TAG_DELETE_FLAG = re.compile(r"(^|\s)(-d|--delete)(\s|$)")
-
-_REMOTE_BRANCH_DELETE = re.compile(r"^\s*git\s+push\s+(--delete(\s|$)|\S+\s+:\S)")
-
 # 「これは git push か」の判定は token 境界まで見る。リテラル 1 空白だと `git  push --force` が素通りし、
 # `^git push` だけだと `git pushx --force` を force push として掴む。境界は空白に限らない (`git push>log` も
 # push)。除くのは識別子が続く形 (`git pushx` / `git push-foo`)
 _PUSH_COMMAND = re.compile(r"^\s*git\s+push([^\w-]|$)")
-_FORCE_PUSH_FLAG = re.compile(r"--force($| )|-f($| )")
+# 左に ref 名の文字が続く形 (`fix-f` / `drop--force`) は branch 名で、flag と読まない。それ以外の左の文字は見ない —
+# `\-f` や `""-f` はシェルが `-f` に解くので、語の先頭に限ると force push を取りこぼす
+_FORCE_PUSH_FLAG = re.compile(r"(?<![\w./-])(?:--force|-f)($| )")
 
 # push の allow を出す文法 (docs/adr/0122)。`git push [OPT...] [<remote> [<refspec>...]]`
 # 語の区切りは空白とタブ、文字は ASCII の明示の集合に限る (`\s` / `\w` は Unicode の空白・文字に当たる)。
@@ -133,26 +127,9 @@ def is_git(word: str) -> bool:
     return word.removeprefix("\\").rsplit("/", 1)[-1] == "git"
 
 
-def same_word(word: str, expected: str) -> bool:
-    """語を比べる。`expected` は ASCII の語に限る。
-
-    非 ASCII を含む語は locale の照合順 (strcoll) で比べる。macOS の en_US.UTF-8 では非 ASCII の大半が照合で無視
-    されるので、`restore（` は `restore` と等しい。#2299 で比較を置き換えるまで、この等価を判定の仕様として保つ。
-    """
-    if word.isascii():
-        return word == expected
-    import locale  # 非 ASCII を含む語でだけ要る
-
-    try:
-        locale.setlocale(locale.LC_COLLATE, "")
-    except locale.Error:  # 環境の locale を読めないときは C locale として比べる
-        return False
-    return locale.strcoll(word, expected) == 0
-
-
 def clean_forces(arguments: list[str]) -> bool:
     """短縮 flag の `f` は束ねのどこにあってもよい (`-fd` / `-df` / `-xdf`)。"""
-    return any(same_word(word, "--force") or (_SHORT_FLAGS.fullmatch(word) and "f" in word) for word in arguments)
+    return any(word == "--force" or (_SHORT_FLAGS.fullmatch(word) and "f" in word) for word in arguments)
 
 
 def checkout_restores(arguments: list[str]) -> bool:
@@ -161,7 +138,7 @@ def checkout_restores(arguments: list[str]) -> bool:
     当たらない形: dotfile の path (`git checkout .gitignore`) と、`--` の無い `git checkout <path>` /
     `git checkout <rev> <path>`。
     """
-    return any(same_word(word, "--") or _CHECKOUT_RELATIVE_PATH.fullmatch(word) for word in arguments)
+    return any(word == "--" or _CHECKOUT_RELATIVE_PATH.fullmatch(word) for word in arguments)
 
 
 def restore_discards(arguments: list[str]) -> bool:
@@ -172,11 +149,11 @@ def restore_discards(arguments: list[str]) -> bool:
     """
     staged = worktree = False
     for word in arguments:
-        if same_word(word, "--"):  # 以降は pathspec
+        if word == "--":  # 以降は pathspec
             break
-        if same_word(word, "--staged"):
+        if word == "--staged":
             staged = True
-        elif same_word(word, "--worktree"):
+        elif word == "--worktree":
             worktree = True
         elif word.startswith("-s"):  # -s<tree> は値を伴う (束ねの文字を flag と読まない)
             continue
@@ -203,9 +180,14 @@ def discarding_subcommands(subject: str) -> set[str]:
             if is_git(word):
                 hits.update(
                     name for name, discards in _DISCARD_JUDGES.items()
-                    if same_word(words[index + 1], name) and discards(words[index + 2:])
+                    if words[index + 1] == name and discards(words[index + 2:])
                 )
     return hits
+
+
+def is_reset(word: str) -> bool:
+    """語が reset の subcommand か。`matches_any_line` と同じ文字クラスで読む。"""
+    return _RESET_SUBCOMMAND.match(posix_class_view(word)) is not None
 
 
 def subcommand_position(words: list[str], start: int) -> int:
@@ -217,7 +199,7 @@ def subcommand_position(words: list[str], start: int) -> int:
     position = start
     while position < len(words) and words[position].startswith("-"):
         following = words[position + 1] if position + 1 < len(words) else "-"
-        value_follows = not following.startswith("-") and not _RESET_SUBCOMMAND.match(following)
+        value_follows = not following.startswith("-") and not is_reset(following)
         position += 2 if words[position] in _GLOBAL_OPTIONS_WITH_VALUE and value_follows else 1
     return position
 
@@ -237,7 +219,7 @@ def continued_reset_tail(words: list[str]) -> list[str]:
     後ろと読む (`-C "$(pwd)"sub reset`)。
     """
     for position in (subcommand_position(words, 1 if words[0].startswith(("/", ".")) else 0), 1):
-        if position < len(words) and _RESET_SUBCOMMAND.match(words[position]):
+        if position < len(words) and is_reset(words[position]):
             return words[position:]
     return []
 
@@ -264,7 +246,7 @@ def reset_tails(fragments: list[list[str]]) -> Iterator[list[str]]:
             if index >= len(words):
                 subcommand_cut_off = subcommand_cut_off or value_is_cut_off(words)
                 break
-            if _RESET_SUBCOMMAND.match(words[index]):
+            if is_reset(words[index]):
                 yield words[index:]
                 break
             if not is_git(words[index]):  # `GIT_DIR=/x/git git reset` の 2 語目も起点にする
@@ -283,7 +265,7 @@ def resets_hard(command: str) -> bool:
     """
     without_bodies = strip_here_documents(command)
     tails = list(reset_tails(command_segments(without_bodies)))
-    if any(_HARD_FLAG.search(word) for tail in tails for word in tail):
+    if any(_HARD_FLAG.search(posix_class_view(word)) for tail in tails for word in tail):
         return True
     lines = strip_git_global_options(without_bodies).split("\n")
     return bool(tails) and any("--hard" in line.partition("git reset")[2] for line in lines)
@@ -302,21 +284,6 @@ def judge_destructive_operations(command: str) -> None:
         deny(f"git checkout によるファイルの復元 (-- <path> / .) は禁止。{RESTORE_GUIDE}")
     if "restore" in discarding:
         deny(f"git restore（ワーキングツリー変更の破棄）は禁止。index だけを戻すなら git restore --staged <path>。{RESTORE_GUIDE}")
-
-    # Force delete branch: -D, --delete --force, --force --delete (順序逆転を含む)
-    if matches_any_line(_BRANCH_COMMAND, subject):
-        if matches_any_line(_FLAG_D, subject):
-            deny("git branch -D は禁止。git branch -d で merged 確認、未 merged の場合はユーザーに確認")
-        if matches_any_line(_FLAG_DELETE, subject) and matches_any_line(_FLAG_FORCE, subject):
-            deny("git branch --delete --force は禁止 (順序問わず)。git branch -d で merged 確認")
-
-    # tag delete: -d, --delete (annotated tag は再現不能)
-    if matches_any_line(_TAG_COMMAND, subject) and matches_any_line(_TAG_DELETE_FLAG, subject):
-        deny("git tag -d / --delete は禁止。tag 削除はユーザーに確認してください")
-
-    # Remote branch delete (git push --delete / git push origin :branch)
-    if matches_any_line(_REMOTE_BRANCH_DELETE, subject):
-        deny("リモートブランチ削除 (git push --delete / push origin :branch) は禁止")
 
     # `--force-with-lease` は token 境界の都合で permission 層の deny を通過しており、lease 保護があるため
     # 意図通りとして許容している (docs/reference/settings-knowledge.md)。hook 側も同じ扱いにする

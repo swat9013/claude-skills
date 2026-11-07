@@ -40,8 +40,9 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | --- | --- | --- |
 | `claude-config-reference` | 自動 | Claude Code の Computational harness (settings / permission / hook script) の仕様・レビュー観点と、仕様を一次情報で確かめるときの情報源の順を持つ参照知識。 |
 | `dev-env-best-practices` | 自動 | 開発環境構築時に言語/FW 別のベストプラクティス reference と構築観点を引き出す。 |
-| `issue-tracker-operations` | 自動 | issue tracker への操作 (本文の書き換え・状態の label の付け替え・close / reopen・親子の関係の記録) の手順と、issue 置き場・CL 置き場の解決順の正本。 |
+| `issue-tracker-operations` | 自動 | issue tracker への操作 (本文の書き換え・状態の label の付け替え・close / reopen・親子の関係の記録) の手順と、issue 置き場・CL 置き場の解決順と、issue 本文の要素の正本。 |
 | `principle-index` | コマンド / 自動 | 原則 leaf 全件の適用条件を 1 行ずつ並べた索引。 |
+| `transcript-query` | コマンド / 自動 | Claude Code の transcript を読み取り専用で問い、出力先の path と件数と劣化の meta を返す観測の呼び出し口。 |
 | `python-single-file-script` | 自動 | PEP 723 インラインメタデータ + uv run で単一ファイル Python スクリプトを新規作成・編集する場面に参照する。 |
 | `shell-script` | 自動 | bash で .sh single-file script を新規作成・編集する場面に参照する。 |
 
@@ -78,7 +79,7 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | --- | --- | --- |
 | `ui-design` | コマンド / 自動 | UI 設計ドキュメント一式を 画面インベントリ → 画面遷移 → 領域/レイアウト → component 分解 → デザイントークン の順の対話的セッションで作成・更新する。 |
 | `sud-design` | コマンド / 自動 | 設計ドキュメント一式を目的 → システム関連図 → ユースケース → ドメインモデル図の順の 対話的セッションで作成・更新する。 |
-| `grill-with-docs` | コマンド | 計画・設計を共有理解に至るまで問い詰め、決まった用語を用語集に、戻しにくい決定を ADR に、同じ種類の判断で再び使える決定を規範に、設計を変える決定を設計 doc に書き残す。 |
+| `grill-with-docs` | コマンド | 計画・設計を共有理解に至るまで問い詰め、決まった用語を用語集に、戻しにくい決定を ADR に、同じ種類の判断で再び使える決定を規範に、設計を変える決定を設計 doc に、issue の深掘りで決めた本文を issue に書き残す。 |
 
 ### util
 
@@ -93,7 +94,7 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 | `issue-restructure` | コマンド | open issue を根本課題ごとのクラスタに束ねて課題型の issue へまとめ直す案を、人間の承認を通して tracker へ反映する、triage の前段の対話。 |
 | `backlog-triage` | コマンド | open issue 全件を issue-triage に通し、AFK 境界の外側に残った判定と止まったものを、人間と設問のラウンドで決めて tracker と規範へ反映する対話 triage。 |
 | `issue-triage` | コマンド / 自動 | issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (ready-for-agent・close・wontfix) は tracker へ反映し、外側の判定 (規範の文案・深掘り・人手の作業・報告者への質問) と止まったものを呼び出し元へ返す. |
-| `ready-for-agent-review` | コマンド / 自動 | issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・AI 委任範囲の未閉鎖・規範同士の衝突を反証済みの修正提案として issue ごとに返す (issue を N 件まとめて受け、tracker へは書き込まない). |
+| `ready-for-agent-review` | コマンド / 自動 | issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・本文の要素の未閉鎖・規範同士の衝突を反証済みの修正提案として issue ごとに返す (issue を N 件まとめて受け、tracker へは書き込まない). |
 | `stacked-implement` | コマンド | 名指しした実装 (issue 集合・分割計画・単一の仕様) を CL 計画に分け、CL ごとに CL エージェントを並列に起動して実装させ、merge まで追従する。 |
 
 ### third
