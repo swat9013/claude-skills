@@ -53,8 +53,11 @@ BRANCHING_NOTE_PREFIXES = (NOTE_NO_INCREMENT, NOTE_WIDENED)
 NOTE_GUESSED_REMOTE = "起点 remote を推定:"
 NOTE_LOCAL_UPSTREAM = "起点を local branch に:"
 NOTE_LOCAL_UPSTREAM_UNUSABLE = "local の追跡先を使えず:"
+NOTE_TRACKED_UPSTREAM = "起点を追跡先の upstream に:"
 # base= を省いた巡の起点の決め方を示す注記。停止した巡は notes を出さないので、これだけは detail へ写す
-START_POINT_NOTE_PREFIXES = (NOTE_GUESSED_REMOTE, NOTE_LOCAL_UPSTREAM, NOTE_LOCAL_UPSTREAM_UNUSABLE)
+START_POINT_NOTE_PREFIXES = (
+    NOTE_GUESSED_REMOTE, NOTE_LOCAL_UPSTREAM, NOTE_LOCAL_UPSTREAM_UNUSABLE, NOTE_TRACKED_UPSTREAM,
+)
 
 PREV_REREVIEW_LINE = re.compile(r"^再レビュー: (.*)$", re.MULTILINE)
 PREV_REVIEWED_LINE = re.compile(r"^reviewed: ([0-9a-f]{7,64})\.\.([0-9a-f]{7,64})\s*$", re.MULTILINE)
@@ -143,7 +146,7 @@ def _config(key: str) -> str:
 
 
 def _start_branch_ref(notes: list[str]) -> str:
-    """base= を省いた巡の起点 branch の ref。現在 branch の upstream が local branch なら、その local branch。
+    """base= を省いた巡の起点 branch の ref。現在 branch の upstream が local branch なら、その local branch (その local branch に upstream があれば、その upstream)。
     それ以外は既定の remote の既定ブランチ (remote-tracking ref)。remote 名も branch 名も repo から引く。"""
     branch = _git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
     configured = _config(f"branch.{branch}.remote") if branch else ""
@@ -158,6 +161,15 @@ def _start_branch_ref(notes: list[str]) -> str:
         # 利用者が local の追跡先を宣言している (`git switch -c <b> --track <local>`)。remote の数より先に見る
         tracked = _config(f"branch.{branch}.merge")
         if tracked and _commit_sha(tracked) is not None:
+            # 追跡先の local branch に upstream があれば、PR が向かう先はその upstream なので、そちらを起点にする。
+            # 遅れた local main を起点にすると、merge 済みの他の PR の変更が範囲に混ざる (#2369)
+            # `<full ref>@{upstream}` は解決しないので、for-each-ref で full ref の upstream を引く
+            upstream = _git("for-each-ref", "--format=%(upstream)", tracked).stdout.strip()
+            if upstream and _commit_sha(upstream) is not None:
+                notes.append(
+                    f"{NOTE_TRACKED_UPSTREAM} {upstream} ({tracked} の upstream) — 違うなら base=<branch> で起点 branch を渡す"
+                )
+                return upstream
             notes.append(
                 f"{NOTE_LOCAL_UPSTREAM} {tracked} (branch.{branch}.remote=.) — 違うなら base=<branch> で起点 branch を渡す"
             )
@@ -357,7 +369,7 @@ def resolve(range_arg: str | None, base_branch: str | None, prev_path: str | Non
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--range", dest="range_arg", help="<base>..<head> (review-stage の範囲 args)")
-    ap.add_argument("--base-branch", help="起点 branch (review-stage の base=)。省略時は既定ブランチ (現在 branch の upstream が local branch なら、その local branch)")
+    ap.add_argument("--base-branch", help="起点 branch (review-stage の base=)。省略時は既定ブランチ (現在 branch の upstream が local branch なら、その local branch。その local branch に upstream があれば、その upstream)")
     ap.add_argument("--prev", help="前巡の出力を保存した file (review-stage の prev=)")
     args = ap.parse_args(argv)
     try:

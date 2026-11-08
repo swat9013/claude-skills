@@ -3,6 +3,7 @@
 <diff>
 {{DIFF}}
 </diff>
+{{EXCLUDED_LINE}}
 
 <claim-sources>
 {{CLAIM_SOURCES}}

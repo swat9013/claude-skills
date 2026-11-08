@@ -2,7 +2,7 @@
 name: review-stage
 description: CL を出す前の差分を、差分の重さに応じた複数の観点で並列にレビューし、PR へ貼れる 1 枚で返す。Use when「CL 前のレビュー」「rubric でレビュー」.
 user-invocable: true
-argument-hint: "[<base>..<head>] [base=<branch>] [stage=docs|軽量|標準] [issue=<ref>[,<ref>…]] [prev=<前巡の出力 file>]"
+argument-hint: "[<base>..<head>] [base=<branch>] [stage=docs|軽量|標準] [issue=<ref>[,<ref>…]] [prev=<前巡の出力 file>] [pr-body=<PR・MR 本文の file>]"
 ---
 
 # レビュー工程
@@ -19,6 +19,22 @@ CL を出す前の差分を、差分の重さで選んだ **レビュー段階**
 
 adversarial verification は欠陥探し・Spec と攻める対象が重なるが、観点をまたいで指摘を統合しない (手順 5)。
 
+## 進行の置き場
+
+手順 1〜2 は 1 巡ごとに立てる **進行役** (subagent) が進め、手順 3〜5 は進行役を起動した呼び出し元が進める。手順 1〜2 は呼び出し元の作業の経過を使わないので、呼び出し元の context で進めると、その経過を tool 呼び出しのたびに読み直すことになる。区分には作業の文脈が要るので呼び出し元に残す。
+
+args に `runner` があれば、自分が進行役なので手順 1 から進める。無ければ自分が呼び出し元なので、PR・MR 本文が既にあれば file に置いて args に `pr-body=<file>` を足し (進行役は PR の有無を知らない)、`Agent` tool で `subagent_type: general-purpose` を指名して進行役を 1 体起動する。`name` を付けず (`isolation` なしで `name` を付けた agent は teammate になり、進行役が起動する担い手の報告が進行役に届かない)、`isolation` を付けず (進行役は呼び出し元の作業ツリーの commit を読む)、`model` / `effort` を渡さず、prompt は次の 1 行だけにする — 作業の経緯を足すと、担い手へ渡らないはずの作者の意図が進行役を通って漏れる。
+
+```
+Skill tool で `swat-skills:review-stage` を args `runner <受け取った args>` で invoke し、手順 1 から手順 2 の「進行役の報告」までを通す。
+```
+
+進行役の最終報告の本文は、手順 5 の停止出力か「進行役の報告」の形をとる。本文の確かめ方と待ち方は、手順 2 の「全観点の待ち合わせと停止」の観点の報告と同じにする。
+
+- 手順 5 の停止出力が届いたら、それを本 skill の出力にして終える
+- 「進行役の報告」の形が届き、節ごとの `指摘件数:` と本文の指摘の数が合えば、手順 3 へ進む
+- 上の 2 つのどちらにも当たらないとき (起動できなかった・途中経過の文で終わった・件数が合わない・完了通知が届いた後に tool の戻り・`<result>`・別の message のどれにも本文が無く走っている tool 呼び出しも残っていない) は、手順 1 から手順 2 の「進行役の報告」の手前までを自分の context で進めて手順 3 へ進み、手順 5 の全節の注記の先頭に `進行役 未完了: <起きたこと>` を足す。その中で止まる巡は手順 5 の停止出力を返し、`停止理由:` 行の頭に同じ行を足す — 費用が増えても、レビューを落とさない側を取る
+
 ## 1. 範囲・段階・Spec 源を確定する
 
 ### args
@@ -28,10 +44,12 @@ args はどれも省略でき、順序は問わない。
 | 書式 | 意味 |
 |---|---|
 | `<base>..<head>` | レビューする範囲を直接渡す (過去の差分を流し直すとき) |
-| `base=<branch>` | 起点 branch。省略時は既定ブランチ (現在 branch の upstream が local branch なら、その local branch)。再レビューでも初回と同じ値を渡す (前巡の出力 file は起点 branch を持たない) |
+| `base=<branch>` | 起点 branch。省略時は既定ブランチ (現在 branch の upstream が local branch なら、その local branch。その local branch に upstream があれば、その upstream)。再レビューでも初回と同じ値を渡す (前巡の出力 file は起点 branch を持たない) |
 | `stage=docs\|軽量\|標準` | 段階を指定して判定を飛ばす (重要領域の判定と再レビューでの扱いは手順 1「段階」) |
 | `issue=<ref>[,<ref>…]` | Spec 源の issue。CL が複数の issue を閉じるなら `,` 区切りで全部。再レビューでも初回と同じ値を渡す (増分の commit message には issue の参照が無いことが多い) |
 | `prev=<file>` | 前巡の出力を保存した file。再レビューの `<prev>` をここから読む |
+| `pr-body=<file>` | 既にある PR・MR の本文を置いた file。Spec 源と攻撃役の出どころになる |
+| `runner` | 自分が進行役である印 (節「進行の置き場」)。進行役の起動の prompt だけが付け、本 skill を呼ぶ側は書かない |
 
 ### 範囲
 
@@ -54,9 +72,9 @@ stdout は次の key を持つ JSON 1 つ。
 
 `stop` が埋まっていたら、観点を起動せずに手順 5 の停止出力を返して終える (`再レビュー:` 行は `停止 — <reason>`、`停止理由:` 行は `detail`)。script が exit 非 0 で JSON を返さなかったときも同じ停止出力を返す — `reviewed:` の値は、`未解決: ` の後に、渡された範囲・`base=`・`prev=` の args を空白区切りでそのまま続けたもの (どれも渡されていなければ `未解決: args なし`。script が止まるときに返す `reviewed` と同じ形)、`reason` は `その他: resolve-range が失敗`、`detail` は stderr の 1 行目。
 
-再レビューでは `prev=` の file を `<prev>` として読み、前巡の観点ごとの Act on 一覧を手順 3 で使う。`notes` のうち、次の 2 つは以降の手順を変える。
+再レビューでは `prev=` の file を `<prev>` として読む。`notes` のうち、次の 2 つは以降の手順を変える。
 
-- `増分なし:` — 前巡の head から差分が無い。観点を起動せず、手順 3 の前巡 Act on の判定 (全件 `未解消`) だけを行って手順 5 へ進む
+- `増分なし:` — 前巡の head から差分が無い。下の差分の確定の後、観点を起動せず「進行役の報告」へ進み、呼び出し元は手順 3 の前巡 Act on の判定 (全件 `未解消`) だけを行って手順 5 へ進む
 - `増分に絞れず:` — amend / rebase で前巡の head が祖先でなくなり、`base` を起点 branch との merge-base へ広げた巡。`git diff <base>...<head>` は増分ではなく起点 branch からの全差分になる。段階・`<prev>`・`再レビュー:` 行・前巡の引き継ぎは再レビューのまま扱う。手順 2 の `--round` には `re-review-widened` を渡す。手順 3 では、今巡の指摘のうち前巡の指摘 (Act on / Consider / Noted / Dismissed) と Finding と Evidence の引用で一致するものを新規に数えず、前巡の側に寄せる
 
 差分と commit 一覧を巡ごとに 1 度確定する。`--log-base` は再レビューの巡 (`増分に絞れず:` の無いもの) だけ、前巡の出力の `reviewed:` 行の左側を渡す — 主張の出どころと、原則の reviewer・反証者が読む commit 本文の起点になる。手順 1 の `base` は再レビューの巡では前巡の head なので、そこから取ると、攻撃役が前巡までの commit message から挙げた主張を、反証者が出どころに無いと読み違える。`増分に絞れず:` の巡は `base` が起点 branch との merge-base なので、log は差分と同じ範囲の commit だけを含む (初回の `base` から取ると、rebase の後は差分に無い upstream の commit message が混ざる)。
@@ -65,7 +83,7 @@ stdout は次の key を持つ JSON 1 つ。
 ${CLAUDE_SKILL_DIR}/scripts/prepare-inputs.py collect --base <base> --head <head> [--log-base <前巡の reviewed: 行の左側>]
 ```
 
-stdout は `dir` (この呼び出しに専有の一時ディレクトリ) と、`diff` / `commits` / `commit_messages` / `numstat` / `changed_files` の file の path を持つ JSON 1 つ。script が exit 非 0 で JSON を返さなかったときは手順 5 の停止出力を返す (`段階:` は `未判定`、`reason` は `その他: prepare-inputs が失敗`、`detail` は stderr の 1 行目)。
+stdout は `dir` (この呼び出しに専有の一時ディレクトリ) と、`diff` / `commits` / `commit_messages` / `numstat` / `changed_files` の file の path と、`notes` を持つ JSON 1 つ。対象 repo の `.gitattributes` が `linguist-generated` か `gitlab-generated` で生成物と宣言した file は `diff` の file から除き、除いた path を `notes` の `生成物を除外:` の行に返す (`numstat` と `changed_files` には残す。手順 2 の script は、除いた path を Read しない旨と一緒に観点ごとの prompt へ載せる — 担い手が差分に無いことを根拠に誤った指摘を出さないため) — 生成物 (描画した `.svg` など) は 1 行が担い手の Read 1 回に収まらないことがあり、残すと担い手が `入力を読めず:` で止まる。この `notes` は `diff` の file を読む観点 (欠陥探しを除く 4 つ) の節の注記へ積む。script が exit 非 0 で JSON を返さなかったときは手順 5 の停止出力を返す (`段階:` は `未判定`、`reason` は `その他: prepare-inputs が失敗`、`detail` は stderr の 1 行目)。
 
 `diff` の file を、段階の判定・手順 3 の前巡 Act on の突き合わせ・手順 4 の hunk の切り出しの元にする。git で取り直すと、担い手が読んだ差分と同じものである保証が無くなる。
 
@@ -113,7 +131,7 @@ ref が無いとき、およびどの ref の本文も取得できなかった�
 
 段階の判定の後、担い手を起動する前に、その巡で走らせる reviewer の観点と攻撃役の入力を script でそろえる。
 
-設計の観点を走らせる巡では、原則の索引 `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引が示す path から `principle-design-conformance` と `principle-norm-precedence` を Read する (手順 3 で設計の指摘を区分するのに使う)。差分の file に当たる設計 doc は `principle-design-conformance` の「設計 doc の置き場の引き方」で決める (差分が置き場の中の file を書き換えている行も、当たる行に数える)。当たる設計 doc が無ければ設計を走らせず、`## 設計` の注記へ `設計 skip: <理由>` (節が無い / 節が設計 doc を案内しない / 差分の file に当たる行が無い) と書く — 置き場の宣言は repo ごとに無いことが正常なので、止めずにこの観点だけを走らせない巡にする。
+設計の観点を走らせる巡では、原則の索引 `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引が示す path から `principle-design-conformance` を Read する。差分の file に当たる設計 doc は `principle-design-conformance` の「設計 doc の置き場の引き方」で決める (差分が置き場の中の file を書き換えている行も、当たる行に数える)。当たる設計 doc が無ければ設計を走らせず、`## 設計` の注記へ `設計 skip: <理由>` (節が無い / 節が設計 doc を案内しない / 差分の file に当たる行が無い) と書く — 置き場の宣言は repo ごとに無いことが正常なので、止めずにこの観点だけを走らせない巡にする。
 
 ```bash
 ${CLAUDE_SKILL_DIR}/scripts/prepare-inputs.py prompts --dir <collect の dir> --round <first|re-review|re-review-widened> \
@@ -127,7 +145,7 @@ ${CLAUDE_SKILL_DIR}/scripts/prepare-inputs.py prompts --dir <collect の dir> --
 - `--round` は初回が `first`、再レビューが `re-review`、`増分に絞れず:` の再レビューが `re-review-widened`。`re-review` の原則と設計の prompt には「増分だけを読む」項が入り、再レビューの攻撃役の prompt には修正が既存の主張を壊していないかを攻める行が入る
 - `--issue` / `--issue-file` / `--issue-missing` の渡し分けは [references/spec-fetch.md](references/spec-fetch.md) に従い、ref ごとに 1 回渡す。Spec を走らせない再レビューの巡でも、攻撃役の出どころになるので ref があれば渡す
 - `--critical-areas` は標準段階で重要領域に触れた巡だけ渡す (再レビューの巡は前巡の出力の `段階:` 行の判定理由から写す)。重要領域は主張の源ではなく攻める順と深さの指定で、script は主張の出どころの file に混ぜない
-- `--pr-body` は PR・MR 本文が既にあるときだけ、その本文を file に置いて渡す
+- `--pr-body` は args に `pr-body=` があるときだけ、その file を渡す
 
 stdout は次の key を持つ JSON 1 つ。script が exit 非 0 で JSON を返さなかったときは、reviewer の観点と攻撃役を起動せず、それぞれの節の注記へ `入力を読めず: prepare-inputs が失敗: <stderr の 1 行目>` と書く (入力の要らない欠陥探しは止めない)。
 
@@ -140,7 +158,7 @@ stdout は次の key を持つ JSON 1 つ。script が exit 非 0 で JSON を�
 
 宣言された規約は script が対象 repo の `docs/agents/domain.md` の節「規約の置き場」から集め、原則の prompt だけに載せる — 規約への適合は原則の観点の担当で、他の観点の入力に混ぜるとその観点が規約違反まで報告し、観点の分離が崩れる。
 
-担い手の起動の prompt には、`prompts` の file の path 1 行だけを書く。担い手の入力はその file とそこに並ぶ file がすべてで、呼び出し元が中身を prompt へ書き足すと、観点ごとに書き写した内容が揃わなくなる。
+担い手の起動の prompt には、`prompts` の file の path 1 行だけを書く。担い手の入力はその file とそこに並ぶ file がすべてで、起動する側が中身を prompt へ書き足すと、観点ごとに書き写した内容が揃わなくなる。
 
 担い手が `入力を読めず: <path>` と返したら、推測で進めていないので、その観点の注記へ同じ行を書き、他の観点は止めない。その観点は結果が無いので、手順 2 の「全観点の待ち合わせと停止」では起動できなかった観点に数える。`再レビュー:` 行の値は手順 5 が決める。
 
@@ -160,7 +178,7 @@ range は SHA で渡す (branch 名や単一 commit を渡すとそれ自体の�
 
 reviewer は `Agent` tool で `subagent_type: swat-skills:reviewer` を指名し、**`name` を付けずに**起動する (`name` は起動後に追加の依頼を送る宛先が要る役割にだけ付けるもので、結果を受け取るだけの reviewer には要らない)。reviewer の model と effort は agent 定義が持つので `model` / `effort` を渡さない。
 
-この名前が解決しないときは `general-purpose` で代替しない — 代替すると reviewer が呼び出し元の model と effort へ黙って戻り、指名した深さでレビューしたように見える。原則と Spec と設計を走らせず、その巡で走らせる予定だった reviewer の観点 (`## 原則` / `## Spec` / `## 設計`) の注記へ `reviewer 未起動: <error が挙げた available agents>` と書く。欠陥探しと adversarial verification のうち起動できた観点があれば、その結果で手順 3 以降を通す (同じ message で起動できた観点の結果を捨てない)。0 本の巡と `再レビュー:` 行の値は「全観点の待ち合わせと停止」と手順 5 が決める。次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから呼び直す) は `reviewer 未起動:` の注記の末尾に書く — 出力の外に書くと、出力を保存して PR へ残す呼び出し元の手元から落ちる。
+この名前が解決しないときは `general-purpose` で代替しない — 代替すると reviewer が起動する側の model と effort へ黙って戻り、指名した深さでレビューしたように見える。原則と Spec と設計を走らせず、その巡で走らせる予定だった reviewer の観点 (`## 原則` / `## Spec` / `## 設計`) の注記へ `reviewer 未起動: <error が挙げた available agents>` と書く。欠陥探しと adversarial verification のうち起動できた観点があれば、その結果で「進行役の報告」へ進む (同じ message で起動できた観点の結果を捨てない)。0 本の巡と `再レビュー:` 行の値は「全観点の待ち合わせと停止」と手順 5 が決める。次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから呼び直す) は `reviewer 未起動:` の注記の末尾に書く — 出力の外に書くと、出力を保存して PR へ残す呼び出し元の手元から落ちる。
 
 原則・Spec・設計の prompt は `prompts` の file で、担い手の規約の読み方・採否の規則・報告の形は file が持つ (雛形は [references/prompts/](references/prompts/)、rubric は [references/rubric.md](references/rubric.md) で、どちらも script が読む)。区分は手順 3 で呼び出し元が行うので、reviewer には区分を使わせない。
 
@@ -168,23 +186,60 @@ reviewer は `Agent` tool で `subagent_type: swat-skills:reviewer` を指名し
 
 攻撃役は `Agent` tool で `subagent_type: swat-skills:adversarial-verifier` を指名し、`name` を付けず、`model` / `effort` を渡さずに起動する (理由は reviewer と同じ)。手順・報告形式は定義の本文が持つ。
 
-prompt は `prompts` の `adversarial` の file の path だけにする。その file が渡すのは差分と主張の出どころ (と、あれば重要領域の指定) だけで、作者の意図・作業の経緯・呼び出し元が持つ差分の要約は足さない — 攻撃役は意図を受け取ると、主張が破れていても「そういうつもりだろう」と読んで見逃す。
+prompt は `prompts` の `adversarial` の file の path だけにする。その file が渡すのは差分と主張の出どころ (と、あれば重要領域の指定) だけで、作者の意図・作業の経緯・起動する側が持つ差分の要約は足さない — 攻撃役は意図を受け取ると、主張が破れていても「そういうつもりだろう」と読んで見逃す。
 
 攻撃役の報告は、手順 3 以降の欄へ次のように読み替える: Claim (と出どころ) → Finding、Oracle と Attack → impact scenario (基準 3 の impact scenario。`オラクル: <Oracle> / 攻撃: <Attack>` の形で併記する)。Location・Evidence・Suggestion は同名の欄へそのまま写す。
 
-この名前が解決しないときは `general-purpose` で代替しない — 代替すると攻撃役の model と effort と手順が呼び出し元の値へ黙って戻る。他の観点は止めず、`## adversarial verification` の注記へ `adversarial verification 未起動: <error が挙げた available agents>` と、swat-skills plugin の agent が読み込まれる状態にしてから呼び直す旨を書く。`再レビュー:` 行の値は手順 5 が決める。
+この名前が解決しないときは `general-purpose` で代替しない — 代替すると攻撃役の model と effort と手順が起動する側の値へ黙って戻る。他の観点は止めず、`## adversarial verification` の注記へ `adversarial verification 未起動: <error が挙げた available agents>` と、swat-skills plugin の agent が読み込まれる状態にしてから呼び直す旨を書く。`再レビュー:` 行の値は手順 5 が決める。
 
 ### 全観点の待ち合わせと停止
 
-欠陥探し・adversarial verification・原則・Spec・設計のうち、その巡で起動した観点 (reviewer・攻撃役と `code-review`) の最終報告が全部届いてから手順 3 へ進む。最終報告が届いたとは、その観点の報告の本文 (指摘の一覧か、指摘なしの旨か、`入力を読めず:` の行) を会話の中で読める状態をいう。本文の届く先は tool の戻り・完了通知の `<result>`・それらとは別の message のどれかで、tool の戻りや `<result>` が起動の通知か別の message の案内なら、それは本文ではない — 案内された message の本文を読む。完了通知の `<summary>` と `<status>` は担い手が止まった事実だけを示す — 指摘を持たないので、そこから節を書くと、届いていない報告の指摘が出力から黙って落ちる。
+欠陥探し・adversarial verification・原則・Spec・設計のうち、その巡で起動した観点 (reviewer・攻撃役と `code-review`) の最終報告が全部届いてから「進行役の報告」へ進む。最終報告が届いたとは、その観点の報告の本文 (指摘の一覧か、指摘なしの旨か、`入力を読めず:` の行) を会話の中で読める状態をいう。本文の届く先は tool の戻り・完了通知の `<result>`・それらとは別の message のどれかで、tool の戻りや `<result>` が起動の通知か別の message の案内なら、それは本文ではない — 案内された message の本文を読む。完了通知の `<summary>` と `<status>` は担い手が止まった事実だけを示す — 指摘を持たないので、そこから節を書くと、届いていない報告の指摘が出力から黙って落ちる。
 
-起動した観点を 1 つずつ挙げて本文の有無を確かめ、本文の無い観点が残る間は、完了通知だけが届いた観点も含めて、手順 3 へ進まず、その観点の節も書かずに待つ。本文は別の作業の tool 呼び出しが続く間は届かないことがあるので、先に別の作業を進めたときも、終えてから同じように確かめる。
+起動した観点を 1 つずつ挙げて本文の有無を確かめ、本文の無い観点が残る間は、完了通知だけが届いた観点も含めて、「進行役の報告」へ進まず、その観点の節も書かずに待つ。本文は別の作業の tool 呼び出しが続く間は届かないことがあるので、先に別の作業を進めたときも、終えてから同じように確かめる。
 
-その巡で走らせる観点のうち、起動できたものが 0 本の巡 (走らせる予定の担い手がすべて skip か未起動か入力を読めなかった巡。docs 段階では reviewer の未起動だけで当たる) は、手順 3 へ進まずに手順 5 の停止出力を返す — 観点が 1 本も走っていないので、`要` や `不要` で返すとレビューを通っていない差分が通ったように読まれる。`再レビュー:` 行の値は手順 5 が決める。`停止理由:` 行には、起動できなかった観点ごとに手順 2 で書くはずだった注記 (`欠陥探し skip:` / `reviewer 未起動:` / `adversarial verification 未起動:` / `入力を読めず:`) を `; ` で区切って並べ、末尾に、起動できなかった担い手が解決する状態にしてから (入力を読めなかった観点は、読めなかった path を確かめてから) 呼び直す旨を書く。走らせる観点が元から無い巡 (`増分なし:` の巡) はこの規則に当たらない。
+その巡で走らせる観点のうち、起動できたものが 0 本の巡 (走らせる予定の担い手がすべて skip か未起動か入力を読めなかった巡。docs 段階では reviewer の未起動だけで当たる) は、「進行役の報告」へ進まずに手順 5 の停止出力を返す — 観点が 1 本も走っていないので、`要` や `不要` で返すとレビューを通っていない差分が通ったように読まれる。`再レビュー:` 行の値は手順 5 が決める。`停止理由:` 行には、起動できなかった観点ごとに手順 2 で書くはずだった注記 (`欠陥探し skip:` / `reviewer 未起動:` / `adversarial verification 未起動:` / `入力を読めず:`) を `; ` で区切って並べ、末尾に、起動できなかった担い手が解決する状態にしてから (入力を読めなかった観点は、読めなかった path を確かめてから) 呼び直す旨を書く。走らせる観点が元から無い巡 (`増分なし:` の巡) はこの規則に当たらない。
+
+### 進行役の報告
+
+進行役の最終報告は、手順 5 の停止出力か次の形のどちらかだけにする — 「起動した」「待っている」といった途中経過を最終報告にすると、そこで進行役が終わり、巡が止まる。担い手の報告は要約・統合・順位付けをせず、区分もせずに逐語で写す — 呼び出し元は Finding・Evidence・impact scenario を読んで区分し、要約で落ちた欄は取り戻せない。`指摘件数:` は写しの欠けを呼び出し元が確かめる数で、担い手の報告の原文から数える。
+
+```markdown
+mode: <手順 1 の mode>
+段階: <手順 5 の `段階:` 行の値>
+reviewed: <手順 1 の reviewed>
+paths: dir=<path> diff=<path> commit_messages=<path> spec=<path か なし> claim_sources=<path か なし>
+design-doc: <手順 2 で `--design-doc` に渡した行。行ごとに `design-doc:` を繰り返す。無ければ なし>
+
+## 欠陥探し
+
+指摘件数: <担い手の報告の指摘の数>
+<手順 1〜2 でその節へ積む注記>
+
+<担い手の報告の逐語。走らせなかった観点は無し>
+
+## adversarial verification
+
+(同じ形)
+
+## 原則
+
+(同じ形)
+
+## Spec
+
+(同じ形)
+
+## 設計
+
+(同じ形)
+```
 
 ## 3. 指摘を分ける
 
-手順 2 の指摘 (欠陥探しの findings と、攻撃役が返した破れた主張を含む。ただし攻撃役が Evidence に「〜を実行すれば決まる」と書いた指摘は、先に手順 4 の実行で判定し、行き先は手順 4 に従う) を 1 件ずつ、次の 3 基準で **Act on / Consider / Noted / 落とし候補** に分ける。分けるのは呼び出し元 (本 skill を実行している session) — 発端の issue の意図と、この作業の文脈を持っているのは呼び出し元だけ。
+手順 1〜2 の値 (`mode`・段階・`reviewed`・`dir`・`diff`・`commit_messages`・`spec`・`claim_sources`・`--design-doc` の行・注記・担い手の報告) は進行役の報告から読む (自分の context で進めた巡は、その値を使う)。
+
+手順 2 の指摘 (欠陥探しの findings と、攻撃役が返した破れた主張を含む。ただし攻撃役が Evidence に「〜を実行すれば決まる」と書いた指摘は、先に手順 4 の実行で判定し、行き先は手順 4 に従う) を 1 件ずつ、次の 3 基準で **Act on / Consider / Noted / 落とし候補** に分ける。分けるのは呼び出し元 (進行役を起動した session) — 発端の issue の意図と、この作業の文脈を持っているのは呼び出し元だけ。
 
 1. 作者がこれを知ったら直すか
 2. この差分が持ち込んだ問題か
@@ -198,10 +253,10 @@ prompt は `prompts` の `adversarial` の file の path だけにする。そ�
 | 落とし候補 | 誤検知・意図的な設計と考える。手順 4 の反証へ回す |
 
 - **原則の症状の Act on は 5 件まで。** 症状は判断呼びなので、多数を一度に直させると修正差分が膨らみ、再レビュー 1 巡で見切れなくなる。この上限は手順 4 を終えた後の Act on 全体に当てる (反証を生き延びた症状と、反証 skip で Act on に載った症状を含む)。超えた分は、3 基準への当たりが弱いものから `[上限超過]` を付けて Noted へ回す — 直す価値はあるが今の CL では直さない指摘で、人の判断を要するわけではないので Consider には置かない。原則の症状以外 (規約違反・Spec・設計・欠陥探し・adversarial verification) には上限を置かない
-- **設計の指摘を Act on と Consider のどちらに置くかは、手順 2 で読んだ `principle-design-conformance` の区分で決める。** 同 leaf が agent が直すとするものは Act on、人へ返すとするものは Consider (人に委ねる理由: 方針の変更) に置く。Noted・`[既存]`・落とし候補への区分は他の観点と同じ。差分が設計 doc を書き換えているときの扱いも同 leaf に従い、同 leaf の言う変更の発端は手順 2 の `spec` の file とする (issue ref が無いか本文を取得できなければ、発端は無い)。設計を走らせた巡で、発端が書き換えを引いていなければ、reviewer の指摘の有無によらず、書き換えた設計 doc の hunk を Evidence にした `[設計 doc の書き換え]` の Consider (人に委ねる理由: 方針の変更 — 人がその文面を読んだかを差分から確かめられない) を呼び出し元が 1 件立て、reviewer が同じ hunk を指した指摘はこの 1 件に寄せる — reviewer は書き換えた後の hunk を正本に読むので、書き換えそのものは指摘に上がらないことがある。設計 doc と他の規範が食い違う指摘は、手順 2 で読んだ `principle-norm-precedence` で裁く。設計 doc が勝てば上の区分のまま、他の規範が勝てば、勝った規範の file:line を Evidence に添えて落とし候補にし、手順 4 へ回し、優先順位で決まらなければ Consider (人に委ねる理由: 方針の変更) に置く
+- **設計の指摘を Act on と Consider のどちらに置くかは、`principle-design-conformance` の区分で決める。** 設計を走らせた巡では、原則の索引 `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/SKILL.md` を Read し、索引が示す path から同 leaf と `principle-norm-precedence` を Read する。同 leaf が agent が直すとするものは Act on、人へ返すとするものは Consider (人に委ねる理由: 方針の変更) に置く。Noted・`[既存]`・落とし候補への区分は他の観点と同じ。差分が設計 doc を書き換えているときの扱いも同 leaf に従い、同 leaf の言う変更の発端は手順 2 の `spec` の file とする (issue ref が無いか本文を取得できなければ、発端は無い)。設計を走らせた巡で、発端が書き換えを引いていなければ、reviewer の指摘の有無によらず、書き換えた設計 doc の hunk を Evidence にした `[設計 doc の書き換え]` の Consider (人に委ねる理由: 方針の変更 — 人がその文面を読んだかを差分から確かめられない) を呼び出し元が 1 件立て、reviewer が同じ hunk を指した指摘はこの 1 件に寄せる — reviewer は書き換えた後の hunk を正本に読むので、書き換えそのものは指摘に上がらないことがある。設計 doc と他の規範が食い違う指摘は、`principle-norm-precedence` で裁く。設計 doc が勝てば上の区分のまま、他の規範が勝てば、勝った規範の file:line を Evidence に添えて落とし候補にし、手順 4 へ回し、優先順位で決まらなければ Consider (人に委ねる理由: 方針の変更) に置く
 - 落とし候補を、反証を経ずに Act on / Consider / Noted のどれかへ倒さない。落とすなら手順 4 を通す (上限による Noted への移動は反証の後に行うので、これに当たらない)
 
-再レビューでは、さらに `<prev>` の Act on を 1 件ずつ `解消` / `未解消` に判定する。判定は手順 1 の `diff` の file (増分の diff) の中に、直った箇所を具体物 (増分の file:line と引用) として挙げられるかで行う — 挙げられたものだけを `解消` にし、挙げられないものは `未解消` に倒す (読み取れなかったものを解消へ倒すと、open な指摘が根拠なしに消える)。行番号は前巡の修正で動くので、照合は Finding と Evidence の引用で当てる。この巡で走らせない観点 (Spec、軽量段階の原則と設計) の前巡 Act on も、ここで同じように判定する。`増分なし:` の巡は全件 `未解消`。
+再レビューでは、さらに `prev=` の file (`<prev>`) の Act on を 1 件ずつ `解消` / `未解消` に判定する。判定は手順 1 の `diff` の file (増分の diff) の中に、直った箇所を具体物 (増分の file:line と引用) として挙げられるかで行う — 挙げられたものだけを `解消` にし、挙げられないものは `未解消` に倒す (読み取れなかったものを解消へ倒すと、open な指摘が根拠なしに消える)。行番号は前巡の修正で動くので、照合は Finding と Evidence の引用で当てる。この巡で走らせない観点 (Spec、軽量段階の原則と設計) の前巡 Act on も、ここで同じように判定する。`増分なし:` の巡は全件 `未解消`。
 
 ## 4. 落とし候補に反証を当てる
 
@@ -219,7 +274,7 @@ prompt は `prompts` の `adversarial` の file の path だけにする。そ�
 
 先頭に巡全体の 3 行を置き、続けて `## 欠陥探し` / `## adversarial verification` / `## 原則` / `## Spec` / `## 設計` の 5 節で併記する。観点をまたいで統合・rerank しない — 一方の観点の pass がもう一方の fail を隠さないための分離なので、総合順位も総合結論も付けない。その巡で走らせなかった観点の節も残し、注記に理由を書く (節ごと落とすと、走って 0 件だったのか走らなかったのかが読み手に伝わらない)。
 
-各節は先頭に注記行を積み、続けて区分ごとの見出しを置く。積まれうる注記は手順 1 の `notes` の全行 / 手順 2 の script の `notes` のうちその観点の行 / `入力を読めず:` (担い手が入力の file を読めなかった観点。手順 2) / `走らせず:` (段階の表で走らせない観点) / `欠陥探し skip:` (`## 欠陥探し` のみ。手順 2) / `reviewer 未起動:` (`## 原則`・`## Spec`・`## 設計` のみ。手順 2) / `反証 skip:` / `反証対象:` (手順 4) / `宣言を読めず:` と `宣言の file 不在:` (`## 原則` のみ。手順 2) / `Spec skip:` と `Spec 源欠落:` (`## Spec` のみ) / `設計 skip:` (`## 設計` のみ。手順 2) / `adversarial verification 未起動:` と `出どころ欠落:` と `壊せなかった主張:` (`## adversarial verification` のみ。`壊せなかった主張:` は攻撃役の報告の同名の項目をそのまま写す — 攻めて何も破れなかった巡と、攻めが浅かった巡を読み手が見分ける材料になる)。空の見出しには「該当なし」と 1 行書く。
+各節は先頭に注記行を積み、続けて区分ごとの見出しを置く。積まれうる注記は `進行役 未完了:` (節「進行の置き場」) / 手順 1 の resolve-range の `notes` の全行 / `生成物を除外:` (欠陥探しを除く 4 観点。手順 1 の prepare-inputs の `notes`) / 手順 2 の script の `notes` のうちその観点の行 / `入力を読めず:` (担い手が入力の file を読めなかった観点。手順 2) / `走らせず:` (段階の表で走らせない観点) / `欠陥探し skip:` (`## 欠陥探し` のみ。手順 2) / `reviewer 未起動:` (`## 原則`・`## Spec`・`## 設計` のみ。手順 2) / `反証 skip:` / `反証対象:` (手順 4) / `宣言を読めず:` と `宣言の file 不在:` (`## 原則` のみ。手順 2) / `Spec skip:` と `Spec 源欠落:` (`## Spec` のみ) / `設計 skip:` (`## 設計` のみ。手順 2) / `adversarial verification 未起動:` と `出どころ欠落:` と `壊せなかった主張:` (`## adversarial verification` のみ。`壊せなかった主張:` は攻撃役の報告の同名の項目をそのまま写す — 攻めて何も破れなかった巡と、攻めが浅かった巡を読み手が見分ける材料になる)。空の見出しには「該当なし」と 1 行書く。
 
 観点が 1 つも走らずに止まる巡 (手順 1 の `stop` と script の失敗、手順 2 の「全観点の待ち合わせと停止」の巡) は、観点の節を並べず次の 4 行だけを返す (並べる相手の走った観点が無い)。止まった巡も出力を返すのは、呼び出し元がこの出力を保存して PR へ残すため。
 
@@ -230,7 +285,7 @@ reviewed: <手順 1 の reviewed>
 停止理由: <詳細 1 行>
 ```
 
-`段階:` 行は、手順 1 で止まった巡 (`stop` と script の失敗) では段階を決める前なので `未判定`、手順 2 で止まった巡では手順 1 で決めた段階を書く。止まった巡では手順 1 の `notes` を出さない (範囲の注記は、レビューしなかった巡の読み手には要らない)。止まった巡の `段階:` 行は必ず `— 停止` で終わり、観点が走った巡の `段階:` 行 (下の template) は `— 停止` で終わらない — 判定理由に `停止` を書かない (書くと、走った巡の出力を止まった巡と読み分けられなくなる)。
+`段階:` 行は、手順 1 で止まった巡 (`stop` と script の失敗) では段階を決める前なので `未判定`、手順 2 で止まった巡では手順 1 で決めた段階を書く。止まった巡では手順 1 の `notes` (resolve-range と prepare-inputs の両方) を出さない (範囲と差分の注記は、レビューしなかった巡の読み手には要らない)。止まった巡の `段階:` 行は必ず `— 停止` で終わり、観点が走った巡の `段階:` 行 (下の template) は `— 停止` で終わらない — 判定理由に `停止` を書かない (書くと、走った巡の出力を止まった巡と読み分けられなくなる)。
 
 **観点が走った巡の印**: 投稿の印は、上の段落の規則で `— 停止` で終わらない `段階:` 行と、下の template の `reviewed:` 行。PR / MR へ投稿された本 skill の出力を読む側は、観点が 1 つ以上走った巡の出力が投稿されているかを投稿の印で見分ける — 投稿の印は終端値も Act on の残りも表さないので、それを見るなら `再レビュー:` 行を読む。読む側はこの段落を見出しの名前で引くので、名前を変えると読む側が段落に届かなくなる。
 

@@ -4,6 +4,7 @@
 <diff>
 {{DIFF}}
 </diff>
+{{EXCLUDED_LINE}}
 
 <commits>
 {{COMMITS}}

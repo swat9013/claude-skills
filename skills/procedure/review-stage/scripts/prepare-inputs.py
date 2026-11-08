@@ -20,6 +20,8 @@ invariant:
 6. 宣言の節を読めないときと宣言の file が無いときは止めずに notes へ残す。照合規則が既定の文
    (`paths` と同じ照合) でなければ、推測で照合せず宣言を読めないものとして扱う
 7. git の失敗・入力の欠けは exit 非 0 で、stderr の 1 行目に要約を出す
+8. `.gitattributes` が生成物と宣言した file (`linguist-generated` / `gitlab-generated`) は diff の file
+   から除き、除いた path を notes と観点ごとの prompt に残す。numstat と変更 file の一覧からは除かない
 """
 
 from __future__ import annotations
@@ -52,18 +54,34 @@ RE_REVIEW_ITEM_TAIL = {
     "principle": "規約 (CLAUDE.md・`.claude/rules/`・<declared-rules> の file) は増分の file に当たるものを読んでかまいません。<commit-messages> の file は前巡までの commit を含み、全部読んでかまいません",
     "design": "<design-docs> の設計 doc は読んでかまいません",
 }
+# GitHub と GitLab が PR・MR の差分で生成物として畳む属性
+GENERATED_ATTRIBUTES = ("linguist-generated", "gitlab-generated")
+EXCLUDED_FILE = "excluded-generated.txt"
 RE_REVIEW_LINE = "この差分は前巡のレビューへの修正です。修正が既存の主張を壊していないかを攻めてください"
 
 
-def _git(*args: str) -> bytes:
+def _git(*args: str, input: bytes | None = None) -> bytes:
     # bytes のまま扱う: text にすると非 UTF-8 の差分で落ち、CRLF が変わる
-    return subprocess.run(["git", "-c", "core.quotePath=false", *args], check=True, capture_output=True).stdout
+    return subprocess.run(
+        ["git", "-c", "core.quotePath=false", *args], input=input, check=True, capture_output=True
+    ).stdout
+
+
+def _generated_paths(base: str, head: str) -> list[str]:
+    # rename の移動元も数える: 移動先だけを除くと、移動元の削除 hunk に生成物の行が残る
+    names = _git("diff", "--name-only", "--no-renames", "-z", f"{base}...{head}")
+    # diff の path は repo root 相対で、check-attr は cwd 相対に読む
+    top = _git("rev-parse", "--show-toplevel").decode().strip()
+    out = _git("-C", top, "check-attr", "-z", "--stdin", *GENERATED_ATTRIBUTES, input=names).split(b"\0")
+    triples = zip(out[0::3], out[1::3], out[2::3])
+    return sorted({path.decode() for path, _, value in triples if value in (b"set", b"true")})
 
 
 def collect(base: str, head: str, log_base: str | None) -> dict:
     out = Path(tempfile.mkdtemp(prefix="review-stage-"))
+    generated = _generated_paths(base, head)
     files = {
-        "diff": ("diff.txt", ("diff", f"{base}...{head}")),
+        "diff": ("diff.txt", ("diff", f"{base}...{head}", "--", ":/", *(f":(top,exclude,literal){p}" for p in generated))),
         "commits": ("commits.txt", ("log", f"{base}..{head}", "--oneline")),
         "commit_messages": ("commit-messages.txt", ("log", f"{log_base or base}..{head}", "--format=medium")),
         "numstat": ("numstat.txt", ("diff", "--numstat", f"{base}...{head}")),
@@ -73,6 +91,8 @@ def collect(base: str, head: str, log_base: str | None) -> dict:
     for key, (name, git_args) in files.items():
         (out / name).write_bytes(_git(*git_args))
         result[key] = str(out / name)
+    (out / EXCLUDED_FILE).write_text("".join(f"{p}\n" for p in generated))
+    result["notes"] = [f"生成物を除外: {', '.join(generated)} (.gitattributes の {' / '.join(GENERATED_ATTRIBUTES)})"] if generated else []
     return result
 
 
@@ -219,7 +239,13 @@ def prompts(args: argparse.Namespace) -> dict:
         elif missing:
             notes["spec"].append(f"Spec 源欠落: {missing}")
 
-    common = {"DIFF": str(diff), "COMMITS": str(commits)}
+    excluded = (out / EXCLUDED_FILE).read_text().splitlines() if (out / EXCLUDED_FILE).is_file() else []
+    # 除いた path はタグで囲まない: 担い手はタグの中の path を入力の file として Read する
+    excluded_line = (
+        "対象 repo が生成物と宣言した次の file は <diff> から除いてあります。入力の file ではないので Read しないでください。"
+        f"差分に無いことを指摘の根拠にしないでください: {', '.join(excluded)}"
+    ) if excluded else ""
+    common = {"DIFF": str(diff), "COMMITS": str(commits), "EXCLUDED_LINE": excluded_line}
     adoption = (PROMPTS_DIR / "adoption-rules.md").read_text().rstrip("\n")
 
     def re_review_item(name: str) -> str:
@@ -232,7 +258,7 @@ def prompts(args: argparse.Namespace) -> dict:
         changed = (out / "changed-files.txt").read_text(errors="replace").splitlines()
         declared, notes["principle"] = _declared_rules(repo_root, changed)
         texts["principle"] = _render("principle", {
-            "DIFF": str(diff), "COMMIT_MESSAGES": str(commit_messages),
+            "DIFF": str(diff), "EXCLUDED_LINE": excluded_line, "COMMIT_MESSAGES": str(commit_messages),
             "RUBRIC": str(out / "rubric.md"), "DECLARED_RULES": "\n".join(declared) or "なし",
             "ADOPTION_RULES": adoption, "RE_REVIEW_ITEM": re_review_item("principle"),
         })
@@ -252,7 +278,7 @@ def prompts(args: argparse.Namespace) -> dict:
         result["claim_sources"] = str(claim_sources)
         critical = f"<critical-areas>\n{args.critical_areas}\n</critical-areas>" if args.critical_areas else ""
         texts["adversarial"] = _render("adversarial", {
-            "DIFF": str(diff), "CLAIM_SOURCES": str(claim_sources), "CRITICAL_AREAS_BLOCK": critical,
+            "DIFF": str(diff), "EXCLUDED_LINE": excluded_line, "CLAIM_SOURCES": str(claim_sources), "CRITICAL_AREAS_BLOCK": critical,
             "RE_REVIEW_LINE": RE_REVIEW_LINE if args.round != "first" else "",
         })
 

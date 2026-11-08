@@ -4,6 +4,7 @@
 <diff>
 {{DIFF}}
 </diff>
+{{EXCLUDED_LINE}}
 
 <commit-messages>
 {{COMMIT_MESSAGES}}
