@@ -6,7 +6,7 @@
 """inventory-claude-md の観測 script (observation JSON 生成)。
 
 project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.md`
-+ サブディレクトリ CLAUDE.md + `.claude/rules/**/*.md`) を **静的観測** し、以下 3
++ サブディレクトリ CLAUDE.md + `.claude/rules/**/*.md`) を **静的観測** し、次の
 項目を含む observation JSON を出力する。
 
 - 参照先実在性 (link_targets): markdown link と `@import` 展開先の実在チェック。
@@ -19,26 +19,19 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
 - 静的トークンコスト (token_cost): **行単位**の概算 token 数と section 別の合計。
   CLAUDE.md 系は session 開始で無条件に載るので、行数ではなく token が実コスト。
   実績側 (どの file が何 session に注入されたか) は transcript-query の
-  named query `overhead` が出し、突合は LLM 段階が行う (#478 P2)。
+  named query `overhead` が出し、突合は LLM 段階が行う。
 
-原則 (map #209 / #214): **決定的にできる推論は script へ、意味判断だけを LLM へ、
-判定は人間に**。script は bucket (keep-inline / move-to-path-scoped /
-move-to-skill / move-to-lint / delete / merge) を割り当てない。
-
-**本 domain は ADR 0032 の決定的ルール層の対象外**。既存 CLAUDE.md 行の bucket 判定は
-すべて内容判断であり、count 0 / 完全一致のような「mart の列だけで評価でき自然言語の
-解釈を要さない述語」が存在しないため (permissions / invocations / engineering-values の
-3 系統だけが rule 層を持つ非対称は、ADR 0032 が「正しい形」として維持すると決めた)。
-決定的シグナルが現れたら、ここに rule を足すのではなく ADR 0032 の移行判定基準に
-当てて判断する。
+原則: **決定的にできる推論は script へ、意味判断だけを LLM へ、判定は人間に**。
+script は bucket を割り当てず、bucket の候補を決定的に出す rule も持たない。既存
+CLAUDE.md 行の bucket 判定はすべて内容判断であり、count 0 / 完全一致のような
+「観測の列だけで評価でき自然言語の解釈を要さない述語」が存在しないため。
 
 出力: --output-dir に observation-<timestamp>.json を書き、path を stdout に
 print する。Markdown レポートは LLM 段階の成果物で、本 script は生成しない。
 
 汎用スキル制約: 依存は Claude Code 標準ファイルのみ (`<repo>/CLAUDE.md` /
 `<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/**/*.md`)。global
-`~/.claude/CLAUDE.md` は読みも書きもしない (仕様上除外)。`#rule` buffer への
-依存は ADR 0018 で撤去済み。
+`~/.claude/CLAUDE.md` は読みも書きもしない (仕様上除外)。
 
 `CLAUDE.local.md` は memory 階層の project-local 層で、`.gitignore` 済みなら
 VCS 管理外になる。script は**読むだけ**で tracked/untracked を判定しない
@@ -55,6 +48,7 @@ import math
 import os
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -173,17 +167,25 @@ def build_token_cost(
     }
 
 
-def parse_headings(lines: list[str]) -> list[dict[str, Any]]:
-    """markdown 見出し行を (level, line, text) の list で返す (1-indexed line)."""
-    out: list[dict[str, Any]] = []
+def iter_prose_lines(lines: list[str]) -> Iterator[tuple[int, str]]:
+    """フェンスコードブロック (```) の外の行を (1-indexed の行番号, 行) で返す。
+
+    見出し・link・`@import` はどれもコードブロックの中では記法として効かないので、
+    3 つの抽出が同じ判定を使う。フェンスの行そのものも返さない。
+    """
     in_code_block = False
     for i, raw in enumerate(lines, start=1):
-        # フェンスコードブロック検出 (```)
         if raw.lstrip().startswith("```"):
             in_code_block = not in_code_block
             continue
-        if in_code_block:
-            continue
+        if not in_code_block:
+            yield i, raw
+
+
+def parse_headings(lines: list[str]) -> list[dict[str, Any]]:
+    """markdown 見出し行を (level, line, text) の list で返す (1-indexed line)."""
+    out: list[dict[str, Any]] = []
+    for i, raw in iter_prose_lines(lines):
         m = HEADING_RE.match(raw)
         if not m:
             continue
@@ -231,13 +233,7 @@ def extract_link_targets(
     source location と check_mode まで確定する。
     """
     out: list[dict[str, Any]] = []
-    in_code_block = False
-    for i, raw in enumerate(lines, start=1):
-        if raw.lstrip().startswith("```"):
-            in_code_block = not in_code_block
-            continue
-        if in_code_block:
-            continue
+    for i, raw in iter_prose_lines(lines):
         for m in MD_LINK_RE.finditer(raw):
             target = m.group("target")
             out.append({
@@ -258,13 +254,7 @@ def extract_imports(
     (fail-safe: SNS mention 等の false positive を避ける)。
     """
     out: list[dict[str, Any]] = []
-    in_code_block = False
-    for i, raw in enumerate(lines, start=1):
-        if raw.lstrip().startswith("```"):
-            in_code_block = not in_code_block
-            continue
-        if in_code_block:
-            continue
+    for i, raw in iter_prose_lines(lines):
         for m in IMPORT_RE.finditer(raw):
             out.append({
                 "source": f"{source_path}:{i}",
@@ -300,7 +290,7 @@ def check_target_existence(
             entry["resolved_path"] = str(resolved)
             entry["exists"] = resolved.exists()
         else:
-            # url / anchor / dynamic / empty / import (check_mode 無し) を含む
+            # url / anchor / dynamic / empty
             entry["resolved_path"] = None
             entry["exists"] = None
         out.append(entry)
@@ -363,10 +353,11 @@ def observe_markdown_file(
 ) -> dict[str, Any]:
     """1 ファイルの決定的観測を組み立てる。"""
     status, lines = read_file_safe(path)
+    display_path = str(path.relative_to(repo_root)) if _is_within(path, repo_root) else str(path)
     if status != "present":
         return {
             "label": label,
-            "path": str(path.relative_to(repo_root)) if _is_within(path, repo_root) else str(path),
+            "path": display_path,
             "status": status,
             "line_count": 0,
             "headings": [],
@@ -377,16 +368,15 @@ def observe_markdown_file(
         }
     headings = parse_headings(lines)
     sections = sections_from_headings(headings, len(lines))
-    link_source = str(path.relative_to(repo_root)) if _is_within(path, repo_root) else str(path)
     link_targets = check_target_existence(
-        extract_link_targets(link_source, lines), repo_root, path.parent
+        extract_link_targets(display_path, lines), repo_root, path.parent
     )
     imports = check_import_existence(
-        extract_imports(link_source, lines), repo_root
+        extract_imports(display_path, lines), repo_root
     )
     return {
         "label": label,
-        "path": link_source,
+        "path": display_path,
         "status": "present",
         "line_count": len(lines),
         "headings": headings,

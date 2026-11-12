@@ -1,6 +1,7 @@
 ---
 name: inventory-permissions
 disable-model-invocation: true
+argument-hint: "[project | global | all]"
 description: Claude Code の permission (allow/deny/ask) / sandbox / guard hook を transcript の tool_use 実績と突合し、5 bucket (revoke / promote / refine / sandbox / keep) の候補を人間の判定へ差し出す棚卸し。
 ---
 
@@ -12,9 +13,9 @@ Claude Code の permission 3 層 — **permission** (正規表現ベースの一
 
 1. **決定的観測 + 決定的ルール**: named query `permissions` が両軸集計 + bypass 系列 + guard 逆引きを出し、機械判定可能な条件を評価して `rule_candidates` (`bucket_candidate` / `rule_fired` / `rule_inputs` / `open_predicates` / `near_misses`) を書く。**観測は bucket を確定しない**
 2. **LLM 具体化 (このメインコンテキスト)**: `open_predicates` に挙がった条件だけを判断し、bucket を確定して具体 entry 案 (hook は要件文まで) を組み立てる。**採否は決めない**
-3. **人間判定**: 削除/昇格/絞り込み/保持を選ぶのは常に人間。提示は確度で 2 層に分ける — **高確度候補** (手順 3) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む (project scope は skill が編集、global scope は人間側操作)。**低確度候補**はレポート提示で止まる
+3. **人間判定**: 削除/昇格/絞り込み/保持を選ぶのは常に人間。提示は確度で 2 層に分ける — **高確度候補** (手順 3) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む (project scope は skill が編集、global scope は人間側操作)。**低確度候補**はレポート提示で止まる (承認と適用は本 skill の外で人間が行う)
 
-無人 commit は行わない (適用は必ず AskUserQuestion での人間承認を経る)。
+無人 commit は行わない (本 skill が行う適用は必ず AskUserQuestion での人間承認を経る)。
 
 **汎用スキル制約**: 参照するのは Claude Code 標準ファイルのみ (`~/.claude/projects/` / `~/.claude/settings.json` / `<repo>/.claude/settings.json(.local)`)。dotfiles / swat-skills 固有 hook 資産 (tool-signatures.jsonl 等) には触らない。global 変更の反映先 (chezmoi 等) は各 repo 側の指示文の責務。
 
@@ -162,6 +163,8 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
 3. **informational**: 今回未分類 (母数不足 / 証拠不十分) の一覧、`near_misses` (落選理由つき)、`open_predicates` を満たさないと判断した候補、matcher confidence 別集計、tool 呼び出しあたりの PreToolUse hook の所要 (手順 2「hook 観測の読み方」の `pre_tool_use_per_call` の値)
 4. **summary 表**: 番号 × bucket × 対象。「3 と 7 だけ採用」と言える形。**高確度候補 (手順 3) も本表に載せ**、セッション内提案の結果 (承認 / 見送り / `undecided (保留)` / `undecided`。`undecided (保留)` は「保留」と答えた候補、`undecided` は打ち切りで答えの出なかった候補で、未提示の候補を含む) を付記し、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く — レポートは監査証跡として単体で完結させる
 
+schema を埋めた形の記入例が要るときは [references/report-example.md](references/report-example.md) を Read する。
+
 **適用手順の単位別分岐** (レポートに埋め込む):
 
 | 対象 | 適用手順 |
@@ -169,68 +172,8 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
 | **編集不能な settings** — 対象 file が untracked / worktree 外への symlink / `Edit()`・`Write()` deny のいずれかに該当 (**scope 別の行より優先する**) | 本 skill は書き込まない。対象 file の**実パス**と削除対象 entry をコピペ可能形で提示して止め、人間が直接編集する |
 | project scope の allow / deny / ask entry | `.claude/settings.json(.local)` を編集 |
 | global scope の allow / deny / ask entry | 人間が `~/.claude/settings.json` (or dotfiles 側) を直接編集 — 本 skill は書き込まない |
-| sandbox 追加 | 該当 section の `permissions.sandbox.excludedCommands` に追加 (project or global) |
+| sandbox 追加 | 該当 section の `sandbox.excludedCommands` に追加 (project or global) |
 | hook 新設 / 改修 | 要件文まで書き、実装は別セッションで別途 (skill から実装せず) |
-
-### 5. 人間判定 (確度で扱いが分かれる)
-
-- **高確度候補** (revoke 限定): 手順 3 で AskUserQuestion 承認済みのものは同セッション内で適用まで進んでよい (project scope は skill が編集、global scope は人間側操作の手順提示)。承認なしの適用・無人 commit は行わない
-- **低確度候補**: レポートを提示するところで skill の責務は終わる。承認 → 適用は次のセッションで人間が実施する
-
-## 出力例 (概略)
-
-```
-# permission / sandbox / hook 棚卸しレポート
-
-観測窓: 2026-06-17 〜 2026-07-17 (30 日) / 総 event 14,449 / distinct sessions 580 / section project
-判定可能性: sufficient (総数 >= 30)
-matcher confidence: exact 105 / approx 14
-数えた transcript: main
-観測の劣化: 事故由来の劣化なし
-
-## revoke
-
-### 1. Bash(some-unused-remote-write-cmd:*)  [allow, project_local]
-- rule_fired: revoke_candidate / match_count 0 / observation 30 days
-- open_predicates: side_effect_capability ○ (remote 書き込み) / exposure_opportunity △
-  (推測: 窓内に同 repo での作業 42 session — 機会の実在は反実仮想) / alias_still_in_use ✗ / invocation_form_pair ✗
-- bucket: revoke (低確度 — レポート提示まで)
-- 編集可能性: `.claude/settings.local.json` は untracked (`git ls-files --error-unmatch` exit 1) — version control 追跡なし
-- 適用手順: 本 skill は書き込まない。`<repo 実パス>/.claude/settings.local.json` の `permissions.allow` から
-  `"Bash(some-unused-remote-write-cmd:*)"` の行を人間が直接削除する
-
-## refine
-
-### 2. Bash(grep:*)  [allow, project_local]
-- rule_fired: compound_line_deny_miscount / hard_deny 26 / compound_command_deny 24 / window_split shifted false (窓内で一様)
-- open_predicates: deny_attributable_to_entry ✗ (deny の 24/26 が `grep ... || <deny 対象>`)
-- bucket: refine — 対象は entry ではなく複合行の組み立て方。entry 変更は不要
-
-## keep
-
-### 3. Bash(some-readonly-cmd:*)  [allow, project_local]
-- rule_fired: revoke_candidate / match_count 0
-- open_predicates: side_effect_capability ✗ (read-only)
-- bucket: keep (未使用だが無害 — 削除は ask 反復コストだけ増える)
-
-## informational — near_misses
-
-- Bash(**/*.env) : revoke_candidate の matcher_exact を外した (approx)
-- Bash(gh:*) : revoke_candidate の no_sandbox_pair を外した (excludedCommands と連動)
-
-## informational — PreToolUse hook の所要 / tool 呼び出し (Bash, 12,480 calls)
-
-- non_global: p50 210ms / p90 480ms / max 6,100ms
-- all: p50 230ms / p90 520ms / max 6,100ms
-
-## summary
-
-| # | bucket | 対象 | scope | セッション内提案 |
-|---|---|---|---|---|
-| 1 | revoke | Bash(some-unused-remote-write-cmd:*) | project_local | - (低確度: exposure_opportunity が推測) |
-| 2 | refine | Bash(grep:*) | project_local | - (低確度) |
-| 3 | keep | Bash(some-readonly-cmd:*) | project_local | - (低確度) |
-```
 
 ## 参照
 

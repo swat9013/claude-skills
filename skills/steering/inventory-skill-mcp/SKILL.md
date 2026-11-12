@@ -12,9 +12,9 @@ install 済みの skill / MCP を **transcript の tool_use 実績**と突合し
 
 1. **決定的観測 + 決定的ルール**: named query `invocations` が分母列挙 + 抜粋 sampling + 提示分母 + token 経済を出し、機械判定可能な条件を評価して `rule_candidates` (`bucket_candidate` / `rule_fired` / `rule_inputs` / `open_predicates` / `near_misses`) を mart に書く。**観測は bucket を確定しない**
 2. **LLM 具体化 (このメインコンテキスト)**: `open_predicates` に挙がった条件だけを判断して bucket を確定し、証拠 anchor 付き Markdown レポートを組み立てる。**採否は決めない**
-3. **人間判定**: 削除/見直し/保持を選ぶのは常に人間。**高確度候補** (手順 3) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む。**低確度候補**はレポート提示で止まる
+3. **人間判定**: 削除/見直し/保持を選ぶのは常に人間。**高確度候補** (手順 3) はセッション内で AskUserQuestion 提案し、承認されたら同セッション内で適用に進む。**低確度候補**はレポート提示で止まる (承認と適用は本 skill の外で人間が行う)
 
-無人 commit は行わない (適用は必ず AskUserQuestion での人間承認を経る)。
+無人 commit は行わない (本 skill が行う適用は必ず AskUserQuestion での人間承認を経る)。
 
 汎用スキル制約: 参照するのは Claude Code 標準ファイルのみ (`~/.claude/projects/` / `~/.claude/plugins/installed_plugins.json` / 各 plugin の `.claude-plugin/plugin.json` / `~/.claude/skills/` / 現 repo `.claude/skills/` / `~/.claude.json` / 現 repo `.mcp.json`)。swat-skills 固有 hook 資産 (tool-signatures.jsonl 等) には触らない。
 
@@ -81,12 +81,12 @@ bucket 確定後、以下をすべて満たす unit だけを高確度候補と�
 
 1. `rule_fired` に `unused_skill` / `unused_mcp_server` / `unused_plugin` のいずれかが入っている (機械判定可能な条件は観測が確認済み)
 2. `open_predicates` の全条件を**決定的観測だけで**満たすと判断できた (`推測:` prefix を要しない)
-3. 適用手順が単一の既定分岐で完結する
+3. 適用手順が手順 4 の単位別分岐表の 1 行だけで完結する。cwd の repo の skill の行に当たる unit は、AskUserQuestion より前に `git ls-files --error-unmatch <SKILL.md の path>` で追跡を確かめ、exit 非 0 なら高確度候補から外して、実 path を添えて手順 4 のレポートへ回す — 承認を得てから適用できないと分かると、人間に無駄な判断をさせる
 4. 手順 1 で控えた観測の劣化の件数がすべて 0 (0 件の unit を不使用の証拠に使えるのは、観測が劣化していないときだけ)
 
 高確度候補は候補ごとに証拠 1-2 行 (`rule_inputs` の count / sessions_presented / 分母 source) + 適用手順 (手順 4 の単位別分岐表) を添えて **AskUserQuestion で選択肢を提示する** (例:「obsidian plugin は 30 日 0 invocation (skill 3/3 未使用・同梱 MCP も 0)。uninstall しますか?」。選択肢は「適用する / 見送る (レポート記載のみ) / 保留」相当)。
 
-- **承認されたらそのまま同セッション内で適用に進む**。適用は単位別分岐に従う: swat-skills 本体 / third 分は swat-skills repo の運用に従って反映、他 plugin の `/plugin` 操作・MCP config 編集・claude.ai connectors disconnect 等の人間側操作は具体的手順を提示して受け渡す
+- **承認されたらそのまま同セッション内で適用に進む**。適用は単位別分岐に従う: cwd の repo が追跡している skill はその repo の運用に従って反映、それ以外の plugin の `/plugin` 操作・MCP config 編集・claude.ai connectors disconnect 等の人間側操作は具体的手順を提示して受け渡す
 - 却下・保留された候補、および 4 条件を満たさない候補はすべて手順 4 のレポートへ回す。「保留」と答えた候補は、打ち切りの有無によらず `undecided` とする。「count 1 だしほぼ確実」のように基準を緩めたくなったものもレポート側に落とし、緩和は rule 実装か本 SKILL.md の改訂として行う
 - 人が提示を打ち切ったら、答えの出ていない候補 (示して答えが無い候補と、まだ示していない候補) を `undecided` とし (対象は本手順で提示する高確度候補だけで、提示せずレポートへ回した候補は含めない)、承認された候補だけで適用へ進む — `undecided` は見送りと分けて手順 4 のレポートに件数と一覧を残す
 
@@ -111,12 +111,8 @@ schema を埋めた形の記入例が要るときは [references/report-example.
 
 | 対象 | 適用手順 |
 |---|---|
-| swat-skills 本体 / third | swat-skills repo の運用に従って反映 |
-| 他 plugin | `/plugin` 操作 (uninstall / disable) — 人間が該当 marketplace 設定で実施 |
+| cwd の repo が version control で追跡している skill (plugin の skill か `.claude/skills/` かを問わない。**下の行より優先する**) | その repo の運用に従って反映 |
+| 上の行に当たらない plugin の skill | `/plugin` 操作 (uninstall / disable) — 人間が該当 marketplace 設定で実施 |
+| `~/.claude/skills/` の skill | 本 skill は書き込まない。該当ディレクトリの実 path を示し、人間が直接削除する |
 | MCP server (ローカル config) | `~/.claude.json` の `mcpServers` 該当 entry を削除、または `.mcp.json` を編集 |
 | claude.ai connectors | claude.ai 側の設定画面で disconnect — 人間が実施 |
-
-### 5. 人間判定 (確度で扱いが分かれる)
-
-- **高確度候補**: 手順 3 で AskUserQuestion 承認済みのものは同セッション内で適用まで進んでよい (手順 4 の単位別分岐に従う)。承認なしの適用・無人 commit は行わない
-- **低確度候補**: レポートを提示するところで skill の責務は終わる。承認 → 適用は次のセッションで人間が実施する

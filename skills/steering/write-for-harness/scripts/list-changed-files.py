@@ -43,7 +43,7 @@ DEFAULT_BASE_CANDIDATES = ("origin/HEAD", "origin/main", "main")
 STATUS_WITH_ORIGINAL_PATH = ("R", "C")
 # 削除が多い branch で stderr の 1 行が context を埋めないよう、名前を挙げる件数を絞る (残りは件数だけ)
 GONE_PATHS_SHOWN = 10
-PARTIAL_LISTING_NOTICE ="利用者にこの行をそのまま告げてから、出力された file で進める。"
+PARTIAL_LISTING_NOTICE = "利用者にこの行をそのまま告げてから、出力された file で進める。"
 
 
 class GitError(Exception):

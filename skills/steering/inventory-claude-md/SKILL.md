@@ -30,7 +30,7 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
 
 ## 引数
 
-現状 project section 固定 (cwd の CLAUDE.md 系)。省略時に project、他 section は無し (global は仕様上除外)。
+引数を取らない。対象は cwd の repo の CLAUDE.md 系に固定する。
 
 ## 手順
 
@@ -42,7 +42,7 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-claude-md.py --repo-root .
 
 - `--repo-root` 省略時 cwd
 - stdout に observation JSON path (`/tmp/inventory-claude-md/observation-<timestamp>.json`) が出る
-- **script は bucket を出さない**。決定的観測 3 項目だけを出す — 本 domain には「count 0 / 完全一致」のような機械判定可能な述語が無く、機械判定できる述語から bucket を確定させる層 (決定的ルール層) の対象外だから (rule 層を持つのは permissions / invocations / engineering-values の 3 系統のみ)
+- **script は bucket を出さない**。決定的観測だけを出す (項目は script の docstring) — 本 domain には「count 0 / 完全一致」のような機械判定可能な述語が無く、機械判定できる述語から bucket を確定させる層 (決定的ルール層) の対象外だから
 
 出力に失敗したら (repo に CLAUDE.md が無い等) `sources.claude_md.root.status = "missing"` が入る。**root と local (`sources.claude_md.local.status`) の両方が `missing` のときだけ**「観測不能」を報告して終了する。片方でも `present` なら棚卸し対象があるので続行する (`CLAUDE.local.md` だけが存在する repo は成立する)。
 
@@ -179,7 +179,7 @@ bucket 提案文面を作る際は同一 plugin 内の以下を **判定前に R
 - 展開後 = `<plugin root>/skills/steering/write-for-harness/references/patches.md` と `<plugin root>/skills/steering/write-for-harness/references/components/<name>.md` (`patches.md` は `components/` の 1 階層上)
 - **`..` は 1 回**で `skills/steering/` に戻る (参照先が同じ category なので category 階層は抜けない)
 
-reference の checklist を提案文面に**引用しない**。用語と判断軸を借りるのみ。references はレビュー観点の正本なので **references 側の変更は本 skill を追従改修**する。
+reference の checklist を提案文面に**引用しない**。用語と判断軸を借りるのみ。
 
 ### 5. 人間判定 (候補ごとの AskUserQuestion)
 
