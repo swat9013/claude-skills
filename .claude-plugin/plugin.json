@@ -10,6 +10,7 @@
   "skills": [
     "./skills/util/setup",
     "./skills/steering/inventory-claude-md",
+    "./skills/steering/inventory-harness",
     "./skills/steering/inventory-permissions",
     "./skills/steering/inventory-project-values",
     "./skills/steering/inventory-skill-mcp",
@@ -46,7 +47,6 @@
     "./skills/design/sud-design",
     "./skills/design/grill-with-docs",
     "./skills/util/worktree-setup",
-    "./skills/util/inventory-launcher",
     "./skills/util/issue-restructure",
     "./skills/util/backlog-triage",
     "./skills/util/issue-triage",

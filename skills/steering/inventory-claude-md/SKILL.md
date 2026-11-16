@@ -212,6 +212,15 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 - **承認された bucket と提案の範囲で書く。** 元の行の意味を拡張しない。rewrite は、診断表の行が示す書き換えの方向を提案として添える
 - **no-op の delete は、手順 2-1 の micro-test を通したと宣言する** (場面と、取る行動が一致したことを添える)。宣言が無いと、`write-for-harness` は確認を通していない no-op の削除として書かずに報告へ回す
 
+## 返却 (統合の棚卸しから開かれたとき)
+
+`inventory-harness` の subagent として Read で開かれたときは、人に問わず、repo の file を書き換えない。手順 1〜4 を進め (手順 2-1 の micro-test を含む)、手順 3 のレポートを採否の列を空けて書き、手順 5・6 は行わずに、最終報告で次を返す。
+
+- レポートの path と、§4「観測範囲外」の要旨
+- 手順 5 が問う対象の候補の一覧 (手順 5 の提示順)。1 件ごとに: レポートの番号 / bucket / `file:line-range` と対象テキストの冒頭 / est_tokens / scope (`project` / `project-local`) / 反映 (invoke ごとの反映先 file と当てるパッチの種別 — 手順 3 の適用手順の表。新しい rules は作成先と `paths:` の glob) / 削除の根拠 (delete の候補だけ: micro-test を通した no-op / 環境を見れば分かる事実 / 参照切れ・陳腐化) / 添える制約 (6-1 の各項。no-op の delete は micro-test の場面と結果) / `共有化:` の候補は人への確認事項
+- 手順 5 が問わない候補のうち、move-to-lint・新規 skill への move-to-skill・informational は「反映しない」と付け、レポートの番号・bucket・対象・証拠の要旨 1 行を返す。keep-inline は件数だけを返す
+- 手順 1 で「観測不能」になったときは、その理由を言い換えずに返す
+
 ## 参照
 
 - 関連 skill: `inventory-permissions` (別軸: permission / sandbox / hook) / `inventory-skill-mcp` (別軸: skill / MCP 実績集計)

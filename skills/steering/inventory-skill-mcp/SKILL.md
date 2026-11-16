@@ -112,7 +112,19 @@ schema を埋めた形の記入例が要るときは [references/report-example.
 | 対象 | 適用手順 |
 |---|---|
 | cwd の repo が version control で追跡している skill (plugin の skill か `.claude/skills/` かを問わない。**下の行より優先する**) | その repo の運用に従って反映 |
+| cwd の repo の中にあり、その repo が追跡していない skill (**下の行より優先する**) | 本 skill は書き込まない。該当ディレクトリの実 path を示し、人間が直接削除する |
 | 上の行に当たらない plugin の skill | `/plugin` 操作 (uninstall / disable) — 人間が該当 marketplace 設定で実施 |
 | `~/.claude/skills/` の skill | 本 skill は書き込まない。該当ディレクトリの実 path を示し、人間が直接削除する |
 | MCP server (ローカル config) | `~/.claude.json` の `mcpServers` 該当 entry を削除、または `.mcp.json` を編集 |
 | claude.ai connectors | claude.ai 側の設定画面で disconnect — 人間が実施 |
+
+## 返却 (統合の棚卸しから開かれたとき)
+
+`inventory-harness` の subagent として Read で開かれたときは、人に問わず、repo の file・MCP の config・plugin の設定を書き換えない。手順 1・2 を進め、手順 3 は高確度候補の抽出と追跡の確認までで止め (AskUserQuestion と適用は行わない)、手順 4 のレポートをセッション内提案の結果を空けて書いてから、最終報告で次を返す。
+
+- レポートの path と、ヘッダの観測の劣化
+- 高確度候補の一覧。1 件ごとに: レポートの番号 / 単位 / bucket / 対象 / 証拠の要旨 1 行 / 反映 (手順 4 の単位別分岐表の当たる行)
+- 手順 3 の追跡の確認だけで外れた候補は「編集できない」と付け、実 path と反映 (手順 4 の単位別分岐表の当たる行) を添えて返す
+- それ以外の高確度でない候補は「反映しない」と付け、レポートの番号・単位・bucket・対象・証拠の要旨 1 行を返す
+- cwd の repo が追跡している skill の呼出数: `units` の skill のうち、SKILL.md を cwd の repo が追跡している (`git ls-files --error-unmatch <path>` が exit 0) ものを、skill 名と count の対で降順に並べる。SKILL.md の path は mart の分母が持つものを使い、持たないか cwd の repo の外を指すときは、名前で cwd の repo の中を探す。名前で探すのは、plugin prefix が cwd の repo の `.claude-plugin/plugin.json` の `name` と一致する skill (prefix を除いた名前で探す) と、prefix の無い skill だけにする — ほかの plugin の同名の skill の呼出数を、cwd の skill のものに数えない
+- 手順 1 で終了したときは、理由を言い換えずに返す

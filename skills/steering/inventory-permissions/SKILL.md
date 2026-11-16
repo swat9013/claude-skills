@@ -175,6 +175,16 @@ schema を埋めた形の記入例が要るときは [references/report-example.
 | sandbox 追加 | 該当 section の `sandbox.excludedCommands` に追加 (project or global) |
 | hook 新設 / 改修 | 要件文まで書き、実装は別セッションで別途 (skill から実装せず) |
 
+## 返却 (統合の棚卸しから開かれたとき)
+
+`inventory-harness` の subagent として Read で開かれたときは、人に問わず、settings を書き換えない。引数は省略時の `project` として手順 0〜2 を進め (手順 0 の実測は行わない)、手順 3 は高確度候補の抽出と編集可能性の確認までで止め (AskUserQuestion と適用は行わない)、手順 4 のレポートをセッション内提案の結果を空けて書いてから、最終報告で次を返す。
+
+- レポートの path と、ヘッダの観測の劣化・分母の欠落
+- 高確度候補の一覧。1 件ごとに: レポートの番号 / bucket / 対象 entry と settings file の path / 証拠の要旨 1 行 / 反映 (手順 4 の適用手順の表の当たる行と、コピペ可能な entry 案)
+- 手順 3 の編集可能性の確認だけで外れた候補は「編集できない」と付け、対象 file の実 path とコピペ可能な entry 案を添えて返す
+- それ以外の高確度でない候補は「反映しない」と付け、レポートの番号・bucket・対象・証拠の要旨 1 行を返す
+- 手順 1 で「観測不能」になったときと、呼び出しが止まったときは、理由と案内を言い換えずに返す
+
 ## 参照
 
 - 関連 skill: inventory-skill-mcp (別軸: skill / MCP の実績集計 — 本 skill は permission 3 層)
