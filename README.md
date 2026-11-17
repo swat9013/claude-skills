@@ -96,6 +96,7 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 | `issue-triage` | コマンド / 自動 | issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (ready-for-agent・close・wontfix) は tracker へ反映し、外側の判定 (規範の文案・深掘り・人手の作業・報告者への質問) と止まったものを呼び出し元へ返す. |
 | `ready-for-agent-review` | コマンド / 自動 | issue 本文と triage コメントを対象 repo の規範と照らし、規範違反の指定・本文の要素の未閉鎖・規範同士の衝突を反証済みの修正提案として issue ごとに返す (issue を N 件まとめて受け、tracker へは書き込まない). |
 | `stacked-implement` | コマンド | 名指しした実装 (issue 集合・分割計画・単一の仕様) を CL 計画に分け、CL ごとに CL エージェントを並列に起動して実装させ、merge まで追従する。 |
+| `goal-drive` | コマンド | 人と合意した goal 契約に向けて複数の issue を実装役へ割り当て、判断待ちを goal の記録で管理し、受け入れ条件ごとの証拠をそろえて人の受け入れまで進める。 |
 
 ### third
 

@@ -52,6 +52,7 @@
     "./skills/util/issue-triage",
     "./skills/util/ready-for-agent-review",
     "./skills/util/stacked-implement",
+    "./skills/util/goal-drive",
     "./skills/third/domain-modeling",
     "./skills/third/grilling",
     "./skills/third/pr",

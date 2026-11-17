@@ -68,7 +68,7 @@ component が skill で、手順が subagent を起こすなら (新規作成を
 - **診断する行**: 依頼が名指しした変更と、その変更を吸収する行までにする — 呼び出し元が承認したのはその変更だけなので、file 全体の見直しを依頼されたときだけ全行を診断する
 - **no-op の削除**: patches.md の診断表が求める確認 (suite か micro-test) を書く前に通したもの (呼び出し元が通したと宣言したものを含む) だけを当てる
 - **報告に回すパッチ**: patches.md が報告だけにするとしたパッチ、診断の範囲外の行へのパッチ、手順 1 の対象外の file への吸収、確認を通していない no-op の削除は編集せず、手順 5 で報告する。報告に回したものが宣言された変更 (定義は手順 5 の「反映を終えられなかったとき」) に当たれば、手順 5 の「反映を終えられなかったとき」の形でも返す
-- **文字数の計測**: パッチ (手順 5 で findings を反映する変更を含む) は 1 つずつ当て、その直前と直後の対象 file の文字数を `wc -m` で数える — 手順 5 の報告で前後差を書く
+- **文字数の計測**: パッチ (手順 5 で findings を反映する変更を含む) は 1 つずつ当て、その直前と直後の対象 file の文字数を `wc -m` で数える。複数の Edit を 1 つの message や 1 回の script にまとめて当てない (前後差が混ざり、手順 5 の報告でパッチ単位の前後差を書けない)。新規作成の file は、書く前を 0 とする。
 
 新規作成で「どの機構に載せるか」から決めるなら、4 slot 表 (`guide` / `sensor` × `Computational` / `Inferential`) を `${CLAUDE_SKILL_DIR}/references/architecture.md` で引く。
 
@@ -91,7 +91,7 @@ component が skill で、手順が subagent を起こすなら (新規作成を
 ${CLAUDE_SKILL_DIR}/scripts/list-harness-inventory.py
 ```
 
-git 管理外の `~/.claude/` 系 path は、args で対象として渡された場合のみ、同じ script にその path を渡して出た行を一覧へ加える。script が exit 非 0 で終わったら構造 reviewer を起動せず、その結果の位置に `構造レビュー未実施: 一覧を作れなかった (<stderr の 1 行>)` と次の手順 (stderr の原因を直してから構造 reviewer だけをやり直す) を書く。一覧は prompt へ全件埋め込む — 各ファイルの全文 Read は reviewer が必要と判断したものだけが行う。
+git 管理外の `~/.claude/` 系 path は、args で対象として渡された場合のみ、同じ script にその path を渡して出た行を一覧へ加える。script が exit 非 0 で終わったら構造 reviewer を起動せず、その結果の位置に `構造レビュー未実施: 一覧を作れなかった (<stderr の 1 行>)` と次の手順 (stderr の原因を直してから構造 reviewer だけをやり直す) を書く。一覧は prompt へ全件埋め込む — 各ファイルの全文 Read は reviewer が必要と判断したものだけが行う。今回新しく書いた file は、まだ git に追跡されていないので一覧に入らない。同じ script にその path を渡して出た行を一覧へ加える。
 
 検証 subagent の prompt (入力):
 
