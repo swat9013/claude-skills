@@ -6,11 +6,12 @@ description: 大きな出力・長いファイル・委譲や参照の設計で 
 # context は再生しない有限資源として配分する
 
 - **セッション内で使った context は戻らない**。溢れると推論の質が落ち、要約による欠落が起きる。載せる価値があるものだけを入れる
-- **大きな payload は委譲先で処理する**: 冗長な出力・長大なファイル・大量の検索結果は subagent へ渡し、本流には要約だけ戻す。要約で済ませてよいのは読み捨ててよい中間データで、成果物の合否を主張するときは `principle-verify-the-real-artifact` に従い実物を見る
+- **大きな payload は委譲先で処理する**: 冗長な出力・長大なファイル・大量の検索結果は subagent へ渡し、本流には要約だけ戻す。要約で済ませてよいのは読み捨ててよい中間データで、合否を主張するときは `principle-verify-the-real-artifact` に従う
 - **今の作業に効くかで読む対象を選ぶ**。網羅ではなく関連で絞る
 - **毎回使うものは 1 回の読み込みで揃う場所に置く**: 呼び出しのたびに要る雛形や参照は本文に置く。別ファイルへ分けるのは、読まずに済む場面があるものだけ
+- **段階ごとに、読むファイル数と turn の予算を決める**: 段階が複数あり、前の段階の消費が後の段階を圧迫しうる作業では、各段階の上限を始める前に置く — 上限が無いと、1 つの段階が context を使い切り、後の段階に残らない。1 段階で終わる作業と、読む範囲が初めから決まっている作業には置かない
 - **1 回の委譲で扱う範囲に上限を置く**: 戻ってきた要約だけで次の判断ができる大きさに収め、委譲の仕組み自体が食うコストも勘定に入れる
 
 何を委譲してよいか (委譲範囲と人間へ返す境界) は `principle-ai-delegation-boundary` が扱う。本原則は**何を context に載せるか**を決める。
 
-出典: pstack の <https://github.com/cursor/plugins/blob/b9ddc83/pstack/skills/principle-guard-the-context-window/SKILL.md> を翻案。
+出典: pstack の <https://github.com/cursor/plugins/blob/93b916d/pstack/skills/principle-guard-the-context-window/SKILL.md> を翻案。

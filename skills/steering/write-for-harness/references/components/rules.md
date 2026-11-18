@@ -13,10 +13,12 @@ rules ファイルは CLAUDE.md から分割される、発火条件付きの細
 
 ## 仕様
 
-- 単一の markdown ファイル。frontmatter `paths:` で発火条件 (対象ファイルの glob、カンマ区切りで複数指定可) を宣言する。該当ファイル編集時のみコンテキストに読み込まれる。
+- 単一の markdown ファイル。frontmatter `paths:` で発火条件 (対象ファイルの glob、カンマ区切りで複数指定可) を宣言する。該当 file を tool で触ったときにコンテキストへ読み込まれる。
   - ○ `paths: "skills/**/SKILL.md, .claude-plugin/plugin.json"` のように対象を絞る
   - × `paths:` 欠落 → 全セッションで毎回ロードされ CLAUDE.md と等価
 - 分け方は、まず `paths:` (各項の当たる path 集合)、次に関心で分ける (チェックリストの「分ける順」の項)。
+
+- **本文を書いてよい規範**: 条件と、漏れる条件の表の正本は [claude-md](./claude-md.md) の「載せる基準と段階開示」で、ここには写さない。満たさない規範は文書に置き、要る場面ごとに索引行か Read させる行を足す。rules に Read させる行だけを置いて本文を文書へ出すことはしない — その path を触る場面でしか要らない細則は、rules の Read させる行から読ませると Read が 1 回増え、読まれない余地ができる
 
 公式 spec は [sources](../../../../knowledge/claude-config-reference/references/sources.md) の一次情報源の表「CLAUDE.md の書き方」行 (`paths:` frontmatter 仕様) から辿る。
 
@@ -26,7 +28,8 @@ rules ファイルを新設・編集する前に確認する。
 
 rules 固有 (= `paths:` で path-scoped にすることで価値が出る) の項目のみここに残す。aspirational / global vs project / recurring failure のような汎用判断は [claude-md](./claude-md.md) のチェックリストに従う。
 
-- [ ] frontmatter `paths:` で発火条件を宣言したか (無いなら rules ではなく CLAUDE.md に置く)
+- [ ] frontmatter `paths:` で発火条件を宣言したか (無いなら rules に本文を置かない。触る file も作業の種類も問わず効く規則だけ CLAUDE.md に、場面別の規範は文書に置いて索引行を足す)
+- [ ] **本文を rules に書く条件**: 各規範が、仕様節「本文を書いてよい規範」の条件を満たすか。満たさない規範は文書に置き、要る場面ごとに索引行か Read させる行を足したか
 - [ ] **既存自動化との重複回避**: 追加しようとする細則が既に hook / settings の `permissions` で defend されていないか `grep -r` で確認したか (重複は drift と context bloat の原因)。プロジェクト側と global (`~/.claude/`) の両方を見る
 - [ ] `paths:` の glob が、各項の当たる path 集合と一致しているか — 狭すぎれば当たる編集で載らず、広すぎれば当たらない編集でも載る。一部の項だけが狭い path (特定の skill・特定の file) に当たるなら、その path を `paths:` に持つ別の rules へ切り出す
 - [ ] 分ける順を守ったか — まず `paths:` (各項の当たる path 集合) で分け、同じ path 集合の中では関心 (テーマ) で分ける。同じ `paths:` で同じ関心の rules が複数あれば 1 つに統合する

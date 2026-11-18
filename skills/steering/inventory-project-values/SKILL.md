@@ -1,12 +1,12 @@
 ---
 name: inventory-project-values
 disable-model-invocation: true
-description: 実行中 project の transcript から手入力プロンプトを観測し、再出現した規範を証拠 anchor 付きで候補化して、候補ごとの人間判定を経た承認分だけを cwd repo の CLAUDE.md / `.claude/rules/` へ反映する棚卸し。
+description: 実行中 project の transcript から手入力プロンプトを観測し、再出現した規範を証拠 anchor 付きで候補化して、候補ごとの人間判定を経た承認分だけを cwd repo の CLAUDE.md / `.claude/rules/` / 索引行が指す文書へ反映する棚卸し。
 ---
 
 # inventory-project-values
 
-**実行中の project** でユーザーが出した**フィードバック性のプロンプト** (却下・訂正・方針指示) から規範を拾い上げ、その project の `CLAUDE.md` / `.claude/rules/` へ反映する棚卸し skill。観測源は標準 transcript のうち**人間が手入力した prompt だけ**で、観測範囲は**cwd の repo に限る**。
+**実行中の project** でユーザーが出した**フィードバック性のプロンプト** (却下・訂正・方針指示) から規範を拾い上げ、その project の `CLAUDE.md` / `.claude/rules/` / 索引行が指す文書へ反映する棚卸し skill。観測源は標準 transcript のうち**人間が手入力した prompt だけ**で、観測範囲は**cwd の repo に限る**。
 
 3 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は `open_predicates` の解釈と文章の具体化のみ**):
 
@@ -19,7 +19,7 @@ description: 実行中 project の transcript から手入力プロンプトを�
 ## スコープ (改変不可の境界)
 
 - **読み対象**: `~/.claude/projects/**/*.jsonl` (標準 transcript) のみ。走査・抽出は `transcript-query` の責務で、LLM が transcript を直接読むことはしない。**cwd の repo の prompt だけ**を候補にする (手順 2 の repo 既定解決)
-- **書き対象**: **cwd repo の `CLAUDE.md` / `.claude/rules/`** のみ。rules の器のうち、既存 rules への追記の先は `.claude/rules/**/*.md` (サブディレクトリを含む。3-5 で読む範囲と同じ)、新規に起こす rules の作成先は `.claude/rules/<topic>.md`。どちらの器に置くかは**手順 4 で人間が選ぶ** (skill が器を決めるのは禁止。手順 5)。**AskUserQuestion での人間承認後にだけ**行う。変更の届け方 (作業ツリー / branch / PR) は実行 project の運用に従い、本 skill は決めない
+- **書き対象**: **cwd repo の `CLAUDE.md` / `.claude/rules/` / 索引行が指す文書**のみ。rules の placement のうち、既存 rules への追記の先は `.claude/rules/**/*.md` (サブディレクトリを含む。3-5 で読む範囲と同じ)、新規に起こす rules の作成先は `.claude/rules/<topic>.md`。索引行が指す文書は、cwd repo の中の path 1 本と、その文書を指す索引行 (`CLAUDE.md` に足す) を持つ。どの placement に置くかは**手順 4 で人間が選ぶ** (skill が placement を決めるのは禁止。手順 5)。**AskUserQuestion での人間承認後にだけ**行う。変更の届け方 (作業ツリー / branch / PR) は実行 project の運用に従い、本 skill は決めない
 - **除外**: `~/.claude/CLAUDE.md` (global) / cwd repo 以外のファイル
 - **非依存**: claude-mem / dotfiles / herdr。すべて標準 transcript と cwd repo 内 file のみ
 
@@ -127,32 +127,34 @@ slice の section `candidate` を `rank` 順に読み、**同一規範ごとに�
 - **前提**: 発話の言い換えではなく、発話が立つ前提 (何を正しいとみなし、何を優先するか) を 1-2 行。優先するものと退けるものを書く。**原文の意味を拡張しない**
 - **前提の出所**: 発話に理由が逐語で書かれていれば `表明`、書かれていなければ `推測`。`推測` の前提は手順 4 で人に確かめる — 前提は人しか持たない入力で、確かめずに書くと証拠に無い事実が規範に入る
 - **層**: 3-4 の振り分けの結果 (mental models / structures)
-- **反映先分類**: 3-4 の 3 種のいずれか (mental models 層の候補だけ)
-- **反映 diff 案**: 反映先ファイルの**どの節に何を足すか**を具体化する。rules の選択肢を載せる候補では、既存 rules への追記なら追記先の path を、新しい rules なら作成先 `.claude/rules/<topic>.md` と `paths:` の glob を逐語で書く (手順 5 はここに無い作成先・glob を補わない)。既存記述と矛盾する場合はその行を引用して指摘する
+- **要る場面**: 規範が判断を変える工程と、file を触る場面か、compaction の後も要るか (mental models 層の候補だけ。3-4 はこの項から placement を選ぶ)
+- **placement**: 3-4 の 4 種のいずれか (mental models 層の候補だけ)
+- **反映 diff 案**: 反映先ファイルの**どの節に何を足すか**を具体化する。rules の選択肢を載せる候補では、既存 rules への追記なら追記先の path を、新しい rules なら作成先 `.claude/rules/<topic>.md` と `paths:` の glob を逐語で書く (手順 5 はここに無い作成先・glob を補わない)。索引行が指す文書の選択肢を載せる候補では、文書の path (既存文書への追記なら追記先の節も) と `CLAUDE.md` に足す索引行 (読む場面と path) を逐語で書く (手順 5 はここに無い path・索引行を補わない)。既存記述と矛盾する場合はその行を引用して指摘する
 - **推測の分離**: 観測 (slice の値・原文引用) を超える解釈には `推測:` prefix を必ず付ける
 
-#### 3-4. 反映先の分類 (3 種)
+#### 3-4. placement の分類 (4 種)
 
-**先に層を振り分ける。** 候補ごとに、3-5 で読む cwd repo の既存の規範と照らす。同じ前提を述べる規範が無ければ mental models 層とし、下の表で器を分類する。同じ前提を述べる規範が既にあり、その規範が足された後 (`git log -S` で引いた規範の行の追加日より後) にも発話が出ていれば、出現回数によらず structures 層とし、器を分類せず手順 4 にも載せない — 規範があるのに追記すると、同じ規範が 2 か所に増えるだけで繰り返しは止まらない。structures 層の候補は、既存の規範の行 (`file:line` と引用) と再出現を添え、番号を振ってレポート §5 に載せる。レポートに残すだけで、次の実行で発話が再び出れば候補に挙がる。規範が足された後に発話が出ていない候補は、層を付けずに informational に「規範あり・追加後の再出現なし」と書く。規範の行の追加日を引けない候補は、追加後に出たかを観測できないので、層を付けずに「規範あり・追加日不明」と付け、structures 層の候補と同じ項目 (既存の規範の行と再出現) を添えてレポート §5 に載せる。
+**先に層を振り分ける。** 候補ごとに、3-5 で読む cwd repo の既存の規範と照らす。同じ前提を述べる規範が無ければ mental models 層とし、下の表で placement を分類する。同じ前提を述べる規範が既にあり、その規範が足された後 (`git log -S` で引いた規範の行の追加日より後) にも発話が出ていれば、出現回数によらず structures 層とし、placement を分類せず手順 4 にも載せない — 規範があるのに追記すると、同じ規範が 2 か所に増えるだけで繰り返しは止まらない。structures 層の候補は、既存の規範の行 (`file:line` と引用) と再出現を添え、番号を振ってレポート §5 に載せる。レポートに残すだけで、次の実行で発話が再び出れば候補に挙がる。規範が足された後に発話が出ていない候補は、層を付けずに informational に「規範あり・追加後の再出現なし」と書く。規範の行の追加日を引けない候補は、追加後に出たかを観測できないので、層を付けずに「規範あり・追加日不明」と付け、structures 層の候補と同じ項目 (既存の規範の行と再出現) を添えてレポート §5 に載せる。
 
-mental models 層の候補ごとに器の候補を分類する。**決めるのは人間** (手順 4) で、ここで出すのは選択肢と含意まで:
+mental models 層の候補ごとに placement の候補を分類する。**決めるのは人間** (手順 4) で、ここで出すのは選択肢と含意まで。選ぶ軸は、規範が要る場面を先に書き、その場面で漏れる届き方を外すこと。届き方ごとの漏れる条件は表の対象の列が持つ:
 
-| 分類 | 対象 | 反映経路 |
+| 分類 | 対象 (漏れる条件) | 反映経路 |
 |---|---|---|
-| **CLAUDE.md 常時ルール** | 全セッションで効く不変の規範 (作業方式 / 前提確認 / 禁止事項) | cwd repo の `CLAUDE.md` の該当節に追記 |
-| **`.claude/rules/`** | 特定ファイル群の編集時だけ効く細則 (`paths:` で発火条件を絞れるもの) | 既存 rules への追記、または `paths:` を宣言した新規 rules |
-| **器が決まらない** | 上 2 つのどちらでもない / 判断材料が足りない (例: 応答規範・skill 化した方がよいもの) | 手順 4 で人間が器を選べば、その器へ反映する。選ばなければ**反映しない** — レポートに器の候補と含意を残し、issue 起票を提案するところで止まる (保留) か見送る |
+| **CLAUDE.md 常時ルール** | 触る file も作業の種類も問わず判断を変える規則 (作業方式 / 前提確認 / 禁止事項)。漏れないが、行が増えた分だけ全セッションの費用になる | cwd repo の `CLAUDE.md` の該当節に追記 |
+| **`.claude/rules/`** | その path の file を tool で触る場面でしか要らず、compaction の後に次に file を触るまで消えていても困らない細則 (`paths:` で絞れるもの)。file を触らない工程 (設計・計画・レビューの議論) と Bash による書き込みには載らない | 既存 rules への追記、または `paths:` を宣言した新規 rules |
+| **索引行が指す文書** | 上 2 つの条件に収まらない場面別の規範 (file を触らない工程でも要る・compaction の後も要る)。モデルが Read しなければ届かないので、索引行が読む場面を言い当てていることが条件 | 文書の path と、`CLAUDE.md` に足す索引行 (読む場面と path)。どちらかが決まらなければ `placement が決まらない` |
+| **placement が決まらない** | 上 3 つのどれでもない / 判断材料 (文書の path・索引行を含む) が足りない (例: 応答規範・skill 化した方がよいもの) | 手順 4 で人間が placement を選び材料がそろえば、その placement へ反映する。選ばなければ**反映しない** — レポートに placement の候補と含意を残し、issue 起票を提案するところで止まる (保留) か見送る |
 
-分類の軸は「発火条件で絞れるか」の 1 点。絞れる規約を CLAUDE.md 直書きにすると無関係セッションで毎回ロードされ high-signal が薄まり、逆に `paths:` の無い rules は CLAUDE.md と等価になる。**`paths:` で発火条件を絞れる規範だけを rules 側の選択肢に載せ、絞れないものは CLAUDE.md 側の器を選ぶ。**
+場面別の規範を CLAUDE.md 直書きにすると全セッションで毎回ロードされて high-signal が薄まり、CLAUDE.md・rules の棚卸しが文書へ移した行を、この棚卸しが常時ルールへ戻すことになる。`paths:` の無い rules は CLAUDE.md と等価で、`paths:` の rules は上の条件を満たす規範だけの置き場になる。どちらにも収まらない場面別の規範は文書の選択肢にする。届き方に強さの順は付けない — 漏れる条件が場面ごとに違う。
 
-`器が決まらない` は消化しきれなかった残りではなく、**正規の分類**として AskUserQuestion に載せる。
+`placement が決まらない` は消化しきれなかった残りではなく、**正規の分類**として AskUserQuestion に載せる。
 
 #### 3-5. 具体化の前に必ず Read する reference
 
-反映先が harness ファイルなので、diff 案を書く前に同一 plugin 内の以下を Read する。**3-4 の層の振り分けより前に読み終える** — 器の選択肢に載せた後で読むと、既存 checklist との衝突が反映後に発覚して事後裁定になる:
+反映先が harness ファイルなので、diff 案を書く前に同一 plugin 内の以下を Read する。**3-4 の層の振り分けより前に読み終える** — placement の選択肢に載せた後で読むと、既存 checklist との衝突が反映後に発覚して事後裁定になる:
 
-- 常に**両方**: `${CLAUDE_SKILL_DIR}/../write-for-harness/references/components/claude-md.md` と同 `rules.md` (器の 2 択がこの 2 つなので、片方だけ読んで両方を選択肢に並べない)
-- `器が決まらない` の候補で**新規 skill を選択肢に挙げるなら、挙げる前に**同 `skill.md` も読む
+- 常に**両方**: `${CLAUDE_SKILL_DIR}/../write-for-harness/references/components/claude-md.md` と同 `rules.md` (常時ルールと rules の 2 つの placement と、文書の索引行の足し先がこの 2 つに関わるので、片方だけ読んで選択肢を並べない)
+- `placement が決まらない` の候補で**新規 skill を選択肢に挙げるなら、挙げる前に**同 `skill.md` も読む
 - 反映先の現状把握: cwd repo の `CLAUDE.md` と `.claude/rules/**/*.md` (既存の規範と照らして層を振り分け (3-4)、矛盾を diff 案で指摘するため)
 
 **`${CLAUDE_SKILL_DIR}` 展開後の構造** (相対 path の暗算ミスで File not found を誘発しないよう明示。plugin root の実 path は install 形態で変わるので、ここでは書かない):
@@ -165,7 +167,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 ### 4. 人間判定 (候補ごとの AskUserQuestion)
 
-**候補 1 件 = 1 問**で提示する。選択肢は、器が決まった候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / 見送る」、`器が決まらない` の候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / issue 起票の提案で止める / 見送る」を並べる (分類は LLM の提案にとどまり、器を選ぶのは人間)。どちらの候補でも、rules の選択肢は 3-4 の「`paths:` で発火条件を絞れる規範だけ」に当たるときだけ載せる。
+**候補 1 件 = 1 問**で提示する。選択肢は、placement が決まった候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / 索引行が指す文書 / 見送る」、`placement が決まらない` の候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / 索引行が指す文書」に「issue 起票の提案で止める」を足して並べる (選択肢は 4 つまでなので、見送りは選択肢の外の回答で受ける。分類は LLM の提案にとどまり、placement を選ぶのは人間)。どちらの候補でも、各選択肢は 3-4 の表の対象に当たるときだけ載せ、索引行が指す文書の選択肢は、文書の path と索引行がそろい、path が cwd repo の version 管理下にある (新規なら作成先が gitignore されていない) ときだけ載せる — 承認の後に書けないと分かる順にしない。人が回答の中で文書の path や索引行を逐語で示したら、path に上の判定を当て、当たれば承認した反映 diff 案に含め、当たらなければ含めずに no-placement としてレポートと報告に残す。
 
 **提示順は出現回数の降順**。同数なら `steering_pattern: correct` を含む束を先に出し (訂正はずれが露出した瞬間で、規範圧が最も高い出方)、それでも同点なら最終出現が新しい順。slice の `rank` (文字数降順) は**読み順**であって提示順ではない — 長さは規範圧の強さを表さないが、再出現は表す。
 
@@ -184,11 +186,11 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 **規範文を書く工程は `write-for-harness` に委ねる。** 本 skill の責務は観測・候補化・人間判定と反映先の指定までで、harness ファイルの文面規範を本 skill は持たない。invoke の前に `${CLAUDE_SKILL_DIR}/../write-for-harness/references/caller-contract.md` (呼び出し元向けの契約) を Read し、契約が定める事項は契約に従う。順序は次の 3 段で固定する:
 
-1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。** invoke の直前に 5-2 の控えを取る。候補の反映先 (新規 `.claude/rules/<topic>.md` を含む) を契約の args の形で渡し、5-1 の制約を添える。新規 rules の候補では、作成先 `.claude/rules/<topic>.md` と `paths:` の glob を、承認した反映 diff 案に逐語で載っているものから契約の「渡す args」のとおりに渡す。どちらかが載っていなければ、契約のとおり invoke せずに no-placement とし、欠けたもの (作成先 / glob) を手順 6 のレポートと報告に残す
+1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。** invoke の直前に 5-2 の控えを取る。候補の反映先 (新規 `.claude/rules/<topic>.md` を含む) を契約の args の形で渡し、5-1 の制約を添える。新規 rules の候補では、作成先 `.claude/rules/<topic>.md` と `paths:` の glob を、承認した反映 diff 案に逐語で載っているものから契約の「渡す args」のとおりに渡す。どちらかが載っていなければ、契約のとおり invoke せずに no-placement とし、欠けたもの (作成先 / glob) を手順 6 のレポートと報告に残す。索引行が指す文書の候補は、文書の path を 1 回 (索引行から Read される本文なので、既存でも新規でも component `claude-md` を同じ turn の文面で宣言する。新規なら `新規: claude-md <目的>` と作成先 path も宣言する。宣言は 5-2 の許可 path を変えない)、`CLAUDE.md` を args に索引行を足す 1 回の、file ごとに invoke する。承認した反映 diff 案に文書の path か索引行が逐語で載っていなければ、契約のとおり invoke せずに no-placement とし、欠けたもの (path / 索引行) を手順 6 のレポートと報告に残す
 2. **invoke から戻るたびに、変更された path を 5-2 で照合する**
 3. **全候補の反映を終えるか 5-2 で止めたら、ここまでに書いた diff を提示する**
 
-- **反映するのは手順 4 で人間が器を選んだ候補だけ。** issue 起票の提案で止めた候補はレポートに器の候補と含意を残すところで止める (「近いから CLAUDE.md に入れておく」は規範の所在を歪める)
+- **反映するのは手順 4 で人間が placement を選んだ候補だけ。** issue 起票の提案で止めた候補はレポートに placement の候補と含意を残すところで止める (「近いから CLAUDE.md に入れておく」は規範の所在を歪める)
 - 採否の説明が要るときは手順 6 のレポート summary 表を使う (再出現回数と証拠 anchor はそこに揃っている)
 - 契約の「反映を終えられなかったとき」の承認済み・未反映に当たった候補は、同節が載せさせるものと一緒にレポートと報告に残す (承認が黙って消えないようにする)
 
@@ -203,7 +205,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 invoke ごとに、契約の「委譲後の変更 path の照合」節の手順で照合する。この skill での値は次のとおり:
 
-- **許可 path**: args が既存 file の path ならその 1 本 (契約に従って rules の索引行を足す invoke の `CLAUDE.md` を含む)、`新規: rules` で起こす候補なら手順 5 の 1 で渡した作成先の 1 本だけ
+- **許可 path**: args が既存 file の path ならその 1 本 (契約に従って rules か文書の索引行を足す invoke の `CLAUDE.md` を含む)、`新規: rules` か `新規: claude-md` で起こす候補なら手順 5 の 1 で渡した作成先の 1 本だけ
 - **止めたときの記録先**: 契約が残させるものを、手順 6 のレポートと報告に残す
 
 ### 6. Markdown レポート組み立て
@@ -213,9 +215,9 @@ invoke ごとに、契約の「委譲後の変更 path の照合」節の手順�
 1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (手順 1 の `degradation` の劣化の件数のうち 0 でないもの。すべて 0 なら「劣化なし」と明記) / `absent_optional_paths` の値
 2. **除外の明示**: slice の `meta.excluded` (`below_min_chars` / `other_repo` / `boilerplate`) と `meta.band_histogram` を転記し、「短文帯 N 件・他 repo N 件・定型 N 件を意図的に対象外にした」ことを明記する。`meta.truncated_by_limit` が非 0 ならその件数も出す
 3. **定型一覧**: section `boilerplate_form` を件数付きで転記し、拾い戻した候補があればどれかを書く (拾い戻しゼロならその旨を書く。読んだことが復元できる形にする)
-4. **候補 section** (器の分類別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 前提と出所 (`表明` / `推測`。人が直したら直した後の文面も) / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / `undecided (保留)` / `undecided`。保留は `器が決まらない` の候補を人間が issue 起票の提案で止めたもので、承認も却下も出ていないので `undecided` に当たる)。承認済み・未反映と no-placement の候補には、手順 5 がレポートに残すとしたものを書く
+4. **候補 section** (placement 別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 前提と出所 (`表明` / `推測`。人が直したら直した後の文面も) / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / `undecided (保留)` / `undecided`。保留は `placement が決まらない` の候補を人間が issue 起票の提案で止めたもので、承認も却下も出ていないので `undecided` に当たる)。承認済み・未反映と no-placement の候補には、手順 5 がレポートに残すとしたものを書く
 5. **informational**: structures 層の候補 (3-4。既存の規範の行と再出現を添える) と、次の 3 種の slice record を、それぞれ理由付きで載せる + 読了 provenance — 4 発話型のどれにも当てはまらず候補にしなかったもの / 貼り付け境界で規範を復元できなかったもの / 読了予算で足切りしたもの
-6. **summary 表**: 番号 × 出現回数 × 器の分類 × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形。採用した候補の判定結果列には、手順 5 の結果 (反映済み / 承認済み・未反映 / no-placement) を書く。保留の候補は `undecided (保留)`、打ち切りで答えの出なかった候補は `undecided` と書き、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く
+6. **summary 表**: 番号 × 出現回数 × placement × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形。採用した候補の判定結果列には、手順 5 の結果 (反映済み / 承認済み・未反映 / no-placement) を書く。保留の候補は `undecided (保留)`、打ち切りで答えの出なかった候補は `undecided` と書き、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く
 
 冒頭に**束ね漏れ許容の前提** (3-2) を 1 行入れる。「網羅した一覧」と誤読させない。
 
@@ -226,7 +228,7 @@ invoke ごとに、契約の「委譲後の変更 path の照合」節の手順�
 `inventory-harness` の subagent として Read で開かれたときは、人に問わず、cwd repo の file を書き換えない。手順 1〜3 を進め、手順 6 のレポートを AskUserQuestion の結果の欄を空けて書き、手順 4・5 は行わずに、最終報告で次を返す。
 
 - レポートの path と、ヘッダの観測の劣化
-- mental models 層の候補の一覧 (手順 4 の提示順)。1 件ごとに: レポートの番号 / 前提と出所 / 再出現の回数と証拠 anchor の件数 / 原文引用 (代表 1 件。200 字超は truncate) / 人に並べる選択肢 (手順 4 の並べ方) / 反映 (器ごとの反映先 file。新しい rules は作成先と `paths:` の glob) / 添える制約 (5-1 の 2 項)
+- mental models 層の候補の一覧 (手順 4 の提示順)。1 件ごとに: レポートの番号 / 前提と出所 / 再出現の回数と証拠 anchor の件数 / 原文引用 (代表 1 件。200 字超は truncate) / 人に並べる選択肢 (手順 4 の並べ方) / 反映 (placement ごとの反映先 file。新しい rules は作成先と `paths:` の glob、索引行が指す文書は文書の path (component `claude-md`) と索引行を足す `CLAUDE.md`) / 添える制約 (5-1 の 2 項)
 - structures 層の候補と「規範あり・追加日不明」の候補の一覧。「反映しない」と付け、レポートの番号・前提・既存の規範の行・再出現を添える。人が直した前提の記録は `inventory-harness` の報告が持つ
 - 手順 1・2 の観測が止まって終了したときは、止まった理由と案内を言い換えずに返す
 

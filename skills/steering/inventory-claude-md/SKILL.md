@@ -1,12 +1,12 @@
 ---
 name: inventory-claude-md
 disable-model-invocation: true
-description: project の CLAUDE.md 系 (root / `CLAUDE.local.md` / サブディレクトリ / `.claude/rules/`) を静的観測し、行単位で 7 bucket の見直し候補レポートを作る棚卸し。判定は人間で、候補ごとに承認された分だけを write-for-harness で反映する。
+description: project の CLAUDE.md 系 (root / `CLAUDE.local.md` / サブディレクトリ / `.claude/rules/`) を静的観測し、行単位の bucket の見直し候補と規範の届き方の数を前後で示すレポートを作る棚卸し。判定は人間で、候補ごとに承認された分だけを write-for-harness で反映する。
 ---
 
 # inventory-claude-md
 
-project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.md` + サブディレクトリ CLAUDE.md + `.claude/rules/**/*.md`) を、静的に観測し **行単位で 7 bucket の候補**を LLM に提示させ、判定は人間に残す棚卸し skill。
+project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.md` + サブディレクトリ CLAUDE.md + `.claude/rules/**/*.md`) を、静的に観測し **行単位の bucket の候補**を LLM に提示させ、判定は人間に残す棚卸し skill。CLAUDE.md の行は外へ出すのが既定で、残す行にだけ根拠を求める。
 
 4 段階モデル (原則: **観測・集計は決定的に、判断は人間に、LLM は文章の具体化のみ、反映は承認分だけ**。本 skill の観測は `open_predicates` を出さないので、`open_predicates` の解釈の工程は無く、bucket の判定基準を当てはめる解釈は LLM が担う):
 
@@ -15,18 +15,18 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
 3. **人間判定**: 採否を選ぶのは常に人間。候補ごとに問う
 4. **反映**: 承認された候補だけを、1 件ずつ `write-for-harness` に書かせる。**人間承認を得ていない write はゼロ**で、書き終えたら diff を提示する
 
-**確度による 2 層化は持たない** — 静的トークンコストと注入実績は**候補の重み付け**に使い、bucket の決定には使わない。反映するものがある bucket の候補は、すべて同じ「候補ごとの承認 → 反映」の経路を通す。
+**確度による 2 層化は持たない** — 静的トークンコスト・注入実績・届き方の観測 (`reach`)・Read の実績は、候補に載せる行・提示の順・no-op の micro-test にかける順と範囲を決めるのと、証拠と §7 の報告に載せるのに使い、bucket の決定には使わない。反映するものがある bucket の候補は、すべて同じ「候補ごとの承認 → 反映」の経路を通す。
 
 ## スコープ (改変不可の境界)
 
-- **読み対象**: project の CLAUDE.md 系のみ (`<repo>/CLAUDE.md` + `<repo>/CLAUDE.local.md` + サブディレクトリ CLAUDE.md + `<repo>/.claude/rules/**/*.md`)
+- **読み対象**: project の CLAUDE.md 系 (`<repo>/CLAUDE.md` + `<repo>/CLAUDE.local.md` + サブディレクトリ CLAUDE.md + `<repo>/.claude/rules/**/*.md`)。届き方の観測に限り、`<repo>/.claude/skills/**/SKILL.md` と、それらから link を辿って届く repo 内の文書と、索引行が指す文書と同じ dir の `*.md` も script が読む (書かない)
 - **`CLAUDE.local.md` の位置づけ**: memory 階層 4 層目の project-local (個人 override)。本 skill は **root 直下 (`<repo>/CLAUDE.local.md`) のみ**を対象にする (reference `claude-md.md` の memory 階層表が project-local として挙げるのはこの 1 path。project 層と違いサブディレクトリへの言及が無い)。observation JSON では `sources.claude_md.local` (`label: "project-local"`) に独立キーで出るので、**source class は path の文字列判定でなく JSON のキーから読む**
-- **書き対象**: 手順 5 で人間が承認した候補の反映先 (`<repo>/CLAUDE.md` / `<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/**/*.md` / repo 内の既存 skill の SKILL.md) だけ。書くのは `write-for-harness` で、本 skill は反映先と候補を渡す。レポートは `/tmp/inventory-claude-md/` に置く
+- **書き対象**: 手順 5 で人間が承認した候補の反映先 (`<repo>/CLAUDE.md` / `<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/**/*.md` / repo 内の既存 skill の SKILL.md / move-to-doc の移動先の repo 内の文書) だけ。書くのは `write-for-harness` で、本 skill は反映先と候補を渡す。レポートは `/tmp/inventory-claude-md/` に置く
 - **除外**: `~/.claude/CLAUDE.md` (global) は読みも書きもしない。global 昇格は本 skill の機能外 — 人間が chezmoi 側で別途行う
-- **transcript の扱い**: bucket 判定の材料 (行・section・参照) はすべて静的 repo 内 file から取る。transcript は**注入実績 (どの file が何 session に載ったか) と compaction 実害だけ**を named query `overhead` 経由で読む (手順 1b)。行単位の実績は transcript に存在しないため、行の内容判断が transcript に依存することはない
+- **transcript の扱い**: bucket 判定の材料 (行・section・参照) はすべて静的 repo 内 file から取る。transcript は**注入実績 (どの file が何 session に載ったか) と compaction 実害**を named query `overhead` 経由で (手順 1b)、**索引行が指す文書を Read した session の数**を named query `read-sessions` 経由で (手順 1c) 読むだけにする。行単位の実績は transcript に存在しないため、行の内容判断が transcript に依存することはない
 - **非依存**: claude-mem / dotfiles / swat-skills 固有 gate 実装。**git の tracked/untracked も観測しない** (script は git に依存しない)
 
-**汎用スキル制約**: 参照するのは Claude Code 標準ファイルと `write-for-harness` (references の Read と、反映段での invoke) と `transcript-query` (手順 1b の invoke) のみ。repo 固有の gate 構成 (pre-commit gate script の有無) には触らない — 「lint 化可能か」の判断は LLM 段階で提案するが、配線は repo 側の別作業。
+**汎用スキル制約**: 参照するのは Claude Code 標準ファイルと `write-for-harness` (references の Read と、反映段での invoke) と `transcript-query` (手順 1b・1c の invoke) のみ。repo 固有の gate 構成 (pre-commit gate script の有無) には触らない — 「lint 化可能か」の判断は LLM 段階で提案するが、配線は repo 側の別作業。
 
 ## 引数
 
@@ -48,6 +48,8 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-claude-md.py --repo-root .
 
 各 file の `token_cost` に **行単位の概算 token** が出る (`per_line_est_tokens` は index 0 = 1 行目の配列、`sections` は見出し別合計と share)。CLAUDE.md 系は session 開始で無条件に載るので、実コストは行数ではなく token — 行数が同じでも表・code block・日本語で数倍違う。
 
+`reach` に規範の届き方の材料が出る (場面か path を絞る語を持つ CLAUDE.md の行・索引行が指す file・どこからも辿れない agent 向け文書・実在しない参照先・写し・常時載る量。数え方は script の docstring)。手順 3 の §7 の前の値と、手順 1c に渡す文書の一覧はここから取る。
+
 ### 1b. 注入実績の観測 (決定的)
 
 `swat-skills:transcript-query` を Skill tool で invoke し、named query `overhead` を直近 30 日の観測窓と出力 dir の名前 `inventory-claude-md` で呼ぶ。数える session は cwd の repo のものに絞られる。
@@ -59,6 +61,15 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-claude-md.py --repo-root .
 
 この観測が取れなくても (道具の取得の失敗・呼び直しても残る `stopped`・`sessions_observed` か `memory_files[]` が 0 件) 手順 2 以降は成立する — 静的観測だけで bucket 候補は組める。取れなかったら手順 2 の `memory_files[]` との突き合わせを止め、取れなかったことと理由をレポート §4「観測範囲外」に明記する。`empty_window` は窓を広げずに取れなかった扱いにする。transcript-query の「返り値の読み方」が 0 件を証拠に使えないとする値が返り値にあれば、その値を同じ節に書き、`memory_files[]` の行の不在を注入 0 session の証拠に使わない。
 
+### 1c. 索引行が指す文書の Read の実績 (決定的)
+
+手順 1 の `reach.index_targets` が空でなければ、`swat-skills:transcript-query` を Skill tool で invoke し、named query `read-sessions` を、`paths` に `index_targets` をカンマで繋いだ値、直近 30 日の観測窓、出力 dir の名前 `inventory-claude-md` で呼ぶ。
+
+- 1b と同じく返り値の `path` の成果物を Read する。`rows` が文書ごとの `sessions_read`、`meta` の `sessions_observed` が分母。列の読み方は成果物の `contract` が持つ
+- 成果物の `contract` の `notes` が「数えない」とする経路 (repo の subdirectory で始めた session・symlink 経由の Read など) を、レポート §4「観測範囲外」に転記する。値が 0 の文書があるときは、その行の証拠にも「数えていない経路あり」と添える
+- 文書ごとの値を、その文書を指す索引行の証拠に添える。0 の索引行は、効いていないか、その場面が起きていないかのどちらかで、どちらかは人が決める — bucket の決め手にしない
+- 取れなかったかの判定と扱いは手順 1b と同じにし (`sessions_observed` が 0 のときと `empty_window` を含む)、取れなかったらどの文書の 0 も「読まれていない」の証拠に使わない
+
 ### 2. observation JSON を読んで bucket 候補を提示 (LLM)
 
 着手前に、手順 4 が「常に」とする 2 本 (`patches.md` と `components/claude-md.md`) を Read する — 行の分類に診断表を使う。
@@ -69,8 +80,9 @@ observation の schema は script docstring 参照。以下の順に組み立て
 
 | bucket | 判定基準 (要旨) | 提案先 |
 |---|---|---|
-| **keep-inline** | 常時参照される汎用規範 (asking policy / 言語 / 責務分離原則等) | CLAUDE.md 本文の残置 |
-| **move-to-path-scoped** | 特定ディレクトリ配下の作業でのみ必要 | `.claude/rules/<topic>.md` + `paths:` frontmatter |
+| **keep-inline** | 触る file も作業の種類も問わず判断を変える規則と、索引行 | CLAUDE.md 本文の残置 |
+| **move-to-path-scoped** | その path の file を tool で触る場面でしか要らず、compaction の後に次にその file を触るまで消えていても困らない規範。候補には 2 つの条件それぞれの根拠を書く | `.claude/rules/<topic>.md` + `paths:` frontmatter |
+| **move-to-doc** | 一部の場面でしか要らないが、move-to-path-scoped の条件を満たさない規範 (file を触らない設計・計画・レビューの議論でも要る、compaction の後に消えると困る) | repo 内の文書へ本文を移し、要る場面ごとに索引行 (CLAUDE.md) か Read させる行 (rules) で指す |
 | **move-to-skill** | 特定タスク・状況でのみ必要な手順 | 既存 skill 追記 / 新規 skill |
 | **move-to-lint** | 決定的検査に置換できる規則 (行数 / path / 重複 / 参照実在等) | repo の gate/hook (配線は repo 側の仕事) |
 | **delete** | 参照切れ / 陳腐化 / 解決済み問題の残骸 / 下の対応表で delete に当たる行 | 削除 |
@@ -83,28 +95,29 @@ observation の schema は script docstring 参照。以下の順に組み立て
 |---|---|
 | [既定どおりの行 (no-op)](../write-for-harness/references/patches.md#diag-no-op) / [事実で、環境を見れば分かる](../write-for-harness/references/patches.md#diag-fact-from-environment) | delete |
 | [同じ概念の言い直し](../write-for-harness/references/patches.md#diag-restated-concept) / [散らばった定義](../write-for-harness/references/patches.md#diag-scattered-definition) | merge |
-| [事実で、一部の分岐でしか要らない](../write-for-harness/references/patches.md#diag-fact-some-branches) | move-to-path-scoped / move-to-skill |
+| [事実で、一部の分岐でしか要らない](../write-for-harness/references/patches.md#diag-fact-some-branches) | move-to-path-scoped / move-to-doc / move-to-skill |
 | [独立した trigger 語を持つ規律、またはほかの skill からも要る規律](../write-for-harness/references/patches.md#diag-independent-discipline) | move-to-skill |
 | [弱い表記・弱い語](../write-for-harness/references/patches.md#diag-weak-wording) / [禁止の形](../write-for-harness/references/patches.md#diag-prohibition) / [手順の列挙](../write-for-harness/references/patches.md#diag-procedure-list) | rewrite |
 
-- 上の対応の merge の 2 つは、診断表ではパッチが「残す」の行の但し書き (統合) に書かれている。但し書きに当たる行を先に merge にし、残りの「残す」の行を keep-inline にする。上の対応に無いそれ以外の行は、bucket を自分で割り当てず informational に理由付きで落とす
+- 上の対応の merge の 2 つは、診断表ではパッチが「残す」の行の但し書き (統合) に書かれている。但し書きに当たる行を先に merge にする。残りの「残す」の行のうち、keep-inline の根拠を書ける CLAUDE.md の行と索引行だけを keep-inline にし、書けない行は要る場面に合わせて move-to-path-scoped / move-to-doc / move-to-skill の候補にする — 常時載る行は全 session の費用になる。`paths:` の無い rules の行も常時載るので、CLAUDE.md の行と同じに扱う。`paths:` を持つ rules の行は、move-to-path-scoped の条件を満たせば keep-inline (その rules に残置し、根拠に 2 つの条件を書く)、触る file も作業の種類も問わず効くなら informational に「常時の規則が path-scoped の rules にある」と書き、それ以外は move-to-doc の候補にする。上の対応に無いそれ以外の行は、bucket を自分で割り当てず informational に理由付きで落とす
 - move-to-lint と、参照切れ・陳腐化による delete は診断表の外 (決定的検査への置換と、参照の実在) で判定する
 - **no-op の delete 候補は micro-test で確かめたものだけを出す**: 候補の行ごとに手順 2-1 の micro-test にかける。振る舞いが変わらなかった行だけを delete に載せ、変わった行は診断表の他の行で分類し直す。micro-test を回せなかった行と手順 2-1 の上限から外れた行は、delete に載せず informational に「no-op の疑い・未検証」と書く
 
 **bucket 割当ての制約 (script との責務分担)**:
 
-- LLM は observation JSON の証拠に**紐付けて**割り当てる。「常時参照される」を主張するなら「先頭 N section 以内 / 他 skill から参照される / 反復失敗の記録がある」等の**可視な根拠**を書く
+- LLM は observation JSON の証拠に**紐付けて**割り当てる。keep-inline の根拠には、その規則が判断を変える場面が触る file にも作業の種類にもよらないことを、行の内容から**可視に**書く。`reach.scoped_lines` に載った行を keep-inline にするなら、載った語があっても場面を絞らない理由も書く。`CLAUDE.local.md` の行は、下の「project-local に置く理由が内容にある」も keep-inline の根拠に数える
+- move-to-doc の候補には、移動先の文書の path (既存か新規)・索引行か Read させる行の文面・その行を置く file を逐語で書く — 手順 6 はこの 3 つを候補から写すので、どれかが無ければ no-placement になる
 - 決定的観測を超える推論には `推測:` prefix を必ず付ける (例: `推測: このルールは dispatch 実行時のみ必要と読める`)
 - lint 化可否は LLM の判断で、根拠に**適用可能な判定形式** (regex / AST / 静的解析) を 1 行明示する。実 gate 配線は書かない
 - 参照実在 fail は `move-to-lint` の証拠にできる。数える前に `link_targets[].check_mode` を見て、**実際に検査されて解決しなかった行 (`exists: false`) だけを fail に数える** — `url` / `anchor` / `dynamic` / `empty` は fail-safe で未検査 (`exists: null`) なので、レポート §4「観測範囲外」へ回す。fail 一件で削除を主張しない (書き手の誤植 vs 陳腐化を区別できない)
-- **inline code span (backtick 内) の path は script の `link_targets` に出ない**。`[text](target)` markdown link と `@path` import のみが検査対象。バッククォート内で書かれた `docs/foo.md` は observation JSON に無いため、参照実在の主張はしない (「link 抽出仕様の範囲外」を明記)
-- **サブディレクトリ CLAUDE.md の行は読取対象に含めるが、提案先には推奨しない** — root と subdir で規範が競合しても物理観測では区別できないので、`.claude/rules/` / skill への昇華 (`move-to-path-scoped` / `move-to-skill`) に倒す
+- **inline code span (backtick 内) の path は script の `link_targets` に出ない**。`[text](target)` markdown link と `@path` import のみが検査対象。バッククォート内で書かれた path のうち `reach.missing_targets` が検査するものの範囲は script の docstring が持つ。検査しない backtick 内の path は、参照実在の主張をせずに §4 に回す (「link 抽出仕様の範囲外」を明記)
+- **サブディレクトリ CLAUDE.md の行は読取対象に含めるが、提案先には推奨しない** — root と subdir で規範が競合しても物理観測では区別できないので、置き場を移す候補に倒す。どの bucket にするかは root の行と同じ表で決める
 - bucket vocabulary の**どれにも該当しないなら informational に落として理由を書く** (握り潰さない)
 
 **コスト × 実績の使い方 (候補の重み付け。bucket の決定ではない)**:
 
 - 候補の行群には `token_cost.per_line_est_tokens` を合算した **est_tokens を必ず添える**。「毎 session この行群に払っている概算 token」が、同じ bucket の候補間の優先順位になる
-- `.claude/rules/<topic>.md` は `memory_files[]` と突き合わせる。**注入 0 session の file は `memory_files[]` に行として現れない**。判定は**差分で行う** — 手順 1 の `sources.rules[]` が列挙した file のうち `memory_files[]` に無いものが「窓内で 1 度も注入されていない」。それは規範が届いていない証拠なので、`move-to-path-scoped` の glob 見直し (or `keep-inline` への差し戻し) を提案する
+- `.claude/rules/<topic>.md` は `memory_files[]` と突き合わせる。**注入 0 session の file は `memory_files[]` に行として現れない**。判定は**差分で行う** — 手順 1 の `sources.rules[]` が列挙した file のうち `memory_files[]` に無いものが「窓内で 1 度も注入されていない」。それは規範が届いていない証拠なので、`move-to-path-scoped` の glob 見直しを提案する。file を触らない場面でも要る規範なら move-to-doc を、keep-inline の根拠を書けるときだけ CLAUDE.md への差し戻しを提案する
 - 逆に `sessions_injected` が観測 session のほぼ全数に届いている path-scoped rule は、実質常時ロードなので CLAUDE.md 本体と同じコスト扱いで読む (行の直下の `sessions_observed` が分母)
 - `compaction.dropped_tokens` が大きい環境では、静的コストの削減提案 (`move-to-path-scoped` / `delete`) に「compaction 実害」を根拠として添えられる。**逆は言えない** — compaction は静的コストだけで起きるものではないので、「この行のせいで compaction した」とは書かない
 - **token 数は概算** (`token_cost.estimator` を転記する)。桁の比較にだけ使い、「N token を超えたら移設」のような閾値判定はしない
@@ -141,11 +154,21 @@ observation の schema は script docstring 参照。以下の順に組み立て
     - 提案 (1-2 行、証拠に紐づく)。新しい `.claude/rules/<topic>.md` を起こす move-to-path-scoped の候補は、作成先 path と `paths:` の glob も逐語で書く — 手順 6 はこの 2 つを候補から写すので、無ければ no-placement になる
     - 適用手順 (bucket 別分岐、下表参照)
 3. **informational**: bucket vocabulary の**どれにも該当しない**行の一覧と理由 (bucket vocabulary の適用先が不明な行 / 用途不明な行)。**汎用性が高く見える行もここに落とす** — 「(参考) global 昇格の余地あり — 判定は chezmoi 側で人間実施」と書き、bucket 候補としては出さない (global は本 skill の機能外)
-4. **観測範囲外 (人間確認へ回す)**: 参照実在検査が fail-safe で判断不能だった行 (`exists: null`) / inline code span の path 参照 / observation JSON の穴 / **観測境界の外にある file** (サブディレクトリの `CLAUDE.local.md` 等、存在しても JSON に出ないもの) / 手順 1b が取れなかった理由と、証拠に使えない返り値の値。**bucket 判定の証拠として使わない**行をここに集める
+4. **観測範囲外 (人間確認へ回す)**: 参照実在検査が fail-safe で判断不能だった行 (`exists: null`) / `reach.missing_targets` が検査しない inline code span の path 参照 / observation JSON の穴 / **観測境界の外にある file** (サブディレクトリの `CLAUDE.local.md` 等、存在しても JSON に出ないもの) / 手順 1b・1c が取れなかった理由と、証拠に使えない返り値の値 / 手順 1c の `read-sessions` が数えていない経路 (`notes` の転記)。**bucket 判定の証拠として使わない**行をここに集める
 5. **meta 観測**: CLAUDE.md / `CLAUDE.local.md` 自体の物理計測 (行数 / 見出し階層 / @import 数)。observation JSON の `meta.root_meta` と `meta.local_meta` を**それぞれ転記**する (`meta` は root と local の 2 本立てで、subdirs / rules は含まない)。**`status = "missing"` の側は数値を転記せず「(無し)」と書く** — `summarize_meta` は不在時に全項目 0 を返すので、そのまま載せると「存在するが 0 行」と読めてしまう。閾値 enforce はしない — 「参考値」として提示のみ
 6. **summary 表**: 番号 × bucket × 対象 × scope × 採否。「3 と 7 だけ採用」と言える形。scope 列で `project` と `project-local` を区別する (適用手順が分岐するため)。採否列は手順 5・6 の結果 (反映済み / 見送り / 承認済み・未反映 / no-placement / `undecided` / 問わない bucket は `-`) を、手順 6 を終えた時点で書き込む。承認済み・未反映・no-placement の候補は、手順 6 がレポートに残すとしたものを候補 section に書く。`undecided` があれば、表の下に件数と番号の一覧を 1 行書く
+7. **届き方の数**: 次の 5 つを、実行の前と後の 2 列の表で示す。上の 4 つは 0 を合格とし、合否と 0 でない数の該当の一覧は後の列 (後の列が空なら前の列) について表の下に書く。常時載る量には合否を付けない — 量だけでは行の要否が決まらない
+    - 移す候補にも根拠つきの keep-inline にもなっていない、場面か path を絞る語を持つ行の数 (`reach.counts.uncovered_scoped_lines`)。手順 2 を終えたら、移す候補 (move-to-path-scoped / move-to-doc / move-to-skill) と根拠つきの keep-inline になった `reach.scoped_lines` の行の `text` を 1 行 1 件で `/tmp/inventory-claude-md/covered-before-<timestamp>.txt` に書き、手順 1 の script に `--covered <その file>` を足して起動し直した値を前の値にする
+    - どこからも辿れない agent 向け文書の数 (`reach.counts.unpointed_docs`)
+    - 索引行と Read させる行が指す先が実在しない数 (`reach.counts.missing_targets`。検査する範囲は script の docstring)
+    - 同じ本文が 2 か所以上にある数 (`reach.counts.duplicates`)
+    - 常時載る量 (`reach.always_loaded` の est_tokens と chars)
 
-各 section の書き下し方が掴めないときは `${CLAUDE_SKILL_DIR}/references/report-example.md` を Read する (schema の正本は上の 6 項で、reference はその記入例)。
+    後の値は、手順 6 を終えた後に手順 1 の script を `--covered` つきで起動し直した観測から取る。前と同じ定義で数えるので、後の `--covered` の file は前の file の行に、move-to-doc の反映で足した索引行と Read させる行の `text` だけを足したものにする — 反映された移す候補の行は元 file から消えており、見送り・`undecided`・no-placement・承認済み・未反映の候補の行はこの実行の候補として覆われたまま残る。rewrite・merge で書き換えた行は覆わないので、場面か path を絞る語を持てば数に入る。反映が 0 件でも同じ手順で取る
+
+    表の下に、索引行が指す文書ごとの Read session 数 (手順 1c。分母の `sessions_observed` を添える) を並べる。`reach.index_targets` が空なら「索引行が指す文書なし」、手順 1c が取れなかったときは「観測なし」と書いて §4 を指す
+
+各 section の書き下し方が掴めないときは `${CLAUDE_SKILL_DIR}/references/report-example.md` を Read する (schema の正本は上の 7 項で、reference はその記入例)。
 
 **観測由来の事実と LLM 推測の分離**: レポートの証拠欄には observation JSON の値を**そのまま転記**する。LLM の解釈を混ぜる場合は `推測:` prefix を必ず付けて 1 行に留める。
 
@@ -156,6 +179,7 @@ observation の schema は script docstring 参照。以下の順に組み立て
 | keep-inline | 変更なし |
 | rewrite / delete / merge | 対象 file (`<repo>/CLAUDE.md` / `<repo>/CLAUDE.local.md` / `<repo>/.claude/rules/**/*.md`) を編集 (書き換え / 削除 / 統合)。merge が file をまたぐなら、統合先 (書き換え) と削除側 (削除) の file を別々に編集する |
 | move-to-path-scoped | 置き先を候補化の時点で `write-for-harness/references/components/rules.md` のチェックリストの「分ける順」で決めて提案に書き、承認後は提案に書いた置き先に書く — 同じ `paths:` で同じ関心の既存 rules を置き先にしたならそこへ追記 (追加)、新 `.claude/rules/<topic>.md` を置き先にしたなら作成して `paths:` frontmatter を宣言 (追加)。反映の段で置き先を選び直さない (承認していない file に書くことになる)。どちらでも元 file の対象行を削除 (削除) |
+| move-to-doc | 移動先の文書へ本文を書く (追加。文書が無ければ作成)。提案に書いた file に索引行か Read させる行を足し (追加)、元 file の対象行を削除 (削除)。元 file と索引行を置く file が同じなら、対象行を索引行へ書き換える (書き換え) 1 回で済む |
 | move-to-skill | repo 内の既存 skill なら、対象 skill の SKILL.md へ移す (パッチ種別は `write-for-harness` が選ぶ) + 元 file の対象行を削除 (削除)。新規 skill (と repo の外の skill) なら別 skill として起票し、本 skill では反映しない。詳細は `write-for-harness/references/components/skill.md` を参照 |
 | move-to-lint | gate/hook の要件文まで書き、実装は別セッション。本 skill は配線しない |
 
@@ -183,7 +207,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 ### 5. 人間判定 (候補ごとの AskUserQuestion)
 
-レポートを提示したうえで、**反映の対象になる候補を 1 件 = 1 問**で問う。対象は rewrite / delete / merge / move-to-path-scoped / repo 内の既存 skill への move-to-skill の候補。keep-inline・informational・move-to-lint・新規 skill への move-to-skill は反映するものが本 skill に無いので問わず、レポートに残す。
+レポートを提示したうえで、**反映の対象になる候補を 1 件 = 1 問**で問う。対象は rewrite / delete / merge / move-to-path-scoped / move-to-doc / repo 内の既存 skill への move-to-skill の候補。keep-inline・informational・move-to-lint・新規 skill への move-to-skill は反映するものが本 skill に無いので問わず、レポートに残す。
 
 - 選択肢は「採用」と「見送る」を並べ、各問にはレポートの対象テキスト・証拠・提案を添える。`共有化:` の候補には、共有してよいかの確認を問いの文面に含める
 - 提示順は bucket ごとに est_tokens の降順 (手順 2 の「コスト × 実績の使い方」の優先順位)
@@ -197,10 +221,11 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 **文面を書く工程は `write-for-harness` に委ねる。** 本 skill が持つのは候補・証拠と反映先の指定で、harness ファイルの文面規範は持たない。invoke の前に `${CLAUDE_SKILL_DIR}/../write-for-harness/references/caller-contract.md` (呼び出し元向けの契約) を Read し、契約が定める事項は契約に従う。順序は次の 2 段で固定する:
 
 1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。**
-    - 契約の「2 file にまたがる変更」に当たる候補は、move-to-path-scoped と move-to-skill (移動先 + 元 file の行削除)、file をまたぐ merge (統合先 + 削除側)、共有化 (移動先 + `CLAUDE.local.md` の行削除)
+    - 契約の「2 file にまたがる変更」と同じく file ごとに invoke する候補は、move-to-path-scoped と move-to-skill (移動先 + 元 file の行削除)、move-to-doc (移動先の文書 + 索引行を置く file + 元 file。後の 2 つが同じなら 2 file)、file をまたぐ merge (統合先 + 削除側)、共有化 (移動先 + `CLAUDE.local.md` の行削除)
     - どの候補を反映するかと 6-1 の制約を宣言する。2 file にまたがる候補では、その invoke の file に当てるパッチ (手順 3 の適用手順表の括弧内の種別) も宣言する — 候補全体を渡すと、書き手は他 file にまたがる削除・統合として報告だけにし、`未反映:` を返す。候補の場所は対象テキストの引用で示す — 先の反映で行番号がずれるので、行番号はレポート上の識別子に留める
     - invoke ごとに、契約の「委譲後の変更 path の照合」節の手順で照合する。許可 path は、args が既存 file の path ならその 1 本 (2 file にまたがる候補も invoke ごとに、その invoke の file だけ。契約に従って rules の索引行を足す invoke の `CLAUDE.md` を含む)、`新規: rules` で起こす候補なら作成先 `.claude/rules/<topic>.md` の 1 本。作成先と `paths:` の glob は、候補の提案に逐語で載っているものを契約の「渡す args」のとおりに渡し、どちらかが載っていなければ契約のとおり invoke せずに no-placement とし、欠けたもの (作成先 / glob) をレポートの候補 section と報告に残す。止めたときは、契約が残させるものをレポートの候補 section と報告に残す
-2. **全候補の反映が済んだら (照合で止めたときはそこまでに) diff を提示し、レポートの summary 表の採否列を書き込む**
+    - move-to-doc の移動先の文書は CLAUDE.md・rules・SKILL.md のどれでもないので、その invoke の直前の同じ turn で component を `claude-md` と宣言する — 文書は索引行か Read させる行が Read させる先で、置き場の規範を claude-md の reference が持つ。文書がまだ無ければ `新規: claude-md <目的>` を渡し (`<目的>` は候補の索引行か Read させる行の文面)、作成先 path を同じ turn で宣言する。許可 path は作成先の 1 本
+2. **全候補の反映が済んだら (照合で止めたときはそこまでに) diff を提示し、手順 3 の §7 の手順で後の値を書き、summary 表の採否列を書き込む**
 
 - 契約の「反映を終えられなかったとき」の承認済み・未反映に当たった候補は、同節が載せさせるものと一緒にレポートと報告に残す (承認が黙って消えないようにする)
 
@@ -208,16 +233,16 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 `write-for-harness` は棚卸し側の制約を知らないので、invoke のたびに渡す:
 
-- **反映先ファイルには規範文だけを書き、観測の証拠 (est_tokens / 注入 session 数 / 行番号 / micro-test の結果) は書かない。** 証拠はレポートに置く
+- **反映先ファイルには規範文だけを書き、観測の証拠 (est_tokens / 注入 session 数 / Read session 数 / 行番号 / micro-test の結果) は書かない。** 証拠はレポートに置く
 - **承認された bucket と提案の範囲で書く。** 元の行の意味を拡張しない。rewrite は、診断表の行が示す書き換えの方向を提案として添える
 - **no-op の delete は、手順 2-1 の micro-test を通したと宣言する** (場面と、取る行動が一致したことを添える)。宣言が無いと、`write-for-harness` は確認を通していない no-op の削除として書かずに報告へ回す
 
 ## 返却 (統合の棚卸しから開かれたとき)
 
-`inventory-harness` の subagent として Read で開かれたときは、人に問わず、repo の file を書き換えない。手順 1〜4 を進め (手順 2-1 の micro-test を含む)、手順 3 のレポートを採否の列を空けて書き、手順 5・6 は行わずに、最終報告で次を返す。
+`inventory-harness` の subagent として Read で開かれたときは、人に問わず、repo の file を書き換えない。手順 1〜4 を進め (手順 2-1 の micro-test を含む)、手順 3 のレポートを採否の列と §7 の後の値の列を空けて書き、手順 5・6 は行わずに、最終報告で次を返す。
 
-- レポートの path と、§4「観測範囲外」の要旨
-- 手順 5 が問う対象の候補の一覧 (手順 5 の提示順)。1 件ごとに: レポートの番号 / bucket / `file:line-range` と対象テキストの冒頭 / est_tokens / scope (`project` / `project-local`) / 反映 (invoke ごとの反映先 file と当てるパッチの種別 — 手順 3 の適用手順の表。新しい rules は作成先と `paths:` の glob) / 削除の根拠 (delete の候補だけ: micro-test を通した no-op / 環境を見れば分かる事実 / 参照切れ・陳腐化) / 添える制約 (6-1 の各項。no-op の delete は micro-test の場面と結果) / `共有化:` の候補は人への確認事項
+- レポートの path と、§4「観測範囲外」の要旨と、§7 の前の値と、後の値を取るのに要るもの (起動し直す script の command と引数、前の値に使った `--covered` の file の path。後の値は、move-to-doc の反映で足した索引行と Read させる行の `text` をその file に足して取る)
+- 手順 5 が問う対象の候補の一覧 (手順 5 の提示順)。1 件ごとに: レポートの番号 / bucket / `file:line-range` と対象テキストの冒頭 / est_tokens / scope (`project` / `project-local`) / 反映 (invoke ごとの反映先 file と当てるパッチの種別 — 手順 3 の適用手順の表。新しい rules は作成先と `paths:` の glob、move-to-doc は移動先の文書・索引行か Read させる行の文面・それを置く file と、移動先の文書を書く invoke では component を `claude-md` と宣言すること (新しい文書なら `新規: claude-md <目的>` と作成先)) / 削除の根拠 (delete の候補だけ: micro-test を通した no-op / 環境を見れば分かる事実 / 参照切れ・陳腐化) / 添える制約 (6-1 の各項。no-op の delete は micro-test の場面と結果) / `共有化:` の候補は人への確認事項
 - 手順 5 が問わない候補のうち、move-to-lint・新規 skill への move-to-skill・informational は「反映しない」と付け、レポートの番号・bucket・対象・証拠の要旨 1 行を返す。keep-inline は件数だけを返す
 - 手順 1 で「観測不能」になったときは、その理由を言い換えずに返す
 

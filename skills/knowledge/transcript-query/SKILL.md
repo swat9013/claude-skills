@@ -25,6 +25,7 @@ stdout は 1 個の JSON で、exit 0 は答えた、exit 1 は止まった。`s
 | `scan-prompts` | 観測窓の中で人間が手入力した prompt は何か (全 project 横断の mart) |
 | `select-prompt-candidates` | 手入力 prompt のうち読むべき候補はどれか (長さ・repo・正規形で絞った slice。`repo` の既定は実行中の dir の repo で、`all` で全 repo) |
 | `overhead` | cwd の repo の session に載った静的コンテキストの量と、memory file が注入された session 数と、compaction で捨てた token |
+| `read-sessions` | 名指しした repo 内の文書ごとに、cwd の repo の session のうち窓の中でその文書を Read した session はいくつか (条件: `paths` — repo root からの相対 path のカンマ区切り) |
 
 ```bash
 ${CLAUDE_SKILL_DIR}/scripts/transcript_query.py named <名前> [--since <ISO 8601>] [--until <ISO 8601>] --consumer <出力 dir 名> [--param <条件の名前>=<値> ...]

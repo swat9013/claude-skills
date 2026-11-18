@@ -41,7 +41,7 @@ candidate ごとに card を 1 枚。**7 項目すべて埋まらない candidat
 4. **閾値と ratchet 方針**: 固定閾値か、回帰下限 (現状値から下げない) か。カバレッジ系の数値は負の指標かつ回帰下限として扱う — 下げない床であって上げる目標ではない (数値の最大化を目標にすると assertion のないテストでも上がる)
 5. **分類 tag**: atomic/holistic・triggered/continual・static/dynamic (定義は [references/tools.md](references/tools.md) §分類軸)
 6. **負の fixture**: この検査が「確かに落ちる」ことをどう確かめるか (既存検査の改善 card では現状の有無を判定)
-7. **推奨度 badge**: Strong / Worth exploring / Speculative。自動化は痛みの実測後 — 実際に起きた・起きかけた劣化に根ざす candidate を Strong 側へ、理屈だけの candidate を Speculative 側へ倒す
+7. **推奨度 badge**: Strong / Worth exploring / Speculative。常設の検査は要るものだけ足す (原則 leaf `principle-least-code`) — 実際に起きた・起きかけた劣化に根ざす candidate を Strong 側へ、理屈だけの candidate を Speculative 側へ倒す
 
 report 末尾に **Top recommendation** (最初に入れるべき 1 枚とその理由) を置き、「どの card を進めますか」で止まる。
 

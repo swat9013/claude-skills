@@ -13,5 +13,6 @@ description: 差分を PR / commit に切り分けるとき、レビューへ出
 - **既存コードのテスト基盤の改善は、それを使う機能の CL より先に出す**。先に挙動の保証が厚くなっていると、機能の CL のレビューで保証が効く。付随テスト (前掲どおり機能の CL に含める) との判断軸は、その CL の主眼が「既存の挙動保証を厚くすること」か「新しい挙動を足すこと」か
 - **作業中に直したくなった本題外の箇所は同じ差分に混ぜず、別の課題 (issue 等) として切り出す**。今回触る箇所の小さな整理は Boy Scout Rule (`principle-debt-quadrant`) として同じ差分に含めてよく、切り出すのは本題と独立に出せる変更
 - **1 課題を 1 branch で進める実行形態では、順序に依存する CL の分割 (先に refactor / テスト基盤、後に振る舞いの変更) を同じ branch の中の commit の粒度に縮めてよい**
+- **計画した移行 (定義は `principle-short-lived-integration`) の branch の中では、途中の状態が単独で ship できなくてよい**。主幹へ入れる条件は同 leaf に従う。計画の無い変更は、上の分割軸 (単独でレビューでき単独で ship できる) のままにする
 
 出典: Google Engineering Practices「Small CLs」(<https://google.github.io/eng-practices/review/developer/small-cls.html>, Google LLC, CC-BY 3.0 — <https://creativecommons.org/licenses/by/3.0/>) を日本語で要約・再編し、付随テストの扱いと 1 branch での縮約を加えた。
