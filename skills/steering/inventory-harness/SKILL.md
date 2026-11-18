@@ -129,7 +129,7 @@ skill・MCP の存廃の返却にある「cwd の repo が追跡している ski
 - 返却の「反映」欄が反映の後の検証 (gate など) を挙げていれば、その invoke の照合の後に走らせる。通らなければ、結果を言い換えずにレポートと報告に残す
 - 新しい rules の作成先か `paths:` の glob、索引行が指す文書の path か索引行が承認した候補に無ければ、契約のとおり invoke せずに no-placement とする。文書に書く invoke では、返却が挙げる component を同じ turn で宣言する
 - 契約の「反映を終えられなかったとき」に当たった候補は承認済み・未反映とし、同節が載せさせるものをレポートと報告に残す。書かれた file は元に戻さない
-- 全 invoke と書き込みが済んだら (照合で止めたときはそこまでで。反映が 0 件でも)、`${CLAUDE_SKILL_DIR}/../inventory-claude-md/SKILL.md` の手順 3 の項目 7「届き方の数」の、後の値を取る段落を Read し、それに従って CLAUDE.md・rules の plant のレポートの後の値を取る。起動する command と引数と前の値に使った `--covered` の file は、plant の返却が「後の値を取るのに要るもの」として挙げたものを使い、足した `--covered` の file は `<run-dir>` に書く。前の file の行は消さない。command を起動できないときは、後の値を「取れず」とし、止まった理由を言い換えずにレポートと報告に残す。plant の返却が無ければこの段は行わない
+- 全 invoke と書き込みが済んだら (照合で止めたときはそこまでで。反映が 0 件でも)、`${CLAUDE_SKILL_DIR}/../inventory-claude-md/SKILL.md` の手順 3 の項目 7「届き方の数」の、後の値を取る段落を Read し、それに従って CLAUDE.md・rules の plant のレポートの後の値を取る。起動する command と引数 (`--before` の observation JSON を含む) と前の値に使った `--covered` の file は、plant の返却が「後の値を取るのに要るもの」として挙げたものを使い、足した `--covered` の file は `<run-dir>` に書く。前の file の行は消さない。command を起動できないときは、後の値を「取れず」とし、止まった理由を言い換えずにレポートと報告に残す。plant の返却が無ければこの段は行わない
 
 ### 7. 報告する
 

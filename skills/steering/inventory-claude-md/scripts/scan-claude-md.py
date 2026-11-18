@@ -24,11 +24,12 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
   - scoped_lines: 場面か path を絞る語 (`SCOPING_PATTERNS`。中身が `/` か `*` を含む
     code span も数える) を持つ root / local CLAUDE.md の行 (`text` は前後の空白を落とした行の本文)
   - uncovered_scoped_lines: `--covered` を渡したときだけ出る。scoped_lines のうち、
-    本文が `--covered` の file のどの行とも一致しない行。どの行が candidate か根拠つきの
-    残置になったかは LLM 段階が決めて file に書き、数えるのは script が行う
+    本文が `--covered` の file のどの行とも一致しない行。どの行が candidate・根拠つきの
+    残置・人が承認した書き換えになったかは LLM 段階が決めて file に書き、数えるのは script が行う
   - index_targets: root / local CLAUDE.md の link が指す、repo 内に実在する file
   - unpointed_docs: どの索引行・rules・skill の手順からも指されていない agent 向け文書。
     母集団 (agent 向け文書) は、`*.md` の index_targets と同じ dir に置かれた `*.md`
+    (`--before` を渡したときは、前の観測の母集団 `population_docs` をそのまま使う。索引行を消しても母集団は減らない)
     (再帰しない) のうち、CLAUDE.md 系・rules・`.claude/skills/**/SKILL.md` が指す文書から
     link で辿れない文書 (辿れる文書は、指された文書の下位の資料として母集団から外す)。
     指すかは link・`@import`・code span の `*.md` path で決める
@@ -688,10 +689,13 @@ def build_reach(
     claude_md_obs: list[dict[str, Any]],
     rules_obs: list[dict[str, Any]],
     covered: set[str] | None,
+    population_docs: set[Path] | None = None,
 ) -> dict[str, Any]:
-    """規範の届き方の材料。値は入力の file の中身と covered だけで決まる。
+    """規範の届き方の材料。値は入力の file の中身と covered と population_docs だけで決まる。
 
-    covered は candidate か根拠つきの残置になった行の本文 (前後の空白を落とす)。
+    population_docs は前の観測が決めた母集団。None なら今回の index_targets の dir で決める。
+
+    covered は candidate・根拠つきの残置・人が承認した書き換えになった行の本文 (前後の空白を落とす)。
     行番号でなく本文で照合するのは、反映の後に起動し直すと行番号がずれるため。
     """
     present = [o for o in [*claude_md_obs, *rules_obs] if o["status"] == "present"]
@@ -719,11 +723,11 @@ def build_reach(
     for path in skill_paths:
         pointed |= referenced_files(path, _read_lines(path), repo_root)
     reachable = reachable_files(pointed, repo_root)
-    population = {
+    population = (population_docs if population_docs is not None else {
         doc.resolve()
         for d in sorted({t.parent for t in index_targets if t.suffix == ".md"})
         for doc in d.glob("*.md")
-    } - excluded
+    }) - excluded
     unpointed = sorted(_repo_relative(p, repo_root) for p in population - reachable)
 
     missing_targets = [
@@ -752,6 +756,7 @@ def build_reach(
             f"code span containing {' or '.join(SCOPING_CODE_SPAN_CHARS)}"],
         "scoped_lines": scoped_lines,
         "index_targets": [_repo_relative(p, repo_root) for p in index_targets],
+        "population_docs": sorted(_repo_relative(p, repo_root) for p in population),
         "unpointed_docs": unpointed,
         "missing_targets": missing_targets,
         "duplicates": duplicates,
@@ -774,7 +779,11 @@ def build_reach(
 # --- 出力 --------------------------------------------------------------------
 
 
-def build_observation(repo_root: Path, covered: set[str] | None = None) -> dict[str, Any]:
+def build_observation(
+    repo_root: Path,
+    covered: set[str] | None = None,
+    population_docs: set[Path] | None = None,
+) -> dict[str, Any]:
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
     root_path = repo_root / "CLAUDE.md"
     root_obs = observe_markdown_file(root_path, repo_root, label="root")
@@ -789,7 +798,7 @@ def build_observation(repo_root: Path, covered: set[str] | None = None) -> dict[
         for p in find_subdir_claude_md(repo_root)
     ]
     rules_obs = [observe_rules_file(p, repo_root) for p in find_rules_files(repo_root)]
-    reach = build_reach(repo_root, [root_obs, local_obs, *subdir_obs], rules_obs, covered)
+    reach = build_reach(repo_root, [root_obs, local_obs, *subdir_obs], rules_obs, covered, population_docs)
 
     return {
         "reach": reach,
@@ -849,11 +858,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--covered",
         type=Path,
         help=(
-            "candidate か根拠つきの残置になった CLAUDE.md の行の本文を 1 行 1 件で書いた file。"
+            "candidate・根拠つきの残置・人が承認した書き換えになった CLAUDE.md の行の本文を 1 行 1 件で書いた file。"
             "渡すと reach に uncovered_scoped_lines とその件数が出る。"
         ),
     )
+    parser.add_argument(
+        "--before",
+        type=Path,
+        help=(
+            "前の観測の observation JSON。渡すと unpointed_docs の母集団を、その reach.population_docs"
+            " にする (後の値を、前の値と同じ母集団で数える)。"
+        ),
+    )
     return parser
+
+
+def read_before_population(path: Path, repo_root: Path) -> set[Path]:
+    """--before の observation JSON から前の母集団を読む。読めなければ例外のまま止まる (数を黙って 0 にしない)。"""
+    observation = json.loads(path.read_text(encoding="utf-8"))
+    return {(repo_root / t).resolve() for t in observation["reach"]["population_docs"]}
 
 
 def read_covered(path: Path) -> set[str]:
@@ -867,7 +890,8 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = Path(args.output_dir).expanduser()
 
     covered = read_covered(args.covered) if args.covered else None
-    observation = build_observation(repo_root, covered)
+    population_docs = read_before_population(args.before, repo_root) if args.before else None
+    observation = build_observation(repo_root, covered, population_docs)
     out_path = write_observation(observation, output_dir)
     print(str(out_path))
     return 0

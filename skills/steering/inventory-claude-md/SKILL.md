@@ -158,13 +158,15 @@ observation の schema は script docstring 参照。以下の順に組み立て
 5. **meta 観測**: CLAUDE.md / `CLAUDE.local.md` 自体の物理計測 (行数 / 見出し階層 / @import 数)。observation JSON の `meta.root_meta` と `meta.local_meta` を**それぞれ転記**する (`meta` は root と local の 2 本立てで、subdirs / rules は含まない)。**`status = "missing"` の側は数値を転記せず「(無し)」と書く** — `summarize_meta` は不在時に全項目 0 を返すので、そのまま載せると「存在するが 0 行」と読めてしまう。閾値 enforce はしない — 「参考値」として提示のみ
 6. **summary 表**: 番号 × bucket × 対象 × scope × 採否。「3 と 7 だけ採用」と言える形。scope 列で `project` と `project-local` を区別する (適用手順が分岐するため)。採否列は手順 5・6 の結果 (反映済み / 見送り / 承認済み・未反映 / no-placement / `undecided` / 問わない bucket は `-`) を、手順 6 を終えた時点で書き込む。承認済み・未反映・no-placement の候補は、手順 6 がレポートに残すとしたものを候補 section に書く。`undecided` があれば、表の下に件数と番号の一覧を 1 行書く
 7. **届き方の数**: 次の 5 つを、実行の前と後の 2 列の表で示す。上の 4 つは 0 を合格とし、合否と 0 でない数の該当の一覧は後の列 (後の列が空なら前の列) について表の下に書く。常時載る量には合否を付けない — 量だけでは行の要否が決まらない
-    - 移す候補にも根拠つきの keep-inline にもなっていない、場面か path を絞る語を持つ行の数 (`reach.counts.uncovered_scoped_lines`)。手順 2 を終えたら、移す候補 (move-to-path-scoped / move-to-doc / move-to-skill) と根拠つきの keep-inline になった `reach.scoped_lines` の行の `text` を 1 行 1 件で `/tmp/inventory-claude-md/covered-before-<timestamp>.txt` に書き、手順 1 の script に `--covered <その file>` を足して起動し直した値を前の値にする
+    - 移す候補にも根拠つきの keep-inline にも、人が承認した書き換えにもなっていない、場面か path を絞る語を持つ行の数 (`reach.counts.uncovered_scoped_lines`)。手順 2 を終えたら、移す候補 (move-to-path-scoped / move-to-doc / move-to-skill) と根拠つきの keep-inline になった `reach.scoped_lines` の行の `text` を 1 行 1 件で `/tmp/inventory-claude-md/covered-before-<timestamp>.txt` に書き、手順 1 の script に `--covered <その file>` を足して起動し直した値を前の値にする (この起動の observation JSON が、後の値の `--before` になる)
     - どこからも辿れない agent 向け文書の数 (`reach.counts.unpointed_docs`)
     - 索引行と Read させる行が指す先が実在しない数 (`reach.counts.missing_targets`。検査する範囲は script の docstring)
     - 同じ本文が 2 か所以上にある数 (`reach.counts.duplicates`)
     - 常時載る量 (`reach.always_loaded` の est_tokens と chars)
 
-    後の値は、手順 6 を終えた後に手順 1 の script を `--covered` つきで起動し直した観測から取る。前と同じ定義で数えるので、後の `--covered` の file は前の file の行に、move-to-doc の反映で足した索引行と Read させる行の `text` だけを足したものにする — 反映された移す候補の行は元 file から消えており、見送り・`undecided`・no-placement・承認済み・未反映の候補の行はこの実行の候補として覆われたまま残る。rewrite・merge で書き換えた行は覆わないので、場面か path を絞る語を持てば数に入る。反映が 0 件でも同じ手順で取る
+    後の値は、手順 6 を終えた後に手順 1 の script を `--covered` と `--before` つきで起動し直した観測から取る。前の値と同じ定義で数える (前の時点で承認した書き換えは無い)。次の 2 つを揃える。反映が 0 件でも同じ手順で取る
+    - 後の `--covered` の file は (本 skill の単独の実行では `/tmp/inventory-claude-md/covered-after-<timestamp>.txt` に)、前の file の行に、move-to-doc の反映で足した索引行と Read させる行の `text` と、承認して反映した rewrite・merge の行の反映後の本文 (1 行 1 件) を足して書く。`inventory-harness` の自律で直す一覧から、人が外さずに反映した rewrite・merge も承認に数える (趣旨の承認)。足した行は `uncovered_scoped_lines` に数えない。反映された移す候補の行は元 file から消えており、反映されなかった移す候補の行はこの実行の候補として覆われたまま残る
+    - `--before` には前の値を取った観測の observation JSON を渡す。母集団はその `reach.population_docs` (文書の集合) を使うので、索引行を消す候補を反映しても、前の母集団の文書は数から外れない
 
     表の下に、索引行が指す文書ごとの Read session 数 (手順 1c。分母の `sessions_observed` を添える) を並べる。`reach.index_targets` が空なら「索引行が指す文書なし」、手順 1c が取れなかったときは「観測なし」と書いて §4 を指す
 
@@ -241,7 +243,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 `inventory-harness` の subagent として Read で開かれたときは、人に問わず、repo の file を書き換えない。手順 1〜4 を進め (手順 2-1 の micro-test を含む)、手順 3 のレポートを採否の列と §7 の後の値の列を空けて書き、手順 5・6 は行わずに、最終報告で次を返す。
 
-- レポートの path と、§4「観測範囲外」の要旨と、§7 の前の値と、後の値を取るのに要るもの (起動し直す script の command と引数、前の値に使った `--covered` の file の path。後の値は、move-to-doc の反映で足した索引行と Read させる行の `text` をその file に足して取る)
+- レポートの path と、§4「観測範囲外」の要旨と、§7 の前の値と、後の値を取るのに要るもの (起動し直す script の command と引数、前の値に使った `--covered` の file の path と、その観測の observation JSON の path (後の値の `--before`)。後の値は、手順 3 の項目 7 の後の値の段落に従って取る)
 - 手順 5 が問う対象の候補の一覧 (手順 5 の提示順)。1 件ごとに: レポートの番号 / bucket / `file:line-range` と対象テキストの冒頭 / est_tokens / scope (`project` / `project-local`) / 反映 (invoke ごとの反映先 file と当てるパッチの種別 — 手順 3 の適用手順の表。新しい rules は作成先と `paths:` の glob、move-to-doc は移動先の文書・索引行か Read させる行の文面・それを置く file と、移動先の文書を書く invoke では component を `claude-md` と宣言すること (新しい文書なら `新規: claude-md <目的>` と作成先)) / 削除の根拠 (delete の候補だけ: micro-test を通した no-op / 環境を見れば分かる事実 / 参照切れ・陳腐化) / 添える制約 (6-1 の各項。no-op の delete は micro-test の場面と結果) / `共有化:` の候補は人への確認事項
 - 手順 5 が問わない候補のうち、move-to-lint・新規 skill への move-to-skill・informational は「反映しない」と付け、レポートの番号・bucket・対象・証拠の要旨 1 行を返す。keep-inline は件数だけを返す
 - 手順 1 で「観測不能」になったときは、その理由を言い換えずに返す
