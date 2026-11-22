@@ -56,6 +56,7 @@ ${CLAUDE_SKILL_DIR}/scripts/scan-claude-md.py --repo-root .
 
 - 返り値の `path` に成果物の JSON が出るので Read する (**本体は返らない**)。中身は `rows` の 1 行で、列の読み方は同じ JSON の `contract` が持つ
 - `memory_files[]` が **file 別の注入 session 数**
+- `sessions_unresolved` が repo を解決できずに数から落ちた session の cause 別の数 (手順 2 の差分の読み方を分ける)
 - `compaction` が **捨てられた token** (`dropped_tokens`)
 - `static_context.sources` は「何が重いか」の内訳 (`memory_file` / `skill_listing` / `mcp_instructions` / ...)。root `CLAUDE.md` の量は手順 1 の `token_cost` で見る
 
@@ -117,7 +118,9 @@ observation の schema は script docstring 参照。以下の順に組み立て
 **コスト × 実績の使い方 (候補の重み付け。bucket の決定ではない)**:
 
 - 候補の行群には `token_cost.per_line_est_tokens` を合算した **est_tokens を必ず添える**。「毎 session この行群に払っている概算 token」が、同じ bucket の候補間の優先順位になる
-- `.claude/rules/<topic>.md` は `memory_files[]` と突き合わせる。**注入 0 session の file は `memory_files[]` に行として現れない**。判定は**差分で行う** — 手順 1 の `sources.rules[]` が列挙した file のうち `memory_files[]` に無いものが「窓内で 1 度も注入されていない」。それは規範が届いていない証拠なので、`move-to-path-scoped` の glob 見直しを提案する。file を触らない場面でも要る規範なら move-to-doc を、keep-inline の根拠を書けるときだけ CLAUDE.md への差し戻しを提案する
+- `.claude/rules/<topic>.md` は `memory_files[]` と突き合わせる。**注入 0 session の file は `memory_files[]` に行として現れない**。判定は**差分で行う** — 手順 1 の `sources.rules[]` が列挙した file のうち `memory_files[]` に無いものが差分で、読み方は `sessions_unresolved` (repo を解決できなかった session の cause 別の数) の合計 N で分かれる
+    - N が 0 なら、差分の file は「窓内で 1 度も注入されていない」。それは規範が届いていない証拠なので、`move-to-path-scoped` の glob 見直しを提案する。file を触らない場面でも要る規範なら move-to-doc を、keep-inline の根拠を書けるときだけ CLAUDE.md への差し戻しを提案する
+    - N が 1 以上なら、差分の file はレポート §4「観測範囲外」に「未確定: 解決できなかった session N 件の注入が数に入っていない」と `sessions_unresolved` の値 ({cause: 数}) を添えて並べ、N が 0 のときの提案をしない — 理由は成果物の `contract` の `notes` が持つ。その file に別の根拠で候補が立ったときは、候補の証拠にも同じ文を添える
 - 逆に `sessions_injected` が観測 session のほぼ全数に届いている path-scoped rule は、実質常時ロードなので CLAUDE.md 本体と同じコスト扱いで読む (行の直下の `sessions_observed` が分母)
 - `compaction.dropped_tokens` が大きい環境では、静的コストの削減提案 (`move-to-path-scoped` / `delete`) に「compaction 実害」を根拠として添えられる。**逆は言えない** — compaction は静的コストだけで起きるものではないので、「この行のせいで compaction した」とは書かない
 - **token 数は概算** (`token_cost.estimator` を転記する)。桁の比較にだけ使い、「N token を超えたら移設」のような閾値判定はしない
@@ -153,6 +156,7 @@ observation の schema は script docstring 参照。以下の順に組み立て
     - 証拠 (observation JSON の観測項目を転記)
     - 提案 (1-2 行、証拠に紐づく)。新しい `.claude/rules/<topic>.md` を起こす move-to-path-scoped の候補は、作成先 path と `paths:` の glob も逐語で書く — 手順 6 はこの 2 つを候補から写すので、無ければ no-placement になる
     - 適用手順 (bucket 別分岐、下表参照)
+    - write-for-harness の報告 (手順 6 で渡した候補だけ): 契約の「返答を呼び出し元の報告へ運ぶ」節が載せさせるものを逐語で
 3. **informational**: bucket vocabulary の**どれにも該当しない**行の一覧と理由 (bucket vocabulary の適用先が不明な行 / 用途不明な行)。**汎用性が高く見える行もここに落とす** — 「(参考) global 昇格の余地あり — 判定は chezmoi 側で人間実施」と書き、bucket 候補としては出さない (global は本 skill の機能外)
 4. **観測範囲外 (人間確認へ回す)**: 参照実在検査が fail-safe で判断不能だった行 (`exists: null`) / `reach.missing_targets` が検査しない inline code span の path 参照 / observation JSON の穴 / **観測境界の外にある file** (サブディレクトリの `CLAUDE.local.md` 等、存在しても JSON に出ないもの) / 手順 1b・1c が取れなかった理由と、証拠に使えない返り値の値 / 手順 1c の `read-sessions` が数えていない経路 (`notes` の転記)。**bucket 判定の証拠として使わない**行をここに集める
 5. **meta 観測**: CLAUDE.md / `CLAUDE.local.md` 自体の物理計測 (行数 / 見出し階層 / @import 数)。observation JSON の `meta.root_meta` と `meta.local_meta` を**それぞれ転記**する (`meta` は root と local の 2 本立てで、subdirs / rules は含まない)。**`status = "missing"` の側は数値を転記せず「(無し)」と書く** — `summarize_meta` は不在時に全項目 0 を返すので、そのまま載せると「存在するが 0 行」と読めてしまう。閾値 enforce はしない — 「参考値」として提示のみ
@@ -227,7 +231,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
     - どの候補を反映するかと 6-1 の制約を宣言する。2 file にまたがる候補では、その invoke の file に当てるパッチ (手順 3 の適用手順表の括弧内の種別) も宣言する — 候補全体を渡すと、書き手は他 file にまたがる削除・統合として報告だけにし、`未反映:` を返す。候補の場所は対象テキストの引用で示す — 先の反映で行番号がずれるので、行番号はレポート上の識別子に留める
     - invoke ごとに、契約の「委譲後の変更 path の照合」節の手順で照合する。許可 path は、args が既存 file の path ならその 1 本 (2 file にまたがる候補も invoke ごとに、その invoke の file だけ。契約に従って rules の索引行を足す invoke の `CLAUDE.md` を含む)、`新規: rules` で起こす候補なら作成先 `.claude/rules/<topic>.md` の 1 本。作成先と `paths:` の glob は、候補の提案に逐語で載っているものを契約の「渡す args」のとおりに渡し、どちらかが載っていなければ契約のとおり invoke せずに no-placement とし、欠けたもの (作成先 / glob) をレポートの候補 section と報告に残す。止めたときは、契約が残させるものをレポートの候補 section と報告に残す
     - move-to-doc の移動先の文書は CLAUDE.md・rules・SKILL.md のどれでもないので、その invoke の直前の同じ turn で component を `claude-md` と宣言する — 文書は索引行か Read させる行が Read させる先で、置き場の規範を claude-md の reference が持つ。文書がまだ無ければ `新規: claude-md <目的>` を渡し (`<目的>` は候補の索引行か Read させる行の文面)、作成先 path を同じ turn で宣言する。許可 path は作成先の 1 本
-2. **全候補の反映が済んだら (照合で止めたときはそこまでに) diff を提示し、手順 3 の §7 の手順で後の値を書き、summary 表の採否列を書き込む**
+2. **全候補の反映が済んだら (照合で止めたときはそこまでに) diff と、別立てで invoke ごとの委譲先の返答のうち契約の「返答を呼び出し元の報告へ運ぶ」節が載せさせるもの (レポートの候補 section にも残す) を提示し、手順 3 の §7 の手順で後の値を書き、summary 表の採否列を書き込む**
 
 - 契約の「反映を終えられなかったとき」の承認済み・未反映に当たった候補は、同節が載せさせるものと一緒にレポートと報告に残す (承認が黙って消えないようにする)
 

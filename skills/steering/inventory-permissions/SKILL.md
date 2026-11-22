@@ -97,12 +97,12 @@ part の読む順・用途・derived view の意味論・**rule カタログ**�
 - `exposure_opportunity`: settings が git 管理下なら `git log -S '<entry>'` で追加時期を確認する。**追加時期が窓外でも露出不足はありうる** — 窓の作業内容が偏っていれば capability を使う機会自体が発生していない。窓内の cwd 分布 (`~/.claude/projects/` の project ディレクトリ、bypass sample の `cwd`) を見て機会の実在を判定する
     - settings が git 管理外 (`git ls-files --error-unmatch <path>` が非 0) なら**追加時期は履歴から詰められない**。根拠を窓内の cwd 分布だけに置き、entry 表示に「追加時期不明 (git 管理外)」と書く。cwd 分布から機会が読めるなら `推測:` prefix つきで満たすと判断し (手順 3 の条件 2 は満たさない)、読めないなら未充足として informational へ落とす
     - `project_local` の entry は `settings_denominator` の `resolved_path` を見る。repo 内の**配布用ディレクトリ** (他 project へ配る原本) への symlink を指しているなら、その entry の本来の利用者は**観測範囲外の他 repo**で、当該 repo の `match_count 0` は不使用の証拠にならない — `exposure_opportunity` は当該 repo の実績だけでは判定できず、**revoke ではなく keep** とする (原本の剪定基準は repo 側の規約が正本)
-- `alias_still_in_use`: ad-hoc の問いで当該 tool 名・`mcp__` の実行を引いて別名の実績を確かめる。あれば revoke ではなく refine (pattern の書き換え)
+- `alias_still_in_use`: part `derived_views` の `tool_usage` を contract の注記に従って読み、別名の実績を確かめる (revoke 候補を `transcript_kind=all` で取り直したら、その mart の `tool_usage` でも確かめる)。あれば revoke ではなく refine (pattern の書き換え)
 - `invocation_form_pair`: repo 側 README / commit 履歴に pair 規約の意図が残っていないか確認する
-- `deny_attributable_to_entry`: `sample_matched` と part `bypass_samples` の入力コマンドを読む。代表系列に無ければ ad-hoc の問いで引く。実因が複合行の混在なら refine の対象は entry ではなく「複合行の組み立て方」で、entry 変更は不要
+- `deny_attributable_to_entry`: part `axis_a` のその entry の `deny_samples`・`hard_deny_by_message`・`other_deny_messages` と、part `bypass_samples` の入力コマンドを読む。それで実因が決まらなければ満たすと判断せず informational へ落とす。実因が複合行の混在なら refine の対象は entry ではなく「複合行の組み立て方」で、entry 変更は不要
 
 **確度注記の義務**:
-- `hard_deny_share` を bucket 判定の根拠にする前に、その deny が **permission entry 由来か**を確かめる。guard hook 由来の deny も `deny_permission-rule` にラベルされ (`denial_kind` 空 + `outcome_base: error` に落ちる経路もある)、guard の deny メッセージは安定文字列なので、ad-hoc の問いで tool の結果の本文を引けば署名で帰属が分かる。入力が汚染されているときは `axis_a_high_deny_share` / `compound_line_deny_miscount` の 0 件を「候補が無い」ではなく「入力が汚れている」と読む
+- `hard_deny_share` を bucket 判定の根拠にする前に、その deny が **permission entry 由来か**を確かめる。帰属は contract の注記に従い、part `axis_a` のその entry の `hard_deny_by_message` と `other_deny_messages` で分ける。入力が汚染されているときは `axis_a_high_deny_share` / `compound_line_deny_miscount` の 0 件を「候補が無い」ではなく「入力が汚れている」と読む
 - outcome の `unknown` は**参考値**として扱い、bucket 判定は明示 outcome を主根拠にする (tool_result が transcript 末尾で truncate された / 別セッションに分割された / 未完了、のいずれでも unknown に落ちる)
 - 返り値の `degradation` の**事故由来**の劣化 (`broken_lines` / `undecodable_files` / `unreadable_files` / `unreadable_dirs` / `unrecognized_nested_files`) が 0 でないうちは、revoke ではなく hold にする — observation が欠けており、未使用に見える entry が実際には使われていることがある。既定の `transcript_kind=main` は subagent の tool 呼び出しを数えないので、subagent 内だけで使われた entry も `match_count 0` に見える。revoke 候補を採る前に、`transcript_kind=all` で取り直した mart でその entry の `match_count` を確かめ、0 でなければ revoke にせず keep にする。main の mart の劣化で hold にならなかった候補でも、取り直した mart の `degradation` の事故由来の劣化が 0 でなければ、その mart の `match_count 0` を根拠にする revoke 候補は informational へ落とし、取り直した mart の劣化の件数を添える — 劣化は mart と同じ母集団で数えるので main の mart には出ず、壊れた subagent の transcript の中でだけ使われた entry も取り直した mart で 0 に見える
 - `axis_a_high_deny_share` の `window_split.shifted: true` の entry は、**窓全体の `hard_deny_share` を bucket 判定の根拠にしない** (変更前後を混ぜた平均で、どちらの期間も表していない)。前半 / 後半の `hard_deny_share` を entry 表示に併記し、判定は変化後 (後半) の値で行う。`shifted: null` は判定不能 (どちらかの半分が薄い) で「窓内で一様」の証拠ではない — 前後半の件数を注記して informational へ落とす
@@ -110,7 +110,7 @@ part の読む順・用途・derived view の意味論・**rule カタログ**�
 - `matcher_confidence: unmatchable` の entry は **`match_count 0` を「未使用」と読まない** (読み方は mart の `contract.notes` が正本)。approx と同じく revoke / keep の判定対象から外し、**`unmatchable_reason` をそのまま**理由に添えて informational へ置く。所見には「どうすれば判定できるようになるか」を併記する — `input_column_empty` なら ad-hoc の問いで当該 tool の入力を見る (恒常的に要るなら named query の拡張を提案する)、`param_rule` (`Tool(param:value)` 形で観測が param の値を持たない) なら ad-hoc の問いで lake の生の行を読む。**`param_rule` を `input_excerpt` の列で数えない** — 200 字上限で Bash は `command` が先に入るため、長い command の呼び出しでは param が切り落とされて実在する呼び出しを 0 件と読み、使われている entry を revoke 候補にする
 - `unobserved_input_count` が 0 でない entry を revoke 候補として採る前に、その数を所見に出す。**`match_count` は確認できた範囲の下限**なので、0 件でも「その pattern を使っていない」とは言い切れない。差の実体が入力を解釈できず実行されなかった呼び出しなら 0 を実績として読んでよく、引数が任意の tool (`Grep` の `path` 等) の正当な省略なら読めない — どちらかは ad-hoc の問いで当該 tool の入力を見て確かめる
 - outcome の `deny_user-rejected` は Claude Code の [#29499](https://github.com/anthropics/claude-code/issues/29499) の false positive バグ影響下 — bucket 判定の**主根拠にしない** (count が主根拠)
-- `guard_reverse_lookup` に hook-deny (Claude Code の PreToolUse permissionDecision: deny) は原則含まれない (現状 deny の種類として記録されない)。automode-blocked / automode-unavailable のみを対象とし、「hook 由来の deny は本 skill の観測範囲外」と明記する
+- `guard_reverse_lookup` に hook の拒否は入らない (どう記録されるかは contract の注記が持つ)。automode-blocked / automode-unavailable のみを対象とし、「hook 由来の deny は `guard_reverse_lookup` の範囲外」と明記する (entry ごとの hook 由来の deny は、contract の注記に従って上の帰属の確かめ方で読む)
 
 **hook 観測の読み方 (part `hooks`)**:
 
@@ -142,10 +142,10 @@ part の読む順・用途・derived view の意味論・**rule カタログ**�
 
 deny の照合では、対象 file を指す**すべての表記** (実パス / `~/` 表記 / symlink 経由の表記) を照合対象にし、1 つでも一致したら編集不能とする。**一致しない別表記を探して書き込みに回さない** — matcher は表記を realpath 解決しないので別表記なら通ってしまうが、この deny は「agent に自分の permission を書き換えさせない」意図の表明であり、表記を替えて通すのはその意図を破る。
 
-高確度候補は候補ごとに証拠 1-2 行 (`rule_inputs` の match_count / 観測窓 / scope) + 適用手順 (手順 4 の単位別分岐表) を添えて **AskUserQuestion で選択肢を提示する** (選択肢は「適用する / 見送る (レポート記載のみ) / 保留」相当)。
+高確度候補は候補ごとに証拠 1-2 行 (`rule_inputs` の match_count / 観測窓 / scope) + 適用手順 (手順 4 の単位別分岐表) を添えて **AskUserQuestion で選択肢を提示する** (選択肢は「適用する / 見送る (レポート記載のみ) / 保留」相当)。答えが選択肢の外の自由記述なら、提示の打ち切りを告げる記述は下の打ち切りとして扱い、それ以外は記述を逐語で手順 4 の summary 表の結果に付記し、同じ問を選択肢から選ぶ形でもう一度示す (問い直し) — 自由記述を選択肢へ読み替えると、採否の裁定が LLM へ移る。問い直しにも選択肢で答えが出なければ `undecided` とする。
 
 - **承認されたら scope で分岐する**: project scope entry は同セッション内で編集し、変更の届け方は実行 project の運用に従う。global scope (`~/.claude/settings.json`) は従来どおり人間側操作 — 削除対象 entry をコピペ可能形で示した具体的手順を提示して受け渡す
-- 却下・保留された候補、および 3 条件を満たさない候補はすべて手順 4 のレポートへ回す。「保留」と答えた候補は、打ち切りの有無によらず `undecided` とする
+- 却下・保留された候補、および 3 条件を満たさない候補はすべて手順 4 のレポートへ回す。「保留」と答えた候補は、打ち切りの有無によらず `undecided (保留)` とする
 - 人が提示を打ち切ったら、答えの出ていない候補 (示して答えが無い候補と、まだ示していない候補) を `undecided` とし (対象は本手順で提示する高確度候補だけで、提示せずレポートへ回した候補は含めない)、承認された候補だけで適用へ進む — `undecided` は見送りと分けて手順 4 のレポートに件数と一覧を残す
 
 ### 4. Markdown レポート組み立て
@@ -157,11 +157,11 @@ deny の照合では、対象 file を指す**すべての表記** (実パス / 
     - 単位: `entry` (A 軸候補) or `tool + command_head` (B 軸候補) or `session_id + denied_at` (bypass)
     - match_count / outcome_breakdown (A 軸) or count / outcomes (B 軸)
     - bucket (上表の語彙) と、`rule_fired` / `open_predicates` の判断結果
-    - 証拠 (`sample_matched` / `samples` / `follow_ups` を mart から転記)
+    - 証拠 (`sample_matched` / `samples` / `follow_ups` と、deny の帰属の判断に使った `deny_samples` / `hard_deny_by_message` / `other_deny_messages` を mart から転記)
     - 提案 (1-2 行、証拠に紐づく)
     - 適用手順 (単位別分岐、下表参照)
 3. **informational**: 今回未分類 (母数不足 / 証拠不十分) の一覧、`near_misses` (落選理由つき)、`open_predicates` を満たさないと判断した候補、matcher confidence 別集計、tool 呼び出しあたりの PreToolUse hook の所要 (手順 2「hook 観測の読み方」の `pre_tool_use_per_call` の値)
-4. **summary 表**: 番号 × bucket × 対象。「3 と 7 だけ採用」と言える形。**高確度候補 (手順 3) も本表に載せ**、セッション内提案の結果 (承認 / 見送り / `undecided (保留)` / `undecided`。`undecided (保留)` は「保留」と答えた候補、`undecided` は打ち切りで答えの出なかった候補で、未提示の候補を含む) を付記し、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く — レポートは監査証跡として単体で完結させる
+4. **summary 表**: 番号 × bucket × 対象。「3 と 7 だけ採用」と言える形。**高確度候補 (手順 3) も本表に載せ**、セッション内提案の結果 (承認 / 見送り / `undecided (保留)` / `undecided`。`undecided (保留)` は「保留」と答えた候補、`undecided` は打ち切りか問い直しで答えの出なかった候補で、打ち切りでまだ示していなかった高確度候補を含む) を付記し (自由記述の回答があった候補はその逐語も付記する)、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く — レポートは監査証跡として単体で完結させる
 
 schema を埋めた形の記入例が要るときは [references/report-example.md](references/report-example.md) を Read する。
 

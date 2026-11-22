@@ -12,5 +12,5 @@
 
 この issue は深掘りを待っています。`/swat-skills:grill-with-docs` を起動し、この issue を渡して固めてください。
 
-(再構成のときだけ) close したメンバー #<M1>, #<M2>, … は、この issue に束ねたもの。固める中で束ね方が覆ったら、外れるメンバーを reopen して `needs-triage` を付ける (綴りは対象 repo の `docs/agents/triage-labels.md` に従う)
+(再構成のときだけ) close したメンバー #<M1>, #<M2>, … は、この issue に束ねたもの。固める中で束ね方が覆ったら、外れるメンバーを `swat-skills:issue-tracker-operations` の close / reopen の手順で reopen する (付ける状態の label は `needs-triage`。綴りは対象 repo の `docs/agents/triage-labels.md` に従う)
 ```

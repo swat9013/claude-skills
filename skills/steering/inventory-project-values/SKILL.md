@@ -50,7 +50,7 @@ mart は**全 project 横断**で作られる (transcript の lake は project �
 
 named query `select-prompt-candidates` を手順 1 と同じ `--since` / `--until` と `--consumer` で呼ぶ。
 
-- 返り値の `path` に slice が出るので、それを Read する。読み方の注記は slice の `contract` が持つ
+- 返り値の `path` に slice が出るので、それを Read する。読み方の注記は slice の `contract` が持つ。返り値の `degradation` と `absent_optional_paths` は手順 1 と同じく読み、手順 6 のレポートヘッダへ転記する
 - 読み順は **`text_chars` 降順 → timestamp → session_id → uuid** の全順序。`rank` の昇順に読む
 - `--param limit=<件数>` で件数を打ち切れる。打ち切りは text_chars 降順で当たり、削られた件数は `meta.truncated_by_limit` に出る (silent cap にしない)。`limit` の外に出た候補は slice に出ないので、優先帯で拾い直せない
 - 各候補に `steering_pattern` (`correct` / `question` / `instruct` / `steer`) が付く。section `steering_patterns` の `priority_order` は `limit` で残った候補から作られ、**読了予算で足切りするときの読み順**に使う — `correct` (訂正) は規範とのずれが露出した瞬間で、長さ順に読んで落とすと最も惜しい帯。`rank` 自体は動かない (読み順と提示順の分離は手順 4 と同じ)
@@ -167,7 +167,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 ### 4. 人間判定 (候補ごとの AskUserQuestion)
 
-**候補 1 件 = 1 問**で提示する。選択肢は、placement が決まった候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / 索引行が指す文書 / 見送る」、`placement が決まらない` の候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / 索引行が指す文書」に「issue 起票の提案で止める」を足して並べる (選択肢は 4 つまでなので、見送りは選択肢の外の回答で受ける。分類は LLM の提案にとどまり、placement を選ぶのは人間)。どちらの候補でも、各選択肢は 3-4 の表の対象に当たるときだけ載せ、索引行が指す文書の選択肢は、文書の path と索引行がそろい、path が cwd repo の version 管理下にある (新規なら作成先が gitignore されていない) ときだけ載せる — 承認の後に書けないと分かる順にしない。人が回答の中で文書の path や索引行を逐語で示したら、path に上の判定を当て、当たれば承認した反映 diff 案に含め、当たらなければ含めずに no-placement としてレポートと報告に残す。
+**候補 1 件 = 1 問**で提示する。選択肢は、placement が決まった候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / 索引行が指す文書 / 見送る」、`placement が決まらない` の候補なら「CLAUDE.md 常時ルール / `.claude/rules/` / 索引行が指す文書」に「issue 起票の提案で止める」を足して並べる (選択肢は 4 つまでなので、下の条件で絞った後の選択肢が 4 つに満たなければ「見送る」も載せ、4 つ埋まるときだけ見送りを選択肢の外の回答で受ける。分類は LLM の提案にとどまり、placement を選ぶのは人間)。どちらの候補でも、各選択肢は 3-4 の表の対象に当たるときだけ載せ、索引行が指す文書の選択肢は、文書の path と索引行がそろい、path が cwd repo の version 管理下にある (新規なら作成先が gitignore されていない) ときだけ載せる — 承認の後に書けないと分かる順にしない。人が回答 (問い直しの前の自由記述を含む) の中で文書の path や索引行を逐語で示したら、その候補が採用されたときに path に上の判定を当て、当たれば承認した反映 diff 案に含め、当たらなければ含めずに no-placement としてレポートと報告に残す。選択肢の外の回答は、見送ると答えたものを見送りとし、提示の打ち切りを告げるものを下の打ち切りとして扱い、それ以外の自由記述は逐語をレポートに残して同じ問を選択肢から選ぶ形でもう一度示す (問い直し) — 自由記述を placement へ読み替えると、placement の裁定が LLM へ移る。問い直しにも選択肢か見送りで答えが出なければ `undecided` とする。
 
 **提示順は出現回数の降順**。同数なら `steering_pattern: correct` を含む束を先に出し (訂正はずれが露出した瞬間で、規範圧が最も高い出方)、それでも同点なら最終出現が新しい順。slice の `rank` (文字数降順) は**読み順**であって提示順ではない — 長さは規範圧の強さを表さないが、再出現は表す。
 
@@ -188,7 +188,7 @@ reference の checklist を提案文面に**引用しない**。用語と判断�
 
 1. **採用された候補ごとに `Skill(swat-skills:write-for-harness)` を invoke する。** invoke の直前に 5-2 の控えを取る。候補の反映先 (新規 `.claude/rules/<topic>.md` を含む) を契約の args の形で渡し、5-1 の制約を添える。新規 rules の候補では、作成先 `.claude/rules/<topic>.md` と `paths:` の glob を、承認した反映 diff 案に逐語で載っているものから契約の「渡す args」のとおりに渡す。どちらかが載っていなければ、契約のとおり invoke せずに no-placement とし、欠けたもの (作成先 / glob) を手順 6 のレポートと報告に残す。索引行が指す文書の候補は、文書の path を 1 回 (索引行から Read される本文なので、既存でも新規でも component `claude-md` を同じ turn の文面で宣言する。新規なら `新規: claude-md <目的>` と作成先 path も宣言する。宣言は 5-2 の許可 path を変えない)、`CLAUDE.md` を args に索引行を足す 1 回の、file ごとに invoke する。承認した反映 diff 案に文書の path か索引行が逐語で載っていなければ、契約のとおり invoke せずに no-placement とし、欠けたもの (path / 索引行) を手順 6 のレポートと報告に残す
 2. **invoke から戻るたびに、変更された path を 5-2 で照合する**
-3. **全候補の反映を終えるか 5-2 で止めたら、ここまでに書いた diff を提示する**
+3. **全候補の反映を終えるか 5-2 で止めたら、ここまでに書いた diff を提示する。** 続けて別立てで、invoke ごとの委譲先の返答のうち契約の「返答を呼び出し元の報告へ運ぶ」節が載せさせるものを提示し、手順 6 のレポートにも残す
 
 - **反映するのは手順 4 で人間が placement を選んだ候補だけ。** issue 起票の提案で止めた候補はレポートに placement の候補と含意を残すところで止める (「近いから CLAUDE.md に入れておく」は規範の所在を歪める)
 - 採否の説明が要るときは手順 6 のレポート summary 表を使う (再出現回数と証拠 anchor はそこに揃っている)
@@ -212,12 +212,12 @@ invoke ごとに、契約の「委譲後の変更 path の照合」節の手順�
 
 `/tmp/inventory-project-values/report-<timestamp>.md` に mart / slice と並置で書く。以下の**固定 schema**:
 
-1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (手順 1 の `degradation` の劣化の件数のうち 0 でないもの。すべて 0 なら「劣化なし」と明記) / `absent_optional_paths` の値
+1. **ヘッダ**: 観測時刻 / 観測窓 / mart の総 prompt 数 / slice の `min_chars` / `repo_scope` と対象 repo / 候補件数 / 観測の劣化 (手順 1 の mart と手順 2 の slice の `degradation` の劣化の件数のうち 0 でないものを、どちらの呼び出しの値かを添えて書く。両方すべて 0 なら「劣化なし」と明記) / 手順 1・2 の `absent_optional_paths` の値 (呼び出しごと)
 2. **除外の明示**: slice の `meta.excluded` (`below_min_chars` / `other_repo` / `boilerplate`) と `meta.band_histogram` を転記し、「短文帯 N 件・他 repo N 件・定型 N 件を意図的に対象外にした」ことを明記する。`meta.truncated_by_limit` が非 0 ならその件数も出す
 3. **定型一覧**: section `boilerplate_form` を件数付きで転記し、拾い戻した候補があればどれかを書く (拾い戻しゼロならその旨を書く。読んだことが復元できる形にする)
-4. **候補 section** (placement 別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 前提と出所 (`表明` / `推測`。人が直したら直した後の文面も) / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / `undecided (保留)` / `undecided`。保留は `placement が決まらない` の候補を人間が issue 起票の提案で止めたもので、承認も却下も出ていないので `undecided` に当たる)。承認済み・未反映と no-placement の候補には、手順 5 がレポートに残すとしたものを書く
+4. **候補 section** (placement 別): 候補ごとに 再出現 (回数 / 期間 / repo 数) / 発話型 / 証拠 anchor / 原文引用 / 前提と出所 (`表明` / `推測`。人が直したら直した後の文面も) / 反映 diff 案 / AskUserQuestion の結果 (採用 / 見送り / `undecided (保留)` / `undecided`。保留は `placement が決まらない` の候補を人間が issue 起票の提案で止めたもので、承認も却下も出ていないので `undecided` に当たる。自由記述の回答はその逐語も書く)。承認済み・未反映と no-placement の候補には、手順 5 がレポートに残すとしたものを書く。write-for-harness に渡した候補には「write-for-harness の報告」の行を足し、契約の「返答を呼び出し元の報告へ運ぶ」節が載せさせるものを逐語で書く
 5. **informational**: structures 層の候補 (3-4。既存の規範の行と再出現を添える) と、次の 3 種の slice record を、それぞれ理由付きで載せる + 読了 provenance — 4 発話型のどれにも当てはまらず候補にしなかったもの / 貼り付け境界で規範を復元できなかったもの / 読了予算で足切りしたもの
-6. **summary 表**: 番号 × 出現回数 × placement × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形。採用した候補の判定結果列には、手順 5 の結果 (反映済み / 承認済み・未反映 / no-placement) を書く。保留の候補は `undecided (保留)`、打ち切りで答えの出なかった候補は `undecided` と書き、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く
+6. **summary 表**: 番号 × 出現回数 × placement × 発話型 × 判定結果 × 反映先ファイル。「3 と 7 だけ採用」と言える形。採用した候補の判定結果列には、手順 5 の結果 (反映済み / 承認済み・未反映 / no-placement) を書く。保留の候補は `undecided (保留)`、打ち切りか問い直しで答えの出なかった候補は `undecided` と書き、どちらかがあれば表の下に `undecided (保留)` と `undecided` を合わせた件数と番号の一覧を 1 行書く
 
 冒頭に**束ね漏れ許容の前提** (3-2) を 1 行入れる。「網羅した一覧」と誤読させない。
 

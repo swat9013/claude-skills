@@ -18,8 +18,8 @@ stdout は 1 個の JSON で、exit 0 は答えた、exit 1 は止まった。`s
 
 | 名前 | 答える問い |
 |---|---|
-| `find-invocations` | 名指しした skill は実際にどの transcript のどこで呼ばれたか (呼出しの位置つきの slice) |
-| `sum-stage-usage` | 名指しした transcript の工程ごとの所要・subagent 数・token はいくつか (工程の境界は呼び出し元が渡す) |
+| `find-invocations` | 名指しした skill は実際にどの transcript のどこで呼ばれたか (呼出しの位置と、呼出しごとの skill の注入字数つきの slice) |
+| `sum-stage-usage` | 名指しした transcript の工程ごとの所要・subagent 数・turn 数・token はいくつか (工程の境界は呼び出し元が渡す) |
 | `permissions` | permission entry・hook 設定と tool の実績の突き合わせ (条件: `section`・`transcript_kind`・`repo_root`) |
 | `invocations` | skill・agent・MCP・plugin は窓の中でどれだけ提示され、呼ばれたか。token 経済と未使用の候補を含む。条件は `repo_root` (分母を読む project。既定は cwd) |
 | `scan-prompts` | 観測窓の中で人間が手入力した prompt は何か (全 project 横断の mart) |
@@ -56,10 +56,10 @@ ${CLAUDE_SKILL_DIR}/scripts/transcript_query.py ad-hoc --limit <行数の上限>
 - `degradation` の `broken_lines`・`ts_missing_records`・`undecodable_files`・`unreadable_files`・`unreadable_dirs`・`unrecognized_nested_files` は観測の劣化の件数で、0 でない値があれば、その成果物の 0 件を「使われていない」の証拠に使わず、件数を添えて呼び出し元へ返す。`files_read`・`records`・`workflow_journal_files` は劣化ではない
 - 劣化の件数は窓で絞らない。named query では成果物の母集団全体の値で、`unrecognized_nested_files` は母集団を問わない。ad-hoc では SQL の絞り込みに連動しない
 - `undecodable_files` は読めない行を含む file の数で、その file の行の番号は読めない行の分だけずれる
-- `absent_optional_paths` は窓に現れなかった任意の path で、その機能を使っていなければ現れないのが正常な path を並べる。問いが読む path がここにあれば、その 0 件は機能の不使用と形式の変化を区別できない。subagent の meta の path は窓を問わず全 meta で見るので、窓の外の meta が持てばここに並ばない
+- `absent_optional_paths` は窓で形式を確かめられなかった path を並べる。並ぶのは、現れるはずの record (親) が窓に無かったので確かめなかった path と、その機能を使ったときだけ現れ、無いのが正常な path のうち窓に現れなかったものである。問いが読む path がここにあれば、その 0 件は機能の不使用と形式の変化を区別できない。subagent の meta の path は窓を問わず全 meta で見るので、窓の外の meta が持てばここに並ばない
 - `meta` は行に載らない値で、持つ問いの返り値にだけある。成果物にも同じ値が載り、読み方は成果物の `contract` が持つ
 - `snapshot_not_checked` があれば ad-hoc の問いは形式を照合しておらず、`missing_paths` の key も無い。値は照合を止めた種類で、その問いの 0 件は形式の変化と区別できないので、値を添えて呼び出し元へ返す
 - `stopped` があれば答えは無い
-  - `schema_mismatch`・`lake_missing`・`lake_empty` は答えなしで止まり、返り値をそのまま呼び出し元へ返す。`schema_mismatch` を 0 件へ読み替えない
+  - `schema_mismatch`・`lake_missing`・`lake_empty`・`config_unreadable` は答えなしで止まり、返り値をそのまま呼び出し元へ返す。`schema_mismatch` を 0 件へ読み替えない。`config_unreadable` の `next_action` は読めない利用者の設定 file を名指す案内で、直すのは利用者なので、file を書き換えずに返す
   - `permission`・`syntax`・`memory`・`query_failed`・`bad_argument`・`output_rejected` は渡した値の失敗で、`next_action` に従って SQL や引数を直して呼び直す。`next_action` が保守者への報告なら、`error_type` ごと呼び出し元へ返す
   - `empty_window`・`unknown_query` は問いの選び直しで、窓を広げるか一覧の名前で呼び直す。窓を決める手順がある呼び出し元は、その手順へ返す

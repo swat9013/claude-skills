@@ -9,7 +9,7 @@ description: 指定 skill の実呼出 transcript を一次証拠に、SKILL.md 
 
 指定 skill の「書かれた仕様」と「実行時の挙動」の乖離を、実呼出 transcript を一次証拠として検証する監査ループ。逸脱の原因を分類し、**skill 記述起因のものだけ**を SKILL.md の改善として反映する。
 
-乖離と並んで**工程の消費構造** (時間 / token / subagent 数) も測り、仕様どおりだが高コストな工程を最適化候補として報告する。
+乖離と並んで**工程の消費構造** (時間 / turn 数 / token / subagent 数) と呼出しごとの skill 本文の注入字数も測り、仕様どおりだが高コストな工程を最適化候補として報告する。
 
 ## args
 
@@ -51,7 +51,7 @@ Skill tool で `swat-skills:transcript-query` を invoke し、named query `find
 - `meta.emitted_files` が n 未満ならある分だけで進め、その旨を報告に明記する
 - `invoked_name` は、配布 skill なら `<plugin>:<skill-name>` (`<plugin>` は `<repo-root>/.claude-plugin/plugin.json` の `name`。その file が無ければ、どの名前で呼ばれているかを user に確かめる)、project-local skill なら `<skill-name>` — 渡さないと、選んだ SKILL.md の基準で別の skill の呼出しを監査することになる
 - 呼ばれ方で選んだ skill を見分け切れないとき (project-local skill を選んだ — 他の repo の project-local skill や `~/.claude/` の skill・command も同じ `<skill-name>` で呼ばれる / 手順 1 で呼ばれ方の同じ候補が並んだ) は、報告の 2 の各 transcript に「同名の skill の呼出が混ざりうる」と添え、手順 4 で逸脱を分類する前に、逸脱した呼出が選んだ skill のものかを transcript で確かめる
-- 各行の `path` が transcript の絶対 path で、`invocations` (呼出ごとの位置) が手順 3 の subagent に渡す anchor になる
+- 各行の `path` が transcript の絶対 path で、`invocations` (呼出ごとの位置) が手順 3 の subagent に渡す anchor になる。各呼出の `injected_chars` はその呼出しで入った skill 本文の注入字数で、手順 4 の見直し条件の照合と報告の 2 に使う。値の読み方は成果物の `contract` に従う。`null` なら「計測不能」と `injected_chars_reason` で書く — 0 と書くと、本文の入らなかった呼出しと区別できない
 
 ### 3. 各 transcript の監査 (subagent 並列委譲)
 
@@ -66,10 +66,10 @@ transcript 1 件 = subagent 1 体で、`subagent_type: swat-skills:transcript-au
 
 監査 subagent は Bash を持たず、集計しない。報告が届いた transcript ごとに、報告の「工程ごとの境界」を `stages` (`[{"stage": <工程名>, "from_uuid": <最初の record>, "to_uuid": <最後の record>}, ...]`) にし、named query `sum-stage-usage` を `--consumer skill-usage-audit`・`--param transcript=<絶対 path>`・`--param 'stages=<stages の JSON>'` で呼び (手順 2 の呼出しが通った形に揃え、`--since` を外して通ったならここでも外す。JSON の中の `'` は `'\''` と書く)、返り値の `path` を Read する。監査 subagent が「境界不明」とした工程は `stages` から外す (形の崩れた要素があると問いが止まり、境界の分かる工程まで計測できなくなる)。工程ごとの値は成果物の `rows` にあり、次のように手順 4 以降の消費として使う。
 
-- 所要は `duration_seconds`、subagent 数は `subagents.count`、token 概算は `tokens`、cache read は `cache_read_input_tokens` を別掲、subagent の token は `subagents.tokens`
+- 所要は `duration_seconds`、subagent 数は `subagents.count`、token 概算は `tokens`、cache read は `cache_read_input_tokens` を別掲、subagent の token は `subagents.tokens`、turn 数は `turns`、subagent の turn 数は `subagents.turns` (`turns` に足さず別に書く)
 - 上の値のうち `null` のもの・`error` に値がある工程・監査 subagent が「境界不明」とした工程は「計測不能」と理由 (`error` / `duration_reason` / `subagents.reason` と `subagents.unmatched_tool_use_ids`) で書く — 0 と書くと、消費が無かった工程と区別できない
 - 本文の読み方に従っても `stopped` が解けない transcript と、道具を取得できないときの全 transcript は、全工程を「計測不能」と `stopped` の値か取得の失敗の理由で書く。逸脱の監査はそのまま進める
-- transcript ごとの消費は工程の値の合計にする。計測不能の工程があれば部分和と書き、その工程名を添える。`meta.unresolved_agent_ids` が空でなければ subagent 数と subagent の token も部分和と書いて agent id を添え、`degradation.unrecognized_nested_files` が 0 でなければ同じく部分和と書いてその件数を添える (両方に当たれば両方を添える)。`degradation` のほかの劣化の件数が 0 でなければ、件数を添える
+- transcript ごとの消費は工程の値の合計にする。計測不能の工程があれば部分和と書き、その工程名を添える。`meta.unresolved_agent_ids` が空でなければ subagent 数と subagent の token と subagent の turn 数も部分和と書いて agent id を添え、`degradation.unrecognized_nested_files` が 0 でなければ同じく部分和と書いてその件数を添える (両方に当たれば両方を添える)。`degradation` のほかの劣化の件数が 0 でなければ、件数を添える
 - 報告の実行日時が「不明」なら手順 2 のその行の `mtime` で補い、file の mtime で代用したと書く。`mtime` が空なら不明のままにし、手順 4 の版差分は現行版で評価する
 
 `swat-skills:transcript-auditor` の名前が解決しないときは、`general-purpose` で代わりに起こさない — 代わりに起こすと model・effort・tools が呼出元の値へ黙って戻り、指名した深さで監査したように見える。手順 4 以降はすべて監査 subagent の報告に依存するので、次の 3 つを返して終了する: 停止理由 (Agent tool の error が挙げた available agents)・手順 1 の checklist と手順 2 の slice の path・次の手順 (swat-skills plugin の agent が読み込まれる状態にしてから再実行する)。
@@ -108,9 +108,9 @@ git -C <repo-root> log --format='%h %ci %s' -- <skill-path>
 
 版差分の確認で工程の区切りが現行版とずれていると控えた transcript は、工程ごとの消費を他の transcript の同じ工程と突き合わせず、報告の 2 にその旨を書く — 同じ名前の工程が同じ範囲を指さないので、比べると差を取り違える。transcript の合計は工程の区切りに依存しないので、見直し条件の照合を含め他の transcript と同じく使う。
 
-候補には消費の実測値 (所要 / subagent 数 / token 概算 / cache read / subagent の token) を添える — 実測の無い候補は次の改善ループで順位を付けられない。subagent の token は token 概算と合算しない。token 概算 (`tokens`) は main 側の消費だけを数えるので、subagent を起こした工程が重いかは subagent の token も含めて判断する — token 概算だけで判断すると、委譲の重い工程が過小に見えて候補から漏れる。候補が出なかったときは、消費構造のどこを見てそう判断したかを書く。
+候補には消費の実測値 (所要 / subagent 数 / turn 数 / subagent の turn 数 / token 概算 / cache read / subagent の token。見直し条件から加えた候補は、その条件が観測した値も) を添える — 実測の無い候補は次の改善ループで順位を付けられない。subagent の token は token 概算と合算しない。token 概算 (`tokens`) と turn 数 (`turns`) は main 側の消費だけを数えるので、subagent を起こした工程が重いかは subagent の token と turn 数も含めて判断する — main 側の値だけで判断すると、委譲の重い工程が過小に見えて候補から漏れる。候補が出なかったときは、消費構造のどこを見てそう判断したかを書く。
 
-手順 1 で控えた見直し条件は、最適化候補の有無にかかわらず 1 件ずつ照らす。置かない理由を添えた決定は照合から外す — 測れる量が無いので、載せても計測不能が並ぶだけになる。見直し条件が観測する量を、手順 3 の工程ごとの消費か監査 subagent の報告から取って閾値と比べ、超えたかを書く。観測した量が閾値を超えた見直し条件は、それが当たる工程を最適化候補に加える。どちらからも取れない量は「計測不能」と理由を書く。照らすのはこの監査の値だけにする — 過去の値は持たず、改善の前後は次の監査が同じ見直し条件に照らして比べる。
+手順 1 で控えた見直し条件は、最適化候補の有無にかかわらず 1 件ずつ照らす。置かない理由を添えた決定は照合から外す — 測れる量が無いので、載せても計測不能が並ぶだけになる。見直し条件が観測する量を、手順 3 の工程ごとの消費か、手順 2 の呼出しごとの注入字数か、監査 subagent の報告から取って閾値と比べ、超えたかを書く。観測した量が閾値を超えた見直し条件は、それが当たる工程を最適化候補に加える。注入字数の見直し条件は工程に当たらないので、超えたら対象 skill の本文を候補に加える。どれからも取れない量は「計測不能」と理由を書く。照らすのはこの監査の値だけにする — 過去の値は持たず、改善の前後は次の監査が同じ見直し条件に照らして比べる。
 
 **最適化候補は手順 5 の改善対象に入れない。** 工程の作り替えは対象 skill の再設計にあたるので、報告に載せて別ループへ送る。
 
@@ -133,7 +133,7 @@ SKILL.md 指示文は Inferential harness なので、**文面規範の Read と
 invoke の直前に、監査の証拠と次の制約を宣言する (委譲先は監査側の制約を知らない):
 
 - **依頼は承認された候補の反映で、候補ごとの変更後の文面は承認された案のとおり。** 改善の採否を縛るのは手順 4 の総合判定と人の承認で、監査で観測していない変更はどの証拠にも紐づかない
-- **委譲先の findings は反映せず、報告フォーマットの 4 に回す** — 反映すると承認されていない文面が書き込まれる
+- **`文面は承認済み`** (契約の「検証の範囲」の宣言)。返った findings は報告フォーマットの 4 に回す — 反映すると承認されていない文面が書き込まれる
 - **構造提案 (`structural_proposals`) と、配置を変えるパッチ (外出し・分割) は反映しない。** 配置・統廃合は対象 skill の再設計にあたるので、報告フォーマットの 4 に載せて別ループへ送る
 
 #### 5-2. 委譲後の変更 path の照合
@@ -159,8 +159,8 @@ invoke の直前に、監査の証拠と次の制約を宣言する (委譲先�
 以下 5 点を user に提示したら完了:
 
 1. 監査基準 (目的 / 成功条件 / 制約) の整理と、照らした設計 doc の path (無ければ「設計 doc なし」の 1 行)
-2. transcript ごとの判定サマリ表 (環境・判定・主要逸脱・消費 (所要 / subagent 数 / token 概算 / cache read / subagent の token))。手順 4 で工程ごとの消費を突き合わせから外した transcript にはその旨
+2. transcript ごとの判定サマリ表 (環境・判定・主要逸脱・消費 (所要 / subagent 数 / turn 数 / subagent の turn 数 / token 概算 / cache read / subagent の token)、呼出しごとの skill 本文の注入字数) と、transcript ごとの工程別の turn 数 (main の `turns` と subagent の `subagents.turns`。計測不能の工程は理由)。手順 4 で工程ごとの消費を突き合わせから外した transcript にはその旨
 3. 逸脱リスト (severity・原因分類つき。(d) は設計 doc と SKILL.md の該当箇所を並べ、どちらを直すかは人が決めると添える)
-4. 適用した改善の差分と、反映しなかった案 (承認に回さなかった配置を変える案・構造提案・委譲先の findings と委譲先が報告に回したパッチ。改善なしの場合はその根拠) と、却下された改善候補、`undecided` の改善候補 (件数と一覧)、承認済み・未反映の改善候補 (候補ごとに載せるものは 5-1・5-2 が決める)
+4. 適用した改善の差分と、反映しなかった案 (承認に回さなかった配置を変える案。改善なしの場合はその根拠) と、別立てで委譲先の返答 (契約の「返答を呼び出し元の報告へ運ぶ」節が載せさせるもの。5-1 が 4 に回すとしたものもここに載せる) と、却下された改善候補、`undecided` の改善候補 (件数と一覧)、承認済み・未反映の改善候補 (候補ごとに載せるものは 5-1・5-2 が決める)
 5. 最適化候補 (仕様どおりだが高コストな工程。実測値つき。候補が無ければその判断根拠) と、見直し条件ごとの照合 (観測した値・閾値・超えたか。計測不能なら理由)
 

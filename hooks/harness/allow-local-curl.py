@@ -17,14 +17,16 @@ curl は settings の ask 対象 (外部ホストへのデータ持ち出し / �
   - 接続先を再マップ・外部注入しうる flag (--resolve / --connect-to / -K / --location / -L /
     --proto-default / --next) を含まない
   - shell リダイレクト / subshell / background を含まない
+  - どの segment の語にも `$` と backtick を含まない (変数展開とコマンド置換は、curl の後ろの
+    `echo "$(…)"` の中でも確かめていないコマンドを走らせる)
   - 改行で続けた 2 行目を持たない (`_prelude.continues_on_another_line`)
 
 invariant: 上の条件のどれか 1 つでも確証できない command は allow しない (各条件が 1 項目。
 loopback に見せかけた host — userinfo・subdomain・suffix の似せ綴り — も loopback と数えない)。
 
 fail-safe: 静的に安全と確証できないケースは一切 allow せず passthrough() で痕跡を出して
-素通しし (ADR 0043)、settings の ask に委ねる。guard-* の deny は本 hook 追加後も従来どおり効く
-(deny > allow のため compound 内の危険操作は別 hook がブロックする)。
+素通しし (ADR 0043)、settings の ask に委ねる。compound 内の危険操作を別の hook の deny が止めることは
+前提にしない — allow は承認プロンプトを消すので、本 hook が確証した範囲だけに返す。
 
 allow-tmp-delete.py と同じ「確証なき場合は素通し」方針。shell tokenize と URL 解析の
 正確性のため sh ではなく python3 (shlex / urllib / ipaddress) で実装する。
@@ -54,9 +56,10 @@ SPLIT_OPS = {";", "&&", "||", "|"}
 PUNCT = ";()<>&|"
 
 # --- compound 内に混在してよい安全 head (curl 以外、read-only 相当) ---
+# 引数で file へ書くコマンド (`sort -o`・`uniq <in> <out>`) は入れない — 引数は curl の segment でしか見ない
 SAFE_HEADS = {
     "curl", "sleep", "cat", "jq", "echo", "printf", "true", "false", ":",
-    "head", "tail", "wc", "grep", "egrep", "fgrep", "sort", "uniq", "cut",
+    "head", "tail", "wc", "grep", "egrep", "fgrep", "cut",
     "date", "basename", "dirname", "test", "[",
 }
 
@@ -205,9 +208,6 @@ def curl_segment_ok(seg: list[str], out_roots: list[str]) -> bool:
     url_targets: list[str] = []
     host_targets: list[str] = []
     out_paths: list[str] = []
-    # backtick / `$` はコマンド置換・変数展開になり、URL の字面と実際の接続先・実行内容がずれる
-    if any("`" in tok or "$" in tok for tok in seg):
-        return False
     # curl は第 1 引数が `-q` / `--disable` でない限り curlrc を暗黙に読む。curlrc の `location` /
     # `proxy` 等は字面に現れないまま接続先を変えるので、curlrc があれば `-q` 無しは allow しない
     if seg[1:2] not in (["-q"], ["--disable"]) and curlrc_paths():
@@ -346,6 +346,10 @@ def judge(stdin_text: str) -> NoReturn:
     for s in segments:
         if not s:
             continue
+        # backtick / `$` はコマンド置換・変数展開になり、字面と実際の接続先・実行内容がずれる。shlex は二重引用の
+        # 中身を 1 語で返すので、`echo "$(rm -rf x)"` の置換は区切りに当たらず、安全 head の segment に残る (#2404)
+        if any("`" in tok or "$" in tok for tok in s):
+            passthrough()
         head = s[0]
         if head not in SAFE_HEADS:
             passthrough()
@@ -355,7 +359,7 @@ def judge(stdin_text: str) -> NoReturn:
                 passthrough()
 
     if curl_seen:
-        allow("loopback 宛 curl を自動許可")
+        allow(payload, "loopback 宛 curl を自動許可")
     passthrough()
 
 

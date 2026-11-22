@@ -66,7 +66,7 @@ CONTRACT = {
         "読み順 (rank) は text_chars の降順の全順序で、提示の順ではない",
         "候補の text は切り詰めない",
         "boilerplate_form は定型として除外した正規形の一覧で、逐語反復された規範がここに落ちるので、拾い戻しの候補源として読む。"
-        "repo_count は正規化した後 (host/owner/name) の distinct で、解決できなかった repo は数えない。"
+        "repo_count は正規化した後 (host/owner/name。port を落とし小文字にする) の distinct で、解決できなかった repo は数えない。"
         "定型の検出の母数は全 repo で、repo で絞る slice の count・repos・repo_count・sample は範囲の中の値だけを持つ",
         "条件 repo の既定は実行中の dir の repo で、解決できないときは全 repo へ倒さずに止まる",
         "repo の値は origin の URL で、`://` の形の URL は user と認証情報を落とす。origin の無い repo は repo の root の絶対 path で、"

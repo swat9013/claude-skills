@@ -19,9 +19,7 @@
 
 ## 書き換えの粒度
 
-評価 suite (skill の振る舞いを変更の前後で比べられる評価ケースの集合) がある skill だけ、節単位の書き換えを許す。suite の無い skill は、項目単位の差分 (削除・統合・1 文への言い換え) に限る — 振る舞いが変わっていないことを確かめる手段が無いまま節を書き直すと、どの規範が抜けたかが誰にも見えない。skill 以外の component は suite を持たないので、常に項目単位に限る。
-
-suite の有無は、skill が属する plugin の root にある `evals/<skill 名>/` で判定する。その下に `case.yaml` か `prompt.md` を持つ dir が 1 つ以上あれば suite がある。無ければ suite の無い skill として扱う。
+書き換えは、どの component でも項目単位の差分 (削除・統合・1 文への言い換え) に限る — 振る舞いが変わっていないことを確かめる手段が無いまま節を書き直すと、どの規範が抜けたかが誰にも見えない。
 
 ## 診断表
 
@@ -35,19 +33,9 @@ suite の有無は、skill が属する plugin の root にある `evals/<skill 
 | <a id="diag-fact-every-branch"></a>事実で、どの分岐でも要る | 残す |
 | <a id="diag-fact-some-branches"></a>事実で、一部の分岐でしか要らない | 外出し (`references/` へ) |
 | <a id="diag-fact-from-environment"></a>事実で、環境を見れば分かる | 削除。環境から引かせる |
-| <a id="diag-no-op"></a>既定どおりの行 (no-op) | 削除。eval suite がある skill は下の「no-op の suite 検証」で、それ以外 (suite の無い skill と skill 以外の component) は下の「no-op の micro-test」で、挙動が変わらないと確かめたものだけ |
+| <a id="diag-no-op"></a>既定どおりの行 (no-op) | 削除。下の「no-op の micro-test」で、挙動が変わらないと確かめたものだけ |
 | <a id="diag-independent-discipline"></a>独立した trigger 語を持つ規律、またはほかの skill からも要る規律 | 分割。報告だけにする |
 | <a id="diag-existing-skill-copy"></a>既存の skill の内容を本文に書き直している | 統合。その skill の呼び出しに置き換える。報告だけにする — 置き換え先の skill が呼び出せるか (model から起動できるか) と、呼び出し先との対の明文化を確かめてから決めるため |
-
-## no-op の suite 検証
-
-no-op の候補をまとめて、評価 suite で現行版と比べる。比べる版は、対象 skill が属する plugin root ごと (suite・同梱の agent ごと) に作る — suite は plugin root の `evals/` にあるので、file 単体の版は実行器に渡せない。評価の実行器に渡す plugin の path を、現行の plugin root と比べる版に替えて走らせる。
-
-- **走らせ方**: どの版も同じ suite を同じ model で、skill を入れた状態だけで走らせる (`claude plugin eval` なら `--ablation none`) — skill あり / なしを並べて走らせると、skill を呼ぶべき case で skill が起動したかが採点から外れる
-- **幅**: 現行版は 3 回走らせ、case ごとの score の最小〜最大をその case のばらつきの幅にする — 各版 1 回の run からは幅が得られない。実行器が 1 回の run の中で case ごとに複数回試行するなら、3 回の run の代わりに、現行版 1 回の run の試行の幅 (実行器が幅を出さなければ、試行ごとの score の最小〜最大) を使ってよい
-- **比べる版**: 候補を全部消した版と、下の確かめ直しで作る 1 件ずつ戻した版・残した候補をまとめて消した版は 1 回ずつ走らせ、case の score が幅の中にあれば「収まる」とする (試行から得た幅を使うときは、その版の試行ごとの score が全部幅の中にあれば収まる — 試行の平均を試行の幅と比べると、外れた試行が平均に埋もれる)
-- **確かめ直し**: 全 case が収まれば全件を候補に残す。幅を超えた case があれば、候補を 1 件ずつ戻した版でその case を走らせ直し、その case を幅に収めた候補 (= 差を生んでいた候補) を落とす。落とした後は、残した候補をまとめて消した版でもう 1 度走らせる (組み合わせで出る差は 1 件ずつ戻しても消えない)。落とした候補が無ければ、全部消した版の run をこの版の run とする — 同じ版を走らせ直して偶然幅に収まった run を、確かめたことに数えない
-- **判定**: no-op として削除に回せるのは、最後に走らせた版が全 case で幅に収まったときの残した候補だけ。最後の run で幅を超えた case が残ったとき、または suite を走らせられないときは、no-op 候補を全部未検証にし、削除に回さない
 
 ## no-op の micro-test
 

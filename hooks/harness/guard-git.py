@@ -320,7 +320,7 @@ def judge(stdin_text: str) -> NoReturn:
     # `.githooks/pre-push` 固有なので、同 repo の .claude/settings.json に登録した guard-push-timeout.py が持つ
     # (docs/adr/0078)。plugin に置くと他 repo の push まで塞ぐ。
     if is_enumerated_push(command):
-        allow_without_reason()
+        allow_without_reason(payload)
     passthrough()
 
 

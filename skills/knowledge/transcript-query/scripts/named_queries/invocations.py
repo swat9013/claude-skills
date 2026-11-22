@@ -24,7 +24,7 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 
 from named_queries import _invocation_denominators as denominators
-from named_query import RECOVERY, NamedQuery, QueryRun, Stopped
+from named_query import NamedQuery, QueryRun
 
 # 総 invocation がこれ未満なら、個別の 0 件を「使われていない」と読める母数が無い
 SUFFICIENT_THRESHOLD = 30
@@ -32,6 +32,7 @@ EXCERPT_MAX_PER_UNIT = 3
 EXCERPT_TEXT_LIMIT = 200
 
 MCP_NAME_RE = re.compile(r"^mcp__(.+?)__(.+)$")
+MCP_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 SKILL_LOAD_CHANNELS = ("skill_tool", "command", "read")
 CODE_EDIT_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
 PLAN_MODE_TOOLS = frozenset({"EnterPlanMode"})
@@ -100,9 +101,12 @@ def _normalize_mcp_server(name: str) -> str:
     """MCP server の表記の差を吸収した join の key。
 
     提示 (`claude.ai Slack`) と呼出し (`claude_ai_Slack`) で表記が違い、plugin 同梱の server も区切りが違う。
-    揃えないと毎日呼ばれている server が「提示されたが 0 呼出」に見える。`-` は両側で保たれる。
+    tool の名前は英数字・`_`・`-` の外の文字をすべて `_` にし、`claude.ai ` で始まる server だけはさらに続く `_` を
+    1 つに畳んで両端の `_` を落とすので、同じ写しを当てる。揃えないと毎日呼ばれている server が「提示されたが
+    0 呼出」に見える。
     """
-    return name.replace(":", "_").replace(".", "_").replace(" ", "_")
+    normalized = MCP_NAME_UNSAFE_RE.sub("_", name)
+    return re.sub(r"_+", "_", normalized).strip("_") if name.startswith("claude.ai ") else normalized
 
 
 def _plugin_of_skill(skill_id: str, plugin_ids: Collection[str]) -> str | None:
@@ -111,9 +115,31 @@ def _plugin_of_skill(skill_id: str, plugin_ids: Collection[str]) -> str | None:
     return prefix if separator and prefix in plugin_ids else None
 
 
-def _mcp_tool_belongs_to(tool_id: str, plugin_id: str) -> bool:
-    """同梱の server の tool か。命名の規約に頼るので、外れる server は未判定の条件が受ける。"""
-    return tool_id.startswith(f"mcp__plugin_{plugin_id}_")
+def _bundled_tool_resolver(plugin_ids: Collection[str],
+                           bundled: dict[str, set[str]]) -> Callable[[str], set[str]]:
+    """MCP tool の名前 → それを同梱する plugin の名前の集合。
+
+    tool の名前は `mcp__plugin_<plugin>_<server>__<tool>` で plugin と server の境が `_` なので、`foo` と
+    `foo_bar` の両方に前方一致しうる。同梱の server の名前が tool の server に当たれば、その名前を同梱する plugin の全部
+    (正規化で別の plugin の名前と重なれば複数) と、同梱の server の名前が分からない plugin のうち前方一致するものに数える。
+    当たらなければ前方一致する plugin の全部に数える — 使われた plugin を 0 件に見せて uninstall の候補にしない。
+    """
+    owners: dict[str, set[str]] = collections.defaultdict(set)
+    for plugin_id, servers in bundled.items():
+        for server in servers:
+            owners[_normalize_mcp_server(f"plugin:{plugin_id}:{server}")].add(plugin_id)
+
+    def prefixed(tool_id: str, candidates: Collection[str]) -> set[str]:
+        return {plugin_id for plugin_id in candidates
+                if tool_id.startswith(f"mcp__plugin_{_normalize_mcp_server(plugin_id)}_")}
+
+    def plugins_of(tool_id: str) -> set[str]:
+        parsed = _parse_mcp_name(tool_id)
+        if parsed and parsed[0] in owners:
+            return owners[parsed[0]] | prefixed(tool_id, set(plugin_ids) - set(bundled))
+        return prefixed(tool_id, plugin_ids)
+
+    return plugins_of
 
 
 def _earliest(*epochs: float | None) -> float | None:
@@ -162,19 +188,10 @@ def _user_excerpt(text_blocks: list[str]) -> str:
     return " ".join(block for block in text_blocks if not block.startswith("<")).strip()[:EXCERPT_TEXT_LIMIT]
 
 
-def _stop_on_lost_identity(run: QueryRun, tool_uses: list[dict]) -> None:
-    """識別の path は使わない環境では窓に現れないので照合が止めない。識別を失った呼出しを 0 件へ読み替えない。"""
-    skill_uses = [row for row in tool_uses if row["tool"] == "Skill"]
-    if skill_uses and not any(row["unit_id"] for row in skill_uses):
-        (row,) = run.select("SELECT lake_skill_identity_path() AS path")
-        raise Stopped("schema_mismatch", RECOVERY, missing_paths=[row["path"]])
-
-
 def _collect_invocations(run: QueryRun, known_ids: set[str],
                          skill_of_read: Callable[[str], str | None]) -> list[Invocation]:
     """3 つの系列を file の行の順に並べ、直前の user turn の抜粋を添えて呼出しの列にする。"""
     tool_uses = run.select(TOOL_USES)
-    _stop_on_lost_identity(run, tool_uses)
     events = [(row["path"], row["line_seq"], 0, "user", row) for row in run.select(USER_TEXTS)]
     events += [(row["path"], row["line_seq"], 0, "slash", row) for row in run.select(SLASHES)]
     events += [(row["path"], row["line_seq"], row["block_no"], "tool_use", row) for row in tool_uses]
@@ -345,7 +362,7 @@ def _complement_denominators(denoms: dict[str, list[dict]], units: dict[str, lis
 
 
 def _presented_section(run: QueryRun, invocations: list[Invocation], tool_sessions: list[dict],
-                       plugin_ids: Collection[str]) -> dict:
+                       plugin_ids: Collection[str], plugins_of_tool: Callable[[str], set[str]]) -> dict:
     """session に実際に提示された分母 × 呼出しの有無。除去は追わない — 分母の定義が「一度でも提示された」だから。"""
     presented: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
     stamps: dict[tuple[str, str], list[str]] = collections.defaultdict(list)
@@ -370,9 +387,8 @@ def _presented_section(run: QueryRun, invocations: list[Invocation], tool_sessio
             if parsed:
                 invoked[("mcp_server", _normalize_mcp_server(parsed[0]))].add(invocation.session_id)
             # 同梱の MCP tool の呼出しも plugin が使われた証拠になる (uninstall は両方を巻き込む)
-            for plugin_id in plugin_ids:
-                if _mcp_tool_belongs_to(invocation.unit_id, plugin_id):
-                    invoked[("plugin", plugin_id)].add(invocation.session_id)
+            for plugin_id in plugins_of_tool(invocation.unit_id):
+                invoked[("plugin", plugin_id)].add(invocation.session_id)
     for row in tool_sessions:
         invoked[("deferred_tool", row["tool"])].add(row["session_id"])
 
@@ -410,7 +426,7 @@ def _usage_section(run: QueryRun) -> dict:
 
 
 def _rule_units(denoms: dict[str, list[dict]], units: dict[str, list[dict]], presented: dict, sufficient: bool,
-                total: int) -> list[dict]:
+                total: int, plugins_of_tool: Callable[[str], set[str]]) -> list[dict]:
     """決定的ルールの入力の表。母集団は分母で、invocation の無い unit も載る。"""
     def key_of(kind: str, unit_id: str) -> str:
         return _normalize_mcp_server(unit_id) if kind == "mcp_server" else unit_id
@@ -419,7 +435,7 @@ def _rule_units(denoms: dict[str, list[dict]], units: dict[str, list[dict]], pre
 
     def sibling_invocations(plugin_id: str) -> int:
         return (sum(unit["count"] for unit in units["skill"] if _plugin_of_skill(unit["id"], plugin_ids) == plugin_id)
-                + sum(unit["count"] for unit in units["mcp_tool"] if _mcp_tool_belongs_to(unit["id"], plugin_id)))
+                + sum(unit["count"] for unit in units["mcp_tool"] if plugin_id in plugins_of_tool(unit["id"])))
 
     rows = []
     for kind, denominator_key in DENOMINATOR_KEYS.items():
@@ -460,24 +476,27 @@ def _rule_candidates(run: QueryRun, rule_units: list[dict]) -> list[dict]:
 
 
 def _build(run: QueryRun) -> list[dict]:
-    repo_root = Path(run.params["repo_root"]).absolute()
+    repo_root = Path(run.params["repo_root"]).expanduser().absolute()
     config_dir = Path.home() / ".claude"
     plugins = denominators.enumerate_installed_plugins(config_dir)
     skills = denominators.enumerate_skills(config_dir, repo_root)
+    # manifest が読めない plugin は Claude Code が読み込まないので分母から外し、path は meta に出す
+    loaded = [plugin_id for plugin_id, install_path in plugins.items()
+              if not (install_path and denominators.manifest_unreadable(Path(install_path)))]
+    plugin_ids = frozenset(loaded)
     denoms = {
         "skills": skills,
-        "mcp_servers": denominators.enumerate_mcp_servers(Path.home() / ".claude.json", repo_root, plugins.keys()),
-        "plugins": [{"id": plugin_id, "source": "config", "install_path": install_path}
-                    for plugin_id, install_path in plugins.items()],
+        "mcp_servers": denominators.enumerate_mcp_servers(Path.home() / ".claude.json", repo_root, plugin_ids),
+        "plugins": [{"id": plugin_id, "source": "config", "install_path": plugins[plugin_id]} for plugin_id in loaded],
     }
-    plugin_ids = frozenset(plugins)
+    plugins_of_tool = _bundled_tool_resolver(plugin_ids, denominators.enumerate_bundled_servers(plugins))
 
     invocations = _collect_invocations(run, *_skill_resolver(skills))
     tool_sessions = run.select(TOOL_SESSIONS)
     total = len(invocations)
     units = _aggregate_units(invocations, plugin_ids)
     _complement_denominators(denoms, units)
-    presented = _presented_section(run, invocations, tool_sessions, plugin_ids)
+    presented = _presented_section(run, invocations, tool_sessions, plugin_ids, plugins_of_tool)
     sufficient = total >= SUFFICIENT_THRESHOLD
     return [{
         "meta": {
@@ -488,6 +507,7 @@ def _build(run: QueryRun) -> list[dict]:
             "distinct_projects": len({invocation.project_dir for invocation in invocations}),
             "config_dir": str(config_dir),
             "repo_root": str(repo_root),
+            "unreadable_components": denominators.unreadable_components(plugins, repo_root),
         },
         "distribution": {"total": total, "threshold": SUFFICIENT_THRESHOLD, "sufficient_for_relative_judgment": sufficient},
         "denominators": denoms,
@@ -495,7 +515,7 @@ def _build(run: QueryRun) -> list[dict]:
         "sessions": _sessions_section(invocations, _session_attributes(tool_sessions)),
         "presented": presented,
         "usage": _usage_section(run),
-        "rule_candidates": _rule_candidates(run, _rule_units(denoms, units, presented, sufficient, total)),
+        "rule_candidates": _rule_candidates(run, _rule_units(denoms, units, presented, sufficient, total, plugins_of_tool)),
     }]
 
 
@@ -542,6 +562,10 @@ CONTRACT = {
         "内訳は units.skill[].channels に出る。plugin の skill の Read は、plugin の名前を含む path の下の同じ相対 path "
         "(更新前の版・開発中の checkout) も数える。"
         "session の再開で別の file へ写った呼出しは file ごとに数える。",
+        "meta.unreadable_components は在るのに読めない plugin の manifest と .mcp.json の path で、Claude Code もその component を"
+        "読み込まない。manifest が読めない plugin は plugin・skill・同梱の server のどれも分母に無い。.mcp.json だけが読めない plugin は"
+        "skill と plugin の行が分母に残り、その .mcp.json の server は分母にも同梱の server の一覧にも無い。repo の .mcp.json が読めない"
+        "ときは project の server が分母に無い。どの場合も、その component の unit が分母に無いことを「install されていない」と読まない。",
         "分母に無い id は source: session-observed で補完されるが、これは観測分の下限の保証であって install 済みの一覧"
         "ではない (claude.ai connectors 等はローカルの設定に出ない)。",
         "presented.units の sessions_presented > 0 かつ sessions_invoked == 0 が「載っているのに使われていない」の証拠。"

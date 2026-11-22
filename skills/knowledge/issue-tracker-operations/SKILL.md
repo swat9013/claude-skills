@@ -1,7 +1,7 @@
 ---
 name: issue-tracker-operations
 user-invocable: false
-description: issue tracker への操作 (本文の書き換え・状態の label の付け替え・close / reopen・親子の関係の記録) の手順と、issue 置き場・CL 置き場の解決順と、issue 本文の要素の正本。Use when「issue 本文を書き換える」「issue 本文の要素を確かめる」「issue の label を付け替える」「issue を close / reopen する」「子 issue を親に結ぶ」「issue 置き場・CL 置き場を決める」.
+description: issue tracker への操作 (本文の書き換え・状態の label の付け替え・close / reopen・親子の関係の記録) の手順と、issue 置き場・CL 置き場の解決順と、issue 本文の要素と、tracker ごとの issue の取得結果の鍵の正本。Use when「issue 本文を書き換える」「issue 本文の要素を確かめる」「issue の label を付け替える」「issue を close / reopen する」「子 issue を親に結ぶ」「issue 置き場・CL 置き場を決める」「issue の取得結果 (JSON) を tracker の形で読む」.
 ---
 
 # issue-tracker-operations
@@ -13,6 +13,7 @@ skill の手順が issue tracker に行う操作の手順と、操作を撃つ�
 | [placement](references/placement.md) | issue か CL へのコマンドを撃つ前に、置き場を決めるとき・文面に置き場をまたぐ issue の参照を書くか読むとき |
 | [body-rewrite](references/body-rewrite.md) | issue の本文を書き換えるとき |
 | [body-elements](references/body-elements.md) | issue の本文を書くとき・検査するとき |
+| [fetch-result-keys](references/fetch-result-keys.md) | issue の取得結果 (JSON) から番号・本文・コメントなどを読むとき・その取得に要る指定を決めるとき |
 | [state-label](references/state-label.md) | issue の状態の label を付け替えるとき |
 | [close-reopen](references/close-reopen.md) | issue を close / reopen するとき |
 | [parent-child](references/parent-child.md) | 子 issue を親 issue に結ぶとき・issue を子に分けたとき |

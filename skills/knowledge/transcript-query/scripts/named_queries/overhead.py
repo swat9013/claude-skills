@@ -4,8 +4,10 @@
 成果物は 3 つの節を持つ 1 行で返す。節ごとに粒度が違い、行に割ると列が揃わない。
 
 invariant:
-1. cwd の repo を解決できなければ全 repo へ倒さずに止まる。他の repo の session を混ぜると分母が崩れる
-2. repo の絞り込みで落ちた session の数を出す
+1. cwd の repo を解決できなければ全 repo へ倒さずに止まる。他の repo の session を混ぜると分母が崩れる。
+   repo の main checkout を git から引けないときも止まる。root 無しで続けると、main checkout の下の file が黙って絶対 path になる
+2. repo の絞り込みで落ちた session の数を、別の repo と判った数と repo を解決できなかった cause 別の数に分けて出す。
+   混ぜると、消えた worktree の session の注入が落ちたことを読み手が別の repo の session と区別できない
 3. 節の値はどれも repo に絞った session だけから作る
 4. `cumulative_dropped_tokens` は session の中で累積するので、session ごとに最大値を採り、足さない
 """
@@ -14,9 +16,10 @@ from __future__ import annotations
 
 import collections
 import os
+from pathlib import Path
 from typing import Mapping
 
-from named_query import NamedQuery, QueryRun, Stopped
+from named_query import NamedQuery, QueryRun, Stopped, checkout_root
 
 STATIC_SOURCES = ("skill_listing", "mcp_instructions", "deferred_tools", "agent_listing")
 MEMORY_SOURCE = "memory_file"
@@ -29,18 +32,24 @@ EST_TOKENS = "lake_estimate_tokens(cjk_chars, chars - cjk_chars)"
 # 同じ文に並べると同時に走り、memory の上限を超える。view の行を GROUP BY へ直接流しても上限を超えるので、
 # MATERIALIZED で窓の中の行に絞ってから集計する
 
+# lake_cwd_repo は record の cwd だけを解決するので、record として読めない行にしか無い cwd は表に無い
+CWD_OUTSIDE_RECORDS = "cwd_outside_records"
+
 # session の repo は窓の中で最初に現れた cwd で決まる。line_seq は読む順に増え、file は path の順に読む
-REPO_SESSIONS = f"""
+SESSION_REPOS = f"""
 WITH cwds AS MATERIALIZED (
     SELECT session_id, cwd, line_seq
     FROM lake_session_cwd
     WHERE {IN_WINDOW}
 )
-SELECT c.session_id
+SELECT c.session_id, r.repo,
+       CASE WHEN r.cwd IS NULL THEN '{CWD_OUTSIDE_RECORDS}' ELSE r.unresolved_cause END AS unresolved_cause
 FROM (SELECT session_id, arg_min(cwd, line_seq) AS cwd FROM cwds GROUP BY session_id) c
-JOIN lake_cwd_repo r ON r.cwd = c.cwd
-WHERE r.repo = $repo
+LEFT JOIN lake_cwd_repo r ON r.cwd = c.cwd
 """
+
+# 窓の中に cwd を持つ行が無い session の cause。resolve_repo の cause と並べて数える
+CWD_UNOBSERVED = "cwd_unobserved"
 
 # record ごとに概算してから足す。足してから概算すると端数の切り上げの回数が変わる
 STATIC_COSTS = f"""
@@ -54,13 +63,18 @@ FROM payloads
 GROUP BY session_id, source
 """
 
-# memory_key は注入を数える単位。worktree の違いを畳み、`.claude/` の下はそこから、それ以外は末尾の 2 段にする
-# (`docs/CLAUDE.md` と root の `CLAUDE.md` を潰さない)。
-# costs は repo で絞らない。`sessions_out_of_scope` は全 session から数えるので、絞ると注入だけを持つ session が消える
+# memory_key は注入を数える単位。`.claude/worktrees/<名前>` の段を畳み、cwd の repo の main checkout の下はそこからの
+# path、user の `~/.claude/` の下は `~/.claude/` からの path にする。main checkout の外では、注入した session の cwd の直下の
+# `.claude/` の file (repo の外の worktree・別の clone の rule) だけを `.claude/` からの path にして main checkout の行と畳み、
+# それ以外は絶対 path にする。cwd に依らず `.claude/` の末尾で畳むと、無関係な dir の `.claude/` の file まで repo の行に入る。
+# 末尾だけで畳むと、user の `~/.claude/rules/a.md` と repo の同じ相対 path の file や、別の dir の同じ名前の file が 1 行になる。
+# root は git の今の worktree の一覧から取らない — worktree を消すと同じ lake と窓の答えが変わる。
+# costs は repo で絞らない。`sessions_out_of_scope` と `sessions_unresolved` は全 session から数えるので、絞ると注入だけを持つ session が消える
 MEMORY_INJECTIONS = f"""
 WITH injections AS MATERIALIZED (
     SELECT *, {EST_TOKENS} AS tokens,
-           regexp_replace(memory_path, '/\\.claude/worktrees/[^/]+', '', 'g') AS folded_path
+           regexp_replace(memory_path, '/\\.claude/worktrees/[^/]+', '', 'g') AS folded_path,
+           regexp_replace(coalesce(cwd, ''), '/\\.claude/worktrees/[^/]+', '', 'g') AS folded_cwd
     FROM lake_memory_injection
     WHERE {IN_WINDOW}
 ), memory_files AS (
@@ -77,8 +91,12 @@ WITH injections AS MATERIALIZED (
            count(DISTINCT session_id) FILTER (WHERE differs_from_disk) AS differs_from_disk_sessions,
            min(nullif(ts, '')) AS first_injected_at,
            max(nullif(ts, '')) AS last_injected_at
-    FROM (SELECT *, coalesce(nullif(regexp_extract(folded_path, '.*/(\\.claude/.*)$', 1), ''),
-                             regexp_extract(folded_path, '[^/]*/[^/]*$')) AS memory_key
+    FROM (SELECT *, CASE WHEN starts_with(folded_path, $root || '/') THEN substr(folded_path, length($root) + 2)
+                         WHEN starts_with(folded_path, $home || '/.claude/') THEN '~/' || substr(folded_path, length($home) + 2)
+                         WHEN folded_cwd <> '' AND starts_with(folded_path, folded_cwd || '/.claude/')
+                              THEN substr(folded_path, length(folded_cwd) + 2)
+                         ELSE folded_path
+                    END AS memory_key
           FROM injections
           WHERE memory_path <> '' AND list_contains($repo_sessions::VARCHAR[], session_id))
     GROUP BY memory_key
@@ -148,15 +166,30 @@ def _build(run: QueryRun) -> list[dict]:
     if resolved["repo"] is None:
         raise Stopped("bad_argument", f"cwd の {cwd} から repo を解決できません ({resolved['cause']})。"
                                       "git が動く環境で、repo の中から呼び直してください")
-    repo_sessions = {row["session_id"] for row in run.select(REPO_SESSIONS, repo=resolved["repo"])}
-    (memory,) = run.select(MEMORY_INJECTIONS, repo_sessions=sorted(repo_sessions))
+    checkout = checkout_root(cwd)
+    if checkout["cause"]:
+        raise Stopped("bad_argument", f"cwd の {cwd} の repo の main checkout を git から引けません ({checkout['cause']})。"
+                                      "git が動く環境で、repo の中から呼び直してください")
+    session_repos = {row["session_id"]: row for row in run.select(SESSION_REPOS)}
+    repo_sessions = {session for session, row in session_repos.items() if row["repo"] == resolved["repo"]}
+    (memory,) = run.select(MEMORY_INJECTIONS, repo_sessions=sorted(repo_sessions), root=checkout["root"],
+                           home=str(Path.home()))
     costs = [*run.select(STATIC_COSTS), *memory["costs"]]
     compactions = run.select(COMPACTIONS)
     observed = {row["session_id"] for row in [*costs, *compactions]}
+    other_repo = 0
+    unresolved: collections.Counter[str] = collections.Counter()
+    for session in observed - repo_sessions:
+        row = session_repos.get(session)
+        if row and row["repo"]:
+            other_repo += 1
+        else:
+            unresolved[row["unresolved_cause"] if row else CWD_UNOBSERVED] += 1
     return [{
         "repo": resolved["repo"],
         "sessions_observed": len(observed & repo_sessions),
-        "sessions_out_of_scope": len(observed - repo_sessions),
+        "sessions_out_of_scope": other_repo,
+        "sessions_unresolved": dict(sorted(unresolved.items())),
         "static_context": _static_context([row for row in costs if row["session_id"] in repo_sessions]),
         "memory_files": memory["memory_files"],
         "compaction": _compaction([row for row in compactions if row["session_id"] in repo_sessions]),
@@ -166,8 +199,14 @@ def _build(run: QueryRun) -> list[dict]:
 CONTRACT: Mapping[str, object] = {
     "columns": {
         "repo": "cwd の repo。session はこの repo のものだけを数える",
-        "sessions_observed": "repo に絞った main session の数。session の repo は窓の中で最初に現れた cwd で決まり、cwd が消えた session は落ちる",
-        "sessions_out_of_scope": "絞り込みで落ちた session の数",
+        "sessions_observed": "repo に絞った main session の数。session の repo は窓の中で最初に現れた cwd で決まり、"
+                             "repo を解決できなかった session は落ちて sessions_unresolved に入る",
+        "sessions_out_of_scope": "repo に解決でき、別の repo と判って落ちた session の数",
+        "sessions_unresolved": "repo を解決できずに落ちた session の数の cause 別の内訳 ({cause: 数})。cause は session の最初の cwd を "
+                               "repo の解決に掛けたときの理由 (cwd_missing は cwd が実在しない。消えた worktree など) と、"
+                               "この問いが足す cwd_unobserved (窓の中に cwd を持つ行が無い)・cwd_outside_records "
+                               "(最初の cwd が record として読めない行にしか無い)。"
+                               "解決できなかった session が無ければ空",
         "static_context": "sessions_observed (静的コンテキストを持つ session の数)・per_session_est_tokens・sources[] (source・sessions・est_tokens)",
         "memory_files": "file ごとの注入実績。path・display_path・memory_type・path_globs・sessions_injected・est_tokens・chars・lines・"
                         "absolute_paths_folded・sample_path・differs_from_disk_sessions・first_injected_at・last_injected_at",
@@ -184,10 +223,14 @@ CONTRACT: Mapping[str, object] = {
         "session の開始時に載る root の CLAUDE.md は入らない",
         "memory_files[] は観測した注入だけを載せる。窓の中で 1 度も注入されなかった file は 0 の行ではなく行の不在として現れるので、"
         "静的な file の一覧と差分を取る",
+        "sessions_unresolved が空でないとき、その session の注入は memory_files[] にも static_context にも入らない。"
+        "その session がこの repo のものかは決まらないので、memory_files[] の行の不在を注入 0 の証拠にしない",
         "memory_files[] の sessions_injected は実際に注入された session の数で、path_globs で絞った規範が届いているかの実測。"
         "est_tokens・chars・lines は注入ごとの値の最大",
-        "memory_files[] の path は `.claude/worktrees/<名前>` の段を畳んだ値で、`.claude/` の下はそこからの path、それ以外は末尾の 2 段。"
-        "畳んだ絶対 path の数が absolute_paths_folded に出る",
+        "memory_files[] の path は `.claude/worktrees/<名前>` の段を畳んだ値で、cwd の repo の main checkout の下は root からの path、"
+        "user の `~/.claude/` の下は `~/.claude/` からの path、main checkout の外では注入した session の cwd の直下の `.claude/` の下 (repo の外の worktree・別の clone) だけが "
+        "`.claude/` からの path で、それ以外 (repo の外の worktree の root の CLAUDE.md を含む) は絶対 path。"
+        "bare の repo の worktree・submodule は main checkout を持たず、cwd の直下の `.claude/` の下の外は絶対 path。畳んだ絶対 path の数が absolute_paths_folded に出る",
         "注入実績が決定的なのは file 粒度まで。行粒度の実績は transcript に無い",
         "compaction の cumulative_dropped_tokens は session ごとの最大値で、boundary をまたいで足さない",
     ],

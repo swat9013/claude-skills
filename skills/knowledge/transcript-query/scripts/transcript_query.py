@@ -77,7 +77,8 @@ def record_structure(entries: list[dict]) -> str:
     structure: dict[str, str] = {}
     for entry in entries:
         top, _, rest = entry["path"].partition(".")
-        structure[top] = "JSON" if rest else entry["type"]
+        declared = entry["type"]
+        structure[top] = "JSON" if rest else (declared[0] if isinstance(declared, list) else declared)
     return json.dumps(structure)
 
 
@@ -197,27 +198,77 @@ def _window_condition(window: Window) -> str:
 
 
 # snapshot の型 → json_type が返す型
-_JSON_TYPES = {"VARCHAR": ["VARCHAR"], "BIGINT": ["BIGINT", "UBIGINT"], "BOOLEAN": ["BOOLEAN"]}
+# 型の list は、どれかの型の値なら現れたと数える。"NULL" は key が JSON の null を持つことを許す (key が無いときだけ欠ける)
+_JSON_TYPES = {"VARCHAR": ["VARCHAR"], "BIGINT": ["BIGINT", "UBIGINT"], "BOOLEAN": ["BOOLEAN"], "NULL": ["NULL"]}
 
 
-def _path_appears(con: duckdb.DuckDBPyConnection, entry: dict, window: Window) -> bool:
-    """窓の中に path が宣言の型で 1 件以上現れるか。path ごとに LIMIT 1 で打ち切る。
+def _array_split(path: str) -> tuple[str | None, str]:
+    """`a.b[].c` を配列の path `a.b` と要素の中の path `.c` に割る。配列を持たなければ (None, path)。"""
+    prefix, separator, rest = path.partition("[]")
+    return (prefix, rest) if separator else (None, path)
+
+
+def _has_type(doc: str, json_path: str, entry_type: str | list[str]) -> str:
+    """doc の json_path に宣言の型の値があるか。`[*]` を含む path は値の list を返すので、どれか 1 つで足りる。"""
+    path = _sql_string(json_path)
+    declared = entry_type if isinstance(entry_type, list) else [entry_type]
+    mapped = [_JSON_TYPES.get(name) for name in declared]
+    types = None if None in mapped else [json_type for group in mapped for json_type in group]
+    if "[*]" in json_path:
+        return f"list_has_any(json_type({doc}, {path}), {types})" if types else f"list_contains(json_exists({doc}, {path}), true)"
+    return f"list_contains({types}, json_type({doc}, {path}))" if types else f"json_exists({doc}, {path})"
+
+
+def _record_condition(parent: Mapping[str, Any], entry: Mapping[str, Any] | None) -> str:
+    """親の条件 (と、entry を渡せばその path) を満たす record の条件。
+
+    親の key は snapshot の path で、値はその path が取る値 (文字列か文字列の list)。配列の要素の中の key と
+    entry の path は同じ要素の上で確かめる — 別の block に path があっても、親の block の path とは数えない。
+    """
+    conditions: list[str] = []
+    in_element: dict[str, list[str]] = {}
+    for key, values in parent.items():
+        listed = ", ".join(_sql_string(value) for value in ([values] if isinstance(values, str) else values))
+        prefix, rest = _array_split(key)
+        if prefix is None:
+            conditions.append(f"json_extract_string(line, {_sql_string(_json_path(key))}) IN ({listed})")
+        else:
+            in_element.setdefault(prefix, []).append(f"json_extract_string(e, {_sql_string(_json_path(rest[1:]))}) IN ({listed})")
+    if entry is not None:
+        prefix, rest = _array_split(entry["path"])
+        if prefix is None:
+            conditions.append(_has_type("line", _json_path(entry["path"]), entry["type"]))
+        else:
+            in_element.setdefault(prefix, []).append(_has_type("e", _json_path(rest[1:]), entry["type"]))
+    for prefix, element_conditions in in_element.items():
+        array = _sql_string(_json_path(prefix))
+        conditions.append(
+            f"CASE WHEN json_type(line, {array}) = 'ARRAY' THEN len(list_filter(json_transform(json_extract(line, {array}), "
+            f"'[\"JSON\"]'), lambda e: {' AND '.join(element_conditions)})) > 0 ELSE false END")
+    return " AND ".join(conditions) or "true"
+
+
+def _prefilter(words: list[str]) -> str:
+    """JSON の解釈の前に、引用符で囲んだ語を text のまま含む行へ絞る。巨大な行を解釈すると memory の上限を超える。"""
+    return " AND ".join(f"contains(line, {_sql_string(chr(34) + word + chr(34))})" for word in words) or "true"
+
+
+def _parent_words(parent: Mapping[str, Any]) -> list[str]:
+    """親の条件の値のうち、行が必ず含む語。値が複数ある key は 1 語に決まらないので絞り込みに使わない。"""
+    return [values if isinstance(values, str) else values[0]
+            for values in parent.values() if isinstance(values, str) or len(values) == 1]
+
+
+def _lines_match(con: duckdb.DuckDBPyConnection, words: list[str], condition: str, window: Window) -> bool:
+    """窓の中に条件を満たす record が 1 件以上あるか。path ごとに LIMIT 1 で打ち切る。
 
     全 path を 1 回の走査にまとめると、JSON の解釈の領域が式の数だけ積まれて memory の上限を超える。
+    JSON の関数は壊れた行で例外を投げ、AND は短絡しないので、CASE で守る。
     """
-    path = entry["path"]
-    json_path = _sql_string(_json_path(path))
-    types = _JSON_TYPES.get(entry["type"])
-    if "[]" in path:
-        appears = (f"list_has_any(json_type(line, {json_path}), {types})" if types
-                   else f"list_contains(json_exists(line, {json_path}), true)")
-    else:
-        appears = f"list_contains({types}, json_type(line, {json_path}))" if types else f"json_exists(line, {json_path})"
-    leaf = path.replace("[]", "").rsplit(".", 1)[-1]
     return con.execute(
         "SELECT 1 FROM lake_read_lines(getvariable('snapshot_paths')) "
-        f"WHERE CASE WHEN contains(line, {_sql_string(chr(34) + leaf + chr(34))}) AND lake_is_record(line) "
-        f"THEN {appears} AND {_window_condition(window)} ELSE false END LIMIT 1").fetchone() is not None
+        f"WHERE CASE WHEN {_prefilter(words)} AND lake_is_record(line) "
+        f"THEN {condition} AND {_window_condition(window)} ELSE false END LIMIT 1").fetchone() is not None
 
 
 def _meta_path_appears(con: duckdb.DuckDBPyConnection, entry: dict) -> bool:
@@ -228,9 +279,12 @@ def _meta_path_appears(con: duckdb.DuckDBPyConnection, entry: dict) -> bool:
 
 
 def check_snapshot(con: duckdb.DuckDBPyConnection, entries: list[dict], window: Window) -> list[str]:
-    """schema snapshot の照合。必須の path が窓に無ければ止める。返すのは窓に無かった任意の path。
+    """schema snapshot の照合。返すのは窓で確かめられなかった path。
 
-    `optional` の path は、その機能を使っていなければ現れないのが正常なので止めない。
+    同じ path を、view がそれを読む親の record ごとに宣言してよい。親ごとに確かめる。
+
+    path は親 (path が現れるはずの record の条件) が窓にあるときだけ確かめ、親があるのに現れなければ止める。
+    親が窓に無い path と、親を書けない path (`parent` が null。無いのが正常の旗) の欠けは止めずに返す。
     main の transcript を新しい順に読む。subagent の record も同じ形式で、読む量だけが数倍になる。
     transcript を名指す問いも lake 全体で照らす。1 件の transcript には使わなかった機能の path が現れない。
     """
@@ -239,19 +293,38 @@ def check_snapshot(con: duckdb.DuckDBPyConnection, entries: list[dict], window: 
     recent = sorted((e for e in entries if e["path"] in main and (window.since is None or e["mtime"] >= window.since)),
                     key=lambda e: e["mtime"], reverse=True)
     con.execute("SET VARIABLE snapshot_paths = ?", [[e["path"] for e in recent]])
-    if not recent or con.execute(
-            "SELECT 1 FROM lake_read_lines(getvariable('snapshot_paths')) "
-            f"WHERE CASE WHEN lake_is_record(line) THEN {_window_condition(window)} ELSE false END LIMIT 1").fetchone() is None:
+    if not recent or not _lines_match(con, [], "true", window):
         raise Stopped("empty_window", "観測窓に record がありません。窓を広げて呼び直してください")
     snapshot = _load_snapshot()
     missing: list[str] = []
-    absent_optional = [entry["path"] for entry in snapshot["subagent_meta"] if not _meta_path_appears(con, entry)]
+    unchecked_meta = [entry["path"] for entry in snapshot["subagent_meta"] if not _meta_path_appears(con, entry)]
+    unchecked: list[str] = []
+    confirmed: set[str] = set()
+    parent_present: dict[str, bool] = {}
     for entry in snapshot["record"]:
-        if not _path_appears(con, entry, window):
-            (absent_optional if entry.get("optional") else missing).append(entry["path"])
+        parent = entry["parent"]
+        leaf = entry["path"].replace("[]", "").rsplit(".", 1)[-1]
+        if parent is None:
+            if not _lines_match(con, [leaf], _record_condition({}, entry), window):
+                unchecked.append(entry["path"])
+            continue
+        key = json.dumps(parent, sort_keys=True)
+        if key not in parent_present:
+            parent_present[key] = _lines_match(con, _parent_words(parent), _record_condition(parent, None), window)
+        if not parent_present[key]:
+            unchecked.append(entry["path"])
+        elif _lines_match(con, [leaf, *_parent_words(parent)], _record_condition(parent, entry), window):
+            confirmed.add(entry["path"])
+        else:
+            missing.append(entry["path"])
+    # 同じ path を親ごとに宣言しうるので、path ごとに 1 度だけ返す。どれかの親で欠けた path は止める側に、
+    # どれかの親で確かめた path は確かめた側に寄せる
+    missing = list(dict.fromkeys(missing))
+    unchecked = list(dict.fromkeys(
+        unchecked_meta + [path for path in unchecked if path not in missing and path not in confirmed]))
     if missing:
-        raise Stopped("schema_mismatch", RECOVERY, missing_paths=missing, absent_optional_paths=absent_optional)
-    return absent_optional
+        raise Stopped("schema_mismatch", RECOVERY, missing_paths=missing, absent_optional_paths=unchecked)
+    return unchecked
 
 
 def _output_file(consumer: str, kind: str) -> Path:

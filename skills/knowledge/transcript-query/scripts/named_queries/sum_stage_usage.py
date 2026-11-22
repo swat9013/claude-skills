@@ -1,9 +1,12 @@
-"""名指しした transcript 1 件の、工程ごとの所要・subagent 数・token の mart。
+"""名指しした transcript 1 件の、工程ごとの所要・subagent 数・turn 数・token の mart。
 
 工程の区切りは決めない。区切りは呼び出し元が transcript を読んで決めて渡し、ここが持つのは境界の内側の算術だけ。
 
 - token は input + output + cache_creation で、cache_read は足さずに別掲する (同じ context を turn ごとに再計上する)
 - 応答の最終の usage を、その応答の最初の record がある工程に帰属させる
+- turn 数は usage を持つ assistant の応答の数で、同じ応答 (message id) の record は 1 つに数える。応答はその最初の record がある工程に数える。
+  client が書く合成の assistant record (REPL の中の tool 呼出しの記録・API error の通知) は応答ではないので数えない
+- subagent の turn 数は token と同じく、起動に対応する体の応答に入れ子の体の応答を畳んで数える
 - subagent は工程の中の起動に対応する体を数え、入れ子の体は親に畳む。subagent 数に入れ子は入れない
 - workflow の体は、run を指す最初の起動のある工程に帰属させる
 - 対応が取れない値は 0 にせず null と理由で返す (0 だと消費が無かった工程と区別できない)
@@ -31,10 +34,11 @@ CONTRACT = {
         "duration_seconds": "境界の 2 record の時刻の差 (秒)。subagent に委ねた分はこの間に含まれる",
         "duration_reason": "duration_seconds が null の理由。どちらの境界の時刻が欠けているか解釈できないか",
         "tokens": "main 側の input + output + cache_creation",
+        "turns": "main 側の assistant の応答の数。同じ応答の record は 1 つに数え、client が書く record と subagent の応答は入れない",
         "cache_read_input_tokens": "main 側の cache read。tokens に足さない",
-        "subagents": "count (起動した体の数)・tokens・cache_read_input_tokens・unmatched_tool_use_ids・reason。"
-                     "対応が取れないと tokens と cache_read_input_tokens が null で、reason に理由が入る。"
-                     "tokens はこの工程の tokens に足さず別に読む",
+        "subagents": "count (起動した体の数)・tokens・cache_read_input_tokens・turns・unmatched_tool_use_ids・reason。"
+                     "対応が取れないと tokens と cache_read_input_tokens と turns が null で、reason に理由が入る。"
+                     "tokens と turns はこの工程の tokens・turns に足さず別に読む。どちらも入れ子の体の分を含む",
     },
     "meta": {
         "stage_errors": "error を持つ工程の数",
@@ -125,10 +129,10 @@ def _resolve_roots(bodies: list[Body]) -> dict[str, str | None]:
 
 def _sum_subagents(launch_ids: list[str], workflow_runs: dict[str, str], session: Session) -> dict:
     """工程の中の起動 (`Task` / `Agent` の id と、run を指す最初の `Workflow` の id → run の id) に対応する体を数える。"""
-    result: dict[str, Any] = {"count": len(launch_ids), "tokens": None, "cache_read_input_tokens": None,
+    result: dict[str, Any] = {"count": len(launch_ids), "tokens": None, "cache_read_input_tokens": None, "turns": None,
                               "unmatched_tool_use_ids": [], "reason": None}
     if not launch_ids and not workflow_runs:
-        return {**result, "tokens": 0, "cache_read_input_tokens": 0}
+        return {**result, "tokens": 0, "cache_read_input_tokens": 0, "turns": 0}
     bodies = session.bodies
     by_tool_use: dict[str, list[Body]] = {}
     for body in bodies:
@@ -170,7 +174,12 @@ def _sum_subagents(launch_ids: list[str], workflow_runs: dict[str, str], session
                     anonymous.append(usage)
                 elif usage["output_tokens"] >= final.get(usage["message_id"], usage)["output_tokens"]:
                     final[usage["message_id"]] = usage
-    return {**result, **_sum_usage([*final.values(), *anonymous])}
+    responses = [*final.values(), *anonymous]
+    return {**result, **_sum_usage(responses), "turns": _turns(responses)}
+
+
+def _turns(responses: list[dict]) -> int:
+    return sum(1 for usage in responses if not usage["is_synthetic"])
 
 
 def _duration(first: float | None, last: float | None) -> tuple[float | None, str | None]:
@@ -183,7 +192,7 @@ def _duration(first: float | None, last: float | None) -> tuple[float | None, st
 def _summarize(stage: dict, session: Session) -> dict:
     out: dict[str, Any] = {"stage": stage["stage"], "from_uuid": stage["from_uuid"], "to_uuid": stage["to_uuid"],
                            "error": None, "duration_seconds": None, "duration_reason": None, "tokens": None,
-                           "cache_read_input_tokens": None, "subagents": None}
+                           "cache_read_input_tokens": None, "turns": None, "subagents": None}
     start, end = session.positions.get(stage["from_uuid"]), session.positions.get(stage["to_uuid"])
     missing = [key for key, position in (("from_uuid", start), ("to_uuid", end)) if position is None]
     if missing:
@@ -195,8 +204,9 @@ def _summarize(stage: dict, session: Session) -> dict:
     launch_ids = list(dict.fromkeys(launch["tool_use_id"] for launch in inside if launch["launch_kind"] == "subagent"))
     workflow_runs = {launch["tool_use_id"]: session.first_launch_runs[launch["tool_use_id"]] for launch in inside
                      if launch["tool_use_id"] in session.first_launch_runs}
-    return {**out, "duration_seconds": duration, "duration_reason": reason,
-            **_sum_usage([usage for usage in session.usage if start <= usage["first_line_seq"] <= end]),
+    responses = [usage for usage in session.usage if start <= usage["first_line_seq"] <= end]
+    return {**out, "duration_seconds": duration, "duration_reason": reason, **_sum_usage(responses),
+            "turns": _turns(responses),
             "subagents": _sum_subagents(launch_ids, workflow_runs, session)}
 
 

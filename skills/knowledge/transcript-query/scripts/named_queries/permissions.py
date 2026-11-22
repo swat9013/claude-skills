@@ -40,7 +40,7 @@ SECTION_DENOMINATOR_REASONS = ("read", "absent", "unparsed")
 # result_text を読むのは拒否の判定だけ。success と unknown の本文は運ばない (全 event 分だと重い)。
 TOOL_EVENTS = """
 SELECT tool, command, target_path, target_url, input_excerpt, param_keys, session_id, transcript_kind, path,
-       ts, ts_epoch, cwd, outcome_base, denial_kind,
+       ts, ts_epoch, cwd, outcome_base, denial_kind, is_permission_denial,
        CASE WHEN outcome_base NOT IN ('success', 'unknown') THEN result_text ELSE '' END AS result_text
 FROM lake_tool_outcome
 WHERE ts_epoch IS NULL OR ts_epoch BETWEEN $since AND $until
@@ -77,9 +77,12 @@ class Event:
     outcome: str
     denial_kind: str | None
     denial_reason_label: str | None
+    # 拒否の本文の先頭行。拒否の出どころ (permission entry・guard の hook・本体の検査) は文言に出る
+    deny_message: str
+    is_permission_denial: bool
 
 
-def _refined_outcome(base: str, denial_kind: str, result_text: str) -> str:
+def _refined_outcome(base: str, denial_kind: str, result_text: str, is_permission_denial: bool) -> str:
     """base の語彙を mart の 7 分類へ細分する。base が選んだ枝の中で label を付けるだけ。"""
     if base in ("success", "unknown"):
         return base
@@ -89,7 +92,10 @@ def _refined_outcome(base: str, denial_kind: str, result_text: str) -> str:
         return "deny_permission-rule"
     if denial_kind in ("automode-blocked", "automode-unavailable"):
         return "deny_automode"
-    if matcher.looks_like_permission_denial(result_text):
+    # hook の拒否は、拒んだ command を本文に写すことがあるので文言で読み直さない
+    if denial_kind == "hook":
+        return "error"
+    if is_permission_denial:
         return "deny_permission-rule"
     if matcher.looks_like_automode_denial(result_text):
         return "deny_automode"
@@ -105,7 +111,8 @@ def _refined_denial_kind(outcome: str, raw_kind: str) -> str | None:
 def _events(run: QueryRun) -> list[Event]:
     events = []
     for seq, row in enumerate(run.select(TOOL_EVENTS), start=1):
-        outcome = _refined_outcome(row["outcome_base"], row["denial_kind"], row["result_text"])
+        outcome = _refined_outcome(row["outcome_base"], row["denial_kind"], row["result_text"],
+                                   row["is_permission_denial"])
         events.append(Event(
             seq=seq, tool=row["tool"], command=row["command"],
             # command_head は Bash 専用の集約キー。他 tool にも command を持つものがあり、
@@ -117,8 +124,16 @@ def _events(run: QueryRun) -> list[Event]:
             ts=row["ts"], ts_epoch=row["ts_epoch"], cwd=row["cwd"], outcome=outcome,
             denial_kind=_refined_denial_kind(outcome, row["denial_kind"]),
             denial_reason_label=(matcher.automode_reason_label(row["result_text"])
-                                 if outcome == "deny_automode" else None)))
+                                 if outcome == "deny_automode" else None),
+            deny_message=_message_head(row["result_text"]) if outcome in contract.HARD_DENY_OUTCOMES else "",
+            is_permission_denial=row["is_permission_denial"]))
     return events
+
+
+def _message_head(text: str) -> str:
+    """本文の最初の空でない行。拒否の文言を出どころで束ねる鍵にする。"""
+    line = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+    return line[:contract.DENY_MESSAGE_CHARS]
 
 
 def _scope_roots(section: str, repo_root: Path) -> str:
@@ -235,6 +250,31 @@ def _sample_matched(hits: list[Event]) -> list[dict]:
     return [{"tool": tool, "command_head": head, "count": combo["count"]} for (tool, head), combo in ordered[:3]]
 
 
+def _deny_source(event: Event) -> str:
+    if event.outcome == "deny_automode":
+        return contract.DENY_SOURCE_AUTOMODE
+    return contract.DENY_SOURCE_PERMISSION_RULE if event.is_permission_denial else contract.DENY_SOURCE_OTHER
+
+
+def _hard_deny_evidence(hits: list[Event]) -> dict:
+    """hard deny の出どころを読む材料。自動モードの拒否・permission entry の拒否の文言・それ以外を数え、それ以外は文言で束ねる。
+
+    guard の hook の拒否も deny の種類が permission-rule に記録されるので、種類では分けられない。
+    """
+    denied = [event for event in hits if event.outcome in contract.HARD_DENY_OUTCOMES]
+    sources = collections.Counter(_deny_source(event) for event in denied)
+    others = collections.Counter(event.deny_message for event in denied if _deny_source(event) == "other")
+    latest = sorted(denied, key=lambda event: (event.ts, event.seq), reverse=True)[:contract.DENY_SAMPLES_PER_ENTRY]
+    return {
+        "hard_deny_by_message": {source: sources[source] for source in contract.HARD_DENY_SOURCES},
+        "other_deny_messages": [{"message": message, "count": count}
+                                for message, count in others.most_common(contract.DENY_MESSAGE_GROUPS)],
+        "deny_samples": [{"timestamp": event.ts, "session_id": event.session_id, "input_excerpt": event.input_excerpt,
+                          "compound_command": bool(matcher.is_compound_command(event.command)),
+                          "message": event.deny_message} for event in latest],
+    }
+
+
 def build_axis_a(entries: list[settings_mod.PermissionEntry], matched: list[list[Event]], events: list[Event],
                  split_epoch: float) -> list[dict]:
     """設定 entry 別の match_count / outcome_breakdown / sample_matched。
@@ -270,6 +310,7 @@ def build_axis_a(entries: list[settings_mod.PermissionEntry], matched: list[list
                 1 for event in hits
                 if event.outcome in contract.HARD_DENY_OUTCOMES and matcher.is_compound_command(event.command)),
             "sample_matched": _sample_matched(hits),
+            **_hard_deny_evidence(hits),
         })
     rows.sort(key=lambda row: (-row["match_count"], row["category"], row["entry"]))
     return rows
@@ -376,6 +417,12 @@ def build_guard_reverse(events: list[Event]) -> list[dict]:
                                   "input_excerpt": event.input_excerpt, "cwd": event.cwd} for event in latest]})
     rows.sort(key=lambda row: (-row["deny_count"], str(row["denial_kind"]), str(row["reason_label"])))
     return rows
+
+
+def build_tool_usage(events: list[Event]) -> list[dict]:
+    """section の実行を tool 名ごとに数える。改名した tool や MCP server の別名が現役かを、entry の 0 件の隣で読む。"""
+    counts = collections.Counter(event.tool for event in events)
+    return [{"tool": tool, "count": count} for tool, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
 
 
 def _percentile(values: list[int], ratio: float) -> int:
@@ -672,6 +719,7 @@ def build_section(name: str, events: list[Event], repo_root: Path, split_epoch: 
         "axis_a_pattern_matches": axis_a,
         "axis_b_actual_usage": axis_b,
         "guard_reverse_lookup": build_guard_reverse(scoped),
+        "tool_usage": build_tool_usage(scoped),
         "derived_views": build_derived_views(axis_a, axis_b, bypass),
         "bypass_sequences": bypass,
     }, entries
@@ -769,7 +817,8 @@ def build(run: QueryRun) -> list[dict]:
                 key: section[key] for key in ("settings_sources", "event_count", "distinct_sessions", "outcome_totals")}),
         },
         "derived_views": per_section(lambda _name, section: {
-            "derived_views": section["derived_views"], "guard_reverse_lookup": section["guard_reverse_lookup"]}),
+            "derived_views": section["derived_views"], "guard_reverse_lookup": section["guard_reverse_lookup"],
+            "tool_usage": section["tool_usage"]}),
         "rule_candidates": per_section(lambda name, _section: candidates[name]),
         "axis_a": per_section(lambda _name, section: section["axis_a_pattern_matches"]),
         "bypass_samples": per_section(lambda _name, section: build_bypass_group_samples(

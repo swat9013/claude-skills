@@ -28,7 +28,7 @@ metadata:
 
 4. 配置と invocation を決める。配置 (plugin 配布 / project-local / global) と登録先は対象 repo の skill 規約 (CLAUDE.md / rules / docs) に従い、規約が無ければ project-local (`.claude/skills/`) に置く。invocation は用途で選ぶ: model にも自動起動させる (user + model 両用) / 他 skill・spawn prompt からだけ呼ぶ (model 専用) / 人が名指しでだけ呼ぶ (user 専用)。`principle-context-budget`: model が読む description は全セッションの context に常時載るので、自動起動が要らないなら user 専用にして context 負担を 0 にする。
 
-5. 文面を書く。`swat-skills:write-for-harness` を Skill tool で args `新規: skill <目的>` を添えて invoke する。frontmatter・description の書式・本文の文面規範の Read から、検証 subagent と構造 reviewer の指摘反映までを同 skill の手順が持つ — 本 playbook 側で文面規範を重複して当てない。step 3 の責務 1 文と step 4 の invocation を入力として渡す。
+5. 文面を書く。先に `${CLAUDE_SKILL_DIR}/../../steering/write-for-harness/references/caller-contract.md` (呼び出し元向けの契約) を Read し、契約が定める事項は契約に従う。`swat-skills:write-for-harness` を Skill tool で args `新規: skill <目的>` を添えて invoke する。frontmatter・description の書式・本文の文面規範の Read から、検証 subagent と構造 reviewer の指摘反映までを同 skill の手順が持つ — 本 playbook 側で文面規範を重複して当てない。step 3 の責務 1 文と step 4 の invocation を入力として渡す。invoke が戻ったら、返答のうち契約の「返答を呼び出し元の報告へ運ぶ」節と契約の「反映を終えられなかったとき」節が載せさせるものを、本 playbook の最終返答へ逐語で載せる — 後の step の作業に紛れると、書かれた文面と返った指摘が人に届かない。
 
 6. 起動導線で受け入れ確認する。`principle-verify-the-real-artifact`: file が置けたことではなく、step 4 で決めた入口 (Skill tool invoke / `/` メニュー / description trigger) から本文が実際に届くことを確かめる。新規 skill は起動中のセッションの一覧に載らないので、セッション再起動を挟む確認は残作業として依頼元へ明示する。対象 repo に skill の機械検証 (gate / lint) があれば、その規約に従い実行して pass させる。
 

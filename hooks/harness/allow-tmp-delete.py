@@ -193,7 +193,7 @@ def judge(stdin_text: str) -> NoReturn:
     if not roots:
         passthrough()
     if all(is_under_tmp_root(target, home, cwd, roots) for target in targets):
-        allow("tmp ルート配下の削除を自動許可")
+        allow(payload, "tmp ルート配下の削除を自動許可")
     passthrough()
 
 

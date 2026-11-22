@@ -134,14 +134,18 @@ def normalize_text(text: str) -> str:
 
 
 def normalize_repo_identifier(repo: str | None) -> str | None:
-    """同じ repo が remote URL の表記違いで別 repo に見えるのを潰す。URL でない識別子はそのまま返す。"""
+    """同じ repo が remote URL の表記違いで別 repo に見えるのを潰す。URL でない識別子はそのまま返す。
+
+    host の port と、host と path の大文字小文字は落とす — forge は repo の path の大文字小文字を区別しない。
+    """
     value = (repo or "").strip()
     if not value:
         return None
     match = _URL_REMOTE_RE.match(value) or _SCP_REMOTE_RE.match(value)
     if match is None:
         return value
-    return f"{match.group(1).lower()}/{match.group(2).strip('/').removesuffix('.git')}"
+    host = re.sub(r":\d+$", "", match.group(1))
+    return f"{host}/{match.group(2).strip('/').removesuffix('.git')}".lower()
 
 
 def _repo_of(run: QueryRun, cwd: str) -> tuple[str | None, str | None]:

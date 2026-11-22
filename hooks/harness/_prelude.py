@@ -141,8 +141,26 @@ def deny(reason: str) -> NoReturn:
     _emit(_envelope(permissionDecision="deny", permissionDecisionReason=reason))
 
 
-def allow(reason: str) -> NoReturn:
-    """判断を allow で確定して `judge` を抜ける (`Finished` を raise する)。"""
+def _passthrough_if_unsandboxed(payload: dict) -> None:
+    """`dangerouslyDisableSandbox` が真の呼び出しなら、判断を出さずに `judge` を抜ける。
+
+    allow は入力を書き換えないので key が残り、sandbox の外で走る呼び出しに hook の allow が付く。
+    sandbox の外で走るかは hook が列挙した文法の確証の外にあるので allow しない (設計規則 (10)、#2324)。
+    allow を出す関数が payload を受け取り、ここを必ず通す — 呼び出し側の hook ごとに書かせると、
+    書き忘れた hook がそのまま sandbox の外の実行に allow を付ける。allow + rewrite (`updatedInput` を伴う allow) を
+    返す hook を足すときも、envelope を hook に手書きせず、ここを通す `allow` で始まる名前の関数を本 module に足す
+    (`tests/test_prelude_continues_on_another_line.py` の `_ALLOW_EMISSION` がその名前の呼び出しで allow-hook を拾う)。
+    """
+    if payload["tool_input"].get("dangerouslyDisableSandbox"):
+        passthrough()
+
+
+def allow(payload: dict, reason: str) -> NoReturn:
+    """判断を allow で確定して `judge` を抜ける (`Finished` を raise する)。
+
+    `dangerouslyDisableSandbox` が真の呼び出しには allow せず passthrough にする (`_passthrough_if_unsandboxed`)。
+    """
+    _passthrough_if_unsandboxed(payload)
     _emit(_envelope(permissionDecision="allow", permissionDecisionReason=reason))
 
 
@@ -155,20 +173,15 @@ def _with_command(tool_input: dict, command: str) -> dict:
     return {**tool_input, "command": command}
 
 
-def allow_rewritten(tool_input: dict, command: str) -> NoReturn:
-    """`command` を書き換えて allow する。理由は載せない。
+def allow_without_reason(payload: dict) -> NoReturn:
+    """入力を書き換えず、理由も載せずに allow する。
 
-    allow の出し方は意図で選ぶ: 判断の理由を利用者に見せるなら `allow(reason)`、
-    書き換え先そのものが判断を語る (書き換えた command が出力に載る) なら本関数、入力を書き換えず
-    理由も見せないなら `allow_without_reason()`、判断を出さず書き換え後の行を通常の permission 評価に
-    回すなら `rewrite()`。迷ったら `rewrite()` に倒す — allow は deny / ask rule を越えないまま
-    「hook が許した」痕跡を残す。
+    allow の出し方は意図で選ぶ: 判断の理由を利用者に見せるなら `allow(payload, reason)`、理由を見せないなら
+    本関数、判断を出さず書き換え後の行を通常の permission 評価に回すなら `rewrite()`。迷ったら `rewrite()` に
+    倒す — allow は deny / ask rule を越えないまま「hook が許した」痕跡を残す。`dangerouslyDisableSandbox` が
+    真の呼び出しには allow しない (`allow()` と同じ)。
     """
-    _emit(_envelope(permissionDecision="allow", updatedInput=_with_command(tool_input, command)))
-
-
-def allow_without_reason() -> NoReturn:
-    """入力を書き換えず、理由も載せずに allow する。"""
+    _passthrough_if_unsandboxed(payload)
     _emit(_envelope(permissionDecision="allow"))
 
 

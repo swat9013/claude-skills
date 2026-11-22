@@ -26,8 +26,13 @@ CONTRACT = {
         "mtime": "file の mtime (UTC の ISO 8601)。走査の後に file が消えると空",
         "invocation_count": "この file の呼出し回数",
         "channels": "経路ごとの呼出し回数 (skill_tool / command)",
-        "invocations": "file の行の順の、呼出しごとの timestamp・uuid・channel・args・is_sidechain。"
-                       "is_sidechain が真なら subagent 側からの呼出し",
+        "invocations": "file の行の順の、呼出しごとの timestamp・uuid・channel・args・is_sidechain・injected_chars・"
+                       "injected_chars_reason。"
+                       "is_sidechain が真なら subagent 側からの呼出し。injected_chars はその呼出しで入った skill 本文の字数で、"
+                       "後から Read した file は含まない。同じ session で読み込み済みの skill を呼び直すと、通知だけが入る形 "
+                       "(本文が入らないので 0) と、通知に続けて本文が入り直す形 (本文の字数) がある。通知は本文に数えない。injected_chars が null なら "
+                       "injected_chars_reason に、本文の record が無いのか字数を解釈できないのかが入る (値があれば null)。"
+                       "呼び直しかどうかは返さないので、値は呼出しの順によらず同じように読む",
     },
     "meta": {
         "total_invocations": "呼出し回数",
@@ -37,6 +42,8 @@ CONTRACT = {
         "excluded": "記述はあるが呼出しではない record の理由別の件数。呼出し回数に入らず、逸脱の証拠でもない。"
                     "呼ばれ方を問わず数える",
         "other_invoked_name_calls": "invoked_name と呼ばれ方が違って外した呼出しの数",
+        "unparsed_injection_calls": "rows の呼出しのうち、本文の record の字数を解釈できなかった呼出しの数。0 でなければ形式が"
+                                      "変わっている",
     },
     "notes": [
         "invoked_name を渡さなければ、接頭辞を問わず同名の別 skill の呼出しも数える。渡すと matched_files・emitted_files・"
@@ -78,6 +85,25 @@ def _mtime(path: str) -> str:
         return ""
 
 
+MISSING_BODY = "この file にこの呼出しを指す本文の record が無い (呼出しが拒否された・本文の入らない呼出しか、形式の変化)"
+UNPARSED_BODY = "本文の record の字数を解釈できない (形式が変わった)"
+
+
+def _injected_chars(run: QueryRun, paths: list[str]) -> dict[tuple[str, str], int | None]:
+    """呼出しを指す本文の record の字数の和。字数を解釈できない record が混ざると None。"""
+    if not paths:
+        return {}
+    totals: dict[tuple[str, str], int | None] = {}
+    for row in run.select("SELECT * FROM lake_skill_injection($paths)", paths=paths):
+        if not row["body_key"]:
+            continue
+        key = (row["path"], row["body_key"])
+        # 字数を解釈できない record が混ざると和が決まらないので、0 にせず null にする
+        previous = totals.get(key, 0)
+        totals[key] = None if previous is None or row["chars"] is None else previous + row["chars"]
+    return totals
+
+
 def _build(run: QueryRun) -> list[dict]:
     skill, invoked_name = run.params["skill"], run.params["invoked_name"].strip()
     bare = _bare_name(skill)
@@ -112,9 +138,20 @@ def _build(run: QueryRun) -> list[dict]:
             "channels": {channel: sum(1 for call in invocations if call["channel"] == channel) for channel in CHANNELS},
             "invocations": [{"timestamp": call["ts"], "uuid": call["record_uuid"], "channel": call["channel"],
                              "args": (call["args"] or "").strip()[:ARGS_TEXT_LIMIT],
-                             "is_sidechain": call["is_sidechain"]} for call in invocations],
+                             "is_sidechain": call["is_sidechain"], "body_key": call["body_key"]}
+                            for call in invocations],
         })
     selected = _read_order(hits, limit)
+    # 本文は読む file の分だけ引く。当たった file を全部読むと、呼出しの多い skill で時間と memory がかさむ
+    injected = _injected_chars(run, sorted(hit["path"] for hit in selected))
+    unparsed = 0
+    for hit in selected:
+        for call in hit["invocations"]:
+            key = (hit["path"], call.pop("body_key"))
+            call["injected_chars"] = injected.get(key)
+            call["injected_chars_reason"] = None if call["injected_chars"] is not None \
+                else UNPARSED_BODY if key in injected else MISSING_BODY
+            unparsed += call["injected_chars_reason"] == UNPARSED_BODY
     excluded = {row["reason"]: row["hits"] for row in run.select(
         "SELECT reason, count(*) AS hits FROM lake_skill_marker_exclusion($bare) GROUP BY reason", bare=bare)}
     run.meta.update(
@@ -126,6 +163,7 @@ def _build(run: QueryRun) -> list[dict]:
         distinct_scopes=len({hit["scope"] for hit in hits}),
         excluded={reason: excluded.get(reason, 0) for reason in EXCLUSION_REASONS},
         other_invoked_name_calls=len(calls) - len(matched),
+        unparsed_injection_calls=unparsed,
     )
     return [{key: value for key, value in hit.items() if key != "scope"} for hit in selected]
 

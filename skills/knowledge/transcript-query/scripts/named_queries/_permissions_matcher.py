@@ -19,14 +19,6 @@ COMMAND_HEAD_MAX_TOKENS = 2
 # deny entry の match に混入した実測がある)。
 PREFIX_BOUNDARY_CHARS = frozenset(";&|<>)")
 
-# `Permission to use <tool> [with command <cmd>] has been denied.`
-# **user-reject 文言より先に見る** — 優先順が割れると同じ record に 2 つの答えが出る。
-PERMISSION_DENIAL_RE = re.compile(
-    r"Permission to use\s+[A-Za-z_][A-Za-z0-9_-]*"
-    r"(?:\s+with\s+command\s+.+?)?\s+has been denied\.",
-    re.DOTALL,
-)
-
 # 自動モード分類器 deny の本文と、Reason 先頭ラベル `[Xxx Yyy]`。
 AUTOMODE_DENIAL_TEXT = "denied by the claude code auto mode"
 AUTOMODE_REASON_LABEL_RE = re.compile(r"Reason:\s*\[([^\]]+)\]")
@@ -387,13 +379,8 @@ def is_compound_command(command: str) -> int:
                    for separator in COMMAND_SEPARATORS))
 
 
-def looks_like_permission_denial(text: str) -> int:
-    """permission-rule deny の文言か (deny の種類が記録に無いときの fallback)。"""
-    return int(bool(PERMISSION_DENIAL_RE.search(text or "")))
-
-
 def looks_like_automode_denial(text: str) -> int:
-    """自動モード分類器 deny の文言か (同上)。"""
+    """自動モード分類器 deny の文言か (deny の種類が記録に無いときの fallback)。"""
     return int(AUTOMODE_DENIAL_TEXT in (text or "").lower())
 
 

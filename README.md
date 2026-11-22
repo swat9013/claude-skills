@@ -41,7 +41,7 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | --- | --- | --- |
 | `claude-config-reference` | 自動 | Claude Code の Computational harness (settings / permission / hook script) の仕様・レビュー観点と、仕様を一次情報で確かめるときの情報源の順を持つ参照知識。 |
 | `dev-env-best-practices` | 自動 | 開発環境構築時に言語/FW 別のベストプラクティス reference と構築観点を引き出す。 |
-| `issue-tracker-operations` | 自動 | issue tracker への操作 (本文の書き換え・状態の label の付け替え・close / reopen・親子の関係の記録) の手順と、issue 置き場・CL 置き場の解決順と、issue 本文の要素の正本。 |
+| `issue-tracker-operations` | 自動 | issue tracker への操作 (本文の書き換え・状態の label の付け替え・close / reopen・親子の関係の記録) の手順と、issue 置き場・CL 置き場の解決順と、issue 本文の要素と、tracker ごとの issue の取得結果の鍵の正本。 |
 | `principle-index` | コマンド / 自動 | 原則 leaf 全件の適用条件を 1 行ずつ並べた索引。 |
 | `transcript-query` | コマンド / 自動 | Claude Code の transcript を読み取り専用で問い、出力先の path と件数と劣化の meta を返す観測の呼び出し口。 |
 | `python-single-file-script` | 自動 | PEP 723 インラインメタデータ + uv run で単一ファイル Python スクリプトを新規作成・編集する場面に参照する。 |
@@ -146,7 +146,7 @@ hook は install した環境でそのまま動くが、以下を前提にして
 
 - guard は **原則 fail-closed** で、payload を読めない (JSON が不正) ときは判定不能として **deny 側に倒れる**。例外は `guard-worktree-escape.py` の 1 本だけ (素通しの損害が git で回復可能なため fail-open)
 - **Python 3.9 以上の `python3` が PATH にあること**。hook の多くは python で書かれており、`#!/usr/bin/env python3` で起動する (macOS の Command Line Tools が入れる `/usr/bin/python3` で動く)。`python3` が無い環境では hook が起動に失敗し、Claude Code はその失敗を判断なしとして扱うので、**その guard は効かないまま tool が実行される**
-- **guard の方針は作者の運用に合わせて固定されている**。例: `git push --force` (`--force-with-lease` を除く) を deny、`bash`/`sh`/`zsh` の直接起動を deny。合わない場合は該当 script を編集する
+- **guard の方針は作者の運用に合わせて固定されている**。例: `git push --force` (`--force-with-lease` を除く) を deny、`git reset --hard` を deny。合わない場合は該当 script を編集する
 - **protected branch の防御は hook では持たない**。main/master への直接 push の禁止は GitHub / GitLab の branch protection 側で設定する前提 (hook はローカルにしか効かないため)
 - **plugin は WebFetch の外向き通信を判定しない**。auto mode では、`permissions` の allow / ask / deny に当たらない WebFetch は classifier の判定に回る (2026-11-04 に Claude Code v2.1.318 の headless 実行で、classifier の拒否を 1 回確認した)。classifier は secret を載せた URL を通すこともある。Manual (`default`) mode では、対話 session なら未許可のドメインに prompt が出て人が決め、headless なら拒否される。`bypassPermissions` のように classifier が走らない mode や、広い `WebFetch(domain:...)` allow を置いた環境では判定する層が無い
 - **`guard-worktree-escape.py` は `~/.claude/state/worktree-guard/` に session ごとの作業 root を書く** (7 日で自動削除)。書けない環境では guard が無効化されるだけで、tool 実行は妨げない

@@ -8,7 +8,8 @@ rule カタログも本 contract が emit する。bucket の確定は呼び出�
 from __future__ import annotations
 
 # 読み手側の将来分岐用に単調増加させる。v12 で分割 file を成果物の `rows` の part へ畳んだ。
-SCHEMA_VERSION = 12
+# v13 で A 軸に hard deny の出どころの列、derived_views に tool_usage を足した。
+SCHEMA_VERSION = 13
 
 DEFAULT_SUFFICIENT_THRESHOLD = 30
 BYPASS_LOOKAHEAD = 5
@@ -42,11 +43,20 @@ WINDOW_SPLIT_MIN_SHARE_DELTA = HIGH_DENY_MIN_RATIO
 # part の読むパラメータ。
 BYPASS_SAMPLE_GROUPS = 10
 BYPASS_SAMPLES_PER_GROUP = 2
+# A 軸の hard deny の出どころの列。文言は先頭行をこの字数で切る。
+DENY_SAMPLES_PER_ENTRY = 3
+DENY_MESSAGE_GROUPS = 5
+DENY_MESSAGE_CHARS = 200
+# hard_deny_by_message の区分 (成果物の key の並び)。
+DENY_SOURCE_AUTOMODE = "automode"
+DENY_SOURCE_PERMISSION_RULE = "permission_rule"
+DENY_SOURCE_OTHER = "other"
+HARD_DENY_SOURCES = (DENY_SOURCE_AUTOMODE, DENY_SOURCE_PERMISSION_RULE, DENY_SOURCE_OTHER)
 
 # 成果物の `rows` の並び = 読む順。purpose は data 内容の記述だけで、確定した bucket の語彙を含めない。
 PARTS = (
     {"part": "meta", "purpose": "観測窓・判定可能性・分母 + section 概況 (判定可能性の分岐に必要な最小情報)"},
-    {"part": "derived_views", "purpose": "derived_views + guard_reverse_lookup"},
+    {"part": "derived_views", "purpose": "derived_views + guard_reverse_lookup + tool_usage"},
     {"part": "rule_candidates",
      "purpose": "決定的ルールの評価結果 (bucket_candidate / rule_fired / rule_inputs / open_predicates / "
                 "near_misses)。**判断するのは open_predicates だけ**で、bucket の確定と最終採否は下流に残る"},
@@ -251,6 +261,16 @@ META_NOTES = (
     "「使っていない」ではない。**allow の錨の無い wildcard** (`mcp__*` 等) は公式 doc が"
     "「skip して warning を出す」と定めるので被覆しない — その 0 は真の観測。",
     "guard_reverse_lookup は transcript の deny の種類 + Reason label ベース (hooks.json の静的列挙はしない)。",
+    "A 軸 entry の hard deny の出どころ: guard の hook の拒否も deny の種類が permission-rule に記録されるので、"
+    "outcome の deny_permission-rule は permission entry 由来とは限らない。`hard_deny_by_message` は hard deny を、"
+    "自動モードの分類器の拒否 (automode)・本文が permission entry の拒否の文言 (`Permission to use …`) で始まるもの (permission_rule)・"
+    "それ以外 (other) に数える。`other_deny_messages` は other を本文の先頭行で束ねた上位で、guard の hook や"
+    "本体の検査の拒否は文言が安定しているので、束の文言で出どころが分かる。`deny_samples` は新しい順の hard deny で、"
+    "入力の抜粋・複合コマンドの行か (`compound_command`)・本文の先頭行を持つ。deny の種類が hook と記録された拒否は outcome が error になり hard deny に入らないので、どの列にも数えない。**hard_deny_share を entry の性質として"
+    "読む前に、other の数と文言を見る**。",
+    "part derived_views の `tool_usage` は section の実行を tool 名ごとに数えた全量 (MCP の tool を含む)。"
+    "改名した tool や別の server 名の MCP が現役かは、0 件の entry の tool 名とこの一覧を並べて読む。"
+    "別名かどうかの判定は観測がしない (名前の一覧で決めると新しい改名を取りこぼす)。",
     "bucket 判定は観測では行わない (責務境界: 判定は呼び出し元の手順の LLM 段階)。",
     "part hooks は section (cwd scope) で絞らない — 「30 日どこでも fire していない」"
     "が「fire していない hook」の主張になるため、分母を窓全体に取る。",
@@ -322,7 +342,7 @@ RULE_CATALOG = [{'rule_id': 'revoke_candidate',
                                     'なら露出不足であって不使用ではない)'},
                       {'name': 'alias_still_in_use',
                        'predicate': '同じ capability が別名 (改名後の tool / MCP server) で現役でないか。現役なら revoke ではなく '
-                                    'pattern の書き換え'},
+                                    'pattern の書き換え。材料は part derived_views の tool_usage (section の実行の tool 名ごとの数)'},
                       {'name': 'invocation_form_pair',
                        'predicate': '同一 script の複数呼び出し形が 1 unit を成していないか (片側だけの削除は pair 規約を壊す)'}],
   'thresholds': {'sufficient_threshold': DEFAULT_SUFFICIENT_THRESHOLD}},
@@ -339,7 +359,8 @@ RULE_CATALOG = [{'rule_id': 'revoke_candidate',
                   'report_near_miss': True}],
   'open_predicates': [{'name': 'deny_attributable_to_entry',
                        'predicate': 'その deny が entry 自身の pattern 由来か、同一行の別コマンド由来か。後者なら refine 対象は entry '
-                                    'ではなく複合行の組み立て方で、entry 変更は不要'}],
+                                    'ではなく複合行の組み立て方で、entry 変更は不要。材料は part axis_a の deny_samples '
+                                    '(入力と複合コマンドか) と hard_deny_by_message / other_deny_messages (拒否の文言の出どころ)'}],
   'thresholds': {'high_deny_min_match': HIGH_DENY_MIN_MATCH, 'high_deny_min_ratio': HIGH_DENY_MIN_RATIO}}]
 
 

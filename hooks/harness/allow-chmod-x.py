@@ -452,7 +452,7 @@ def judge(stdin_text: str) -> NoReturn:
 
     # 全 path が allow prefix にマッチしたときのみ auto allow
     if all(verdict(p) == "allow" for p in paths):
-        allow("chmod +x の対象が全て allow prefix 配下")
+        allow(payload, "chmod +x の対象が全て allow prefix 配下")
 
     passthrough()
 

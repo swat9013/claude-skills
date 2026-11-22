@@ -130,6 +130,8 @@ FROM lake_line;
 CREATE VIEW lake_record AS
 SELECT path, lake_file_kind_of(substr(path, getvariable('lake_root_length') + 2)) AS transcript_kind, line_seq, raw_line,
        coalesce(doc.uuid, '') AS record_uuid,
+       coalesce(doc.parentUuid, '') AS parent_uuid,
+       coalesce(doc.sourceToolUseID, '') AS source_tool_use_id,
        coalesce(doc."type", '') AS record_type,
        coalesce(doc.subtype, '') AS subtype,
        lake_line_session(raw_line) AS session_id,
@@ -223,9 +225,6 @@ CREATE MACRO lake_first_string(doc, path_a, path_b, path_c) AS
              CASE WHEN json_type(doc, path_c) = 'VARCHAR' THEN json_extract_string(doc, path_c) END,
              '');
 
--- Skill の呼出しが必ず持つ識別の path。問いが識別を読めなかったときに、この path を食い違いとして返す。
-CREATE MACRO lake_skill_identity_path() AS 'message.content[].input.skill';
-
 CREATE VIEW lake_tool_use AS
 SELECT path, transcript_kind, line_seq, block_no, raw_line, record_uuid, is_sidechain, session_id, ts, ts_epoch, cwd,
        attribution_skill,
@@ -266,6 +265,13 @@ CREATE MACRO lake_flatten_result_text(content) AS
         ELSE ''
     END;
 
+-- permission entry の拒否の文言。本文は切る前の全文で見る (長い command の拒否は、切ると末尾の文言を失う)。
+-- 文言は本文の先頭だけで見る: guard の hook の拒否は拒んだ command を本文に写しうるので、途中の一致を数えると
+-- guard の拒否を permission entry の拒否と読む
+CREATE MACRO lake_is_permission_denial_text(result_text) AS
+    regexp_matches(coalesce(result_text, ''),
+                   '(?s)^\s*(<tool_use_error>\s*)?(Permission denied for [A-Za-z_][A-Za-z0-9_-]*:\s*)?Permission to use\s+[A-Za-z_][A-Za-z0-9_-]*(\s+with\s+command\s+.+?)?\s+has been denied\.');
+
 -- tool 実行の outcome の判定の 1 本。語彙は success / error / user-reject / unknown。
 -- is_error が真なら構造化された結果より先に見る (そのとき構造化された結果は生の error 文字列で判定を持たない)。
 -- 判定材料が無いときは success に丸めず unknown にする。
@@ -275,9 +281,7 @@ CREATE MACRO lake_base_outcome(is_error, result_text, structured_result, denial_
             CASE
                 WHEN denial_kind = 'user-rejected' THEN 'user-reject'
                 WHEN denial_kind IN ('permission-rule', 'automode-blocked', 'automode-unavailable', 'hook') THEN 'error'
-                WHEN regexp_matches(result_text,
-                                    '(?s)Permission to use\s+[A-Za-z_][A-Za-z0-9_-]*(\s+with\s+command\s+.+?)?\s+has been denied\.')
-                    THEN 'error'
+                WHEN lake_is_permission_denial_text(result_text) THEN 'error'
                 WHEN contains(lower(result_text), 'the user doesn''t want')
                      OR contains(lower(result_text), 'user rejected the')
                      OR contains(lower(result_text), 'request interrupted by user')
@@ -298,18 +302,22 @@ CREATE MACRO lake_base_outcome(is_error, result_text, structured_result, denial_
     END;
 
 CREATE VIEW lake_tool_result AS
-SELECT path, line_seq, block_no,
-       coalesce(json_extract_string(block, '$.tool_use_id'), '') AS tool_use_id,
-       lake_base_outcome(
-           CASE WHEN json_type(block, '$.is_error') = 'BOOLEAN' THEN json_extract_string(block, '$.is_error')::BOOLEAN END,
-           lake_flatten_result_text(block -> '$.content'),
-           CASE WHEN result_blocks = 1 THEN structured_result END,
-           denial_kind) AS outcome_base,
+SELECT path, line_seq, block_no, tool_use_id,
+       lake_base_outcome(is_error, full_text, structured_result, denial_kind) AS outcome_base,
        coalesce(denial_kind, '') AS denial_kind,
-       left(trim(lake_flatten_result_text(block -> '$.content')), 4000) AS result_text,
-       CASE WHEN result_blocks = 1 THEN structured_result END AS structured_result
-FROM lake_block
-WHERE record_type = 'user' AND json_extract_string(block, '$.type') = 'tool_result';
+       left(trim(full_text), 4000) AS result_text,
+       -- 拒否は is_error が真の結果にだけ載るので、ほかの結果の本文に正規表現を当てない。切る前の全文で見る
+       CASE WHEN is_error IS TRUE THEN lake_is_permission_denial_text(full_text) ELSE false END AS is_permission_denial,
+       structured_result
+FROM (
+    SELECT path, line_seq, block_no, denial_kind,
+           coalesce(json_extract_string(block, '$.tool_use_id'), '') AS tool_use_id,
+           CASE WHEN json_type(block, '$.is_error') = 'BOOLEAN' THEN json_extract_string(block, '$.is_error')::BOOLEAN END AS is_error,
+           lake_flatten_result_text(block -> '$.content') AS full_text,
+           CASE WHEN result_blocks = 1 THEN structured_result END AS structured_result
+    FROM lake_block
+    WHERE record_type = 'user' AND json_extract_string(block, '$.type') = 'tool_result'
+);
 
 -- tool_use と tool_result の対応。id の一意性が lake で保証されないので、1 つの結果を受け取る
 -- tool_use を高々 1 件に保つ: 同じ id の tool_use が続いたら、結果はそれより前で直近の tool_use が受け取る。
@@ -322,6 +330,7 @@ SELECT u.* EXCLUDE (next_seq),
        coalesce(r.outcome_base, 'unknown') AS outcome_base,
        coalesce(r.denial_kind, '') AS denial_kind,
        coalesce(r.result_text, '') AS result_text,
+       coalesce(r.is_permission_denial, false) AS is_permission_denial,
        r.tool_use_id IS NOT NULL AS paired
 FROM uses u
 LEFT JOIN lake_tool_result r
@@ -340,6 +349,8 @@ SELECT *, CASE WHEN message_id IS NULL THEN line_seq
 FROM (
     SELECT path, transcript_kind, line_seq, session_id, ts, ts_epoch, cwd, attribution_skill,
            json_extract_string(message_doc, '$.id') AS message_id,
+           -- client が書く assistant record (REPL の中の tool 呼出しの記録・API error の通知)。model の応答ではない
+           coalesce(json_extract_string(message_doc, '$.model'), '') = '<synthetic>' AS is_synthetic,
            coalesce(lake_json_int(message_doc, '$.usage.input_tokens'), 0) AS input_tokens,
            coalesce(lake_json_int(message_doc, '$.usage.output_tokens'), 0) AS output_tokens,
            coalesce(lake_json_int(message_doc, '$.usage.cache_creation_input_tokens'), 0) AS cache_creation_input_tokens,
@@ -382,14 +393,50 @@ CREATE MACRO lake_bare_skill(name) AS trim(regexp_extract(name, '[^:]*$'));
 -- 全期間を読むので、名前を含む行に絞ってから解釈する (全行を解釈すると memory の上限を超える)。
 -- 2 つの経路を UNION で 1 本にしない。optimizer が共通の行の読み取りを積んで memory の上限を超える。
 CREATE MACRO lake_skill_tool_call(bare) AS TABLE
-SELECT path, line_seq, record_uuid, is_sidechain, ts, 'skill_tool' AS channel, unit_id AS called_name, skill_args AS args
+SELECT path, line_seq, record_uuid, is_sidechain, ts, 'skill_tool' AS channel, unit_id AS called_name, skill_args AS args,
+       tool_use_id AS body_key
 FROM lake_tool_use
 WHERE contains(raw_line, bare) AND tool = 'Skill' AND lake_bare_skill(unit_id) = bare;
 
 CREATE MACRO lake_skill_slash_call(bare) AS TABLE
-SELECT path, line_seq, record_uuid, is_sidechain, ts, 'command' AS channel, command_name AS called_name, command_args AS args
+SELECT path, line_seq, record_uuid, is_sidechain, ts, 'command' AS channel, command_name AS called_name, command_args AS args,
+       record_uuid AS body_key
 FROM lake_slash_invocation
 WHERE contains(raw_line, bare) AND lake_bare_skill(command_name) = bare;
+
+-- skill の呼出しで入った本文の record (isMeta の user record) と字数。Skill tool の呼出しの本文は起動の tool_use id を、
+-- slash の呼出しの本文は呼出しの record を親に持つ。body_key は呼出しの macro の body_key と同じ値で、どちらの経路かを
+-- 問いの側に選ばせない。後から Read した file は tool_result に入るので含まない。
+-- 字数は本文が文字列ならその字数、text の block の list なら字数の和。text の block が無い・text が無いか文字列でない
+-- block がある形は NULL にする (0 にしない)。読み込み済みの skill の呼び直しで入る通知 (本文ではない) は数えない。通知は
+-- 本文の先頭 (文字列か最初の text の block) の 1 行の文言で見分ける。「読み込み済み」の通知はその後に引数が改行を挟んで
+-- 続くことがあり本文は続かないので、文字列か block ごと 0 字にする。「呼び直し」の通知はその 1 行だけを外し、続く本文を数える。
+-- 通知は別の record のことも、本文と同じ record の別の block や同じ文字列に続くこともある。
+-- resume で同じ record が写されることがあるので、uuid ごとに 1 行にする。
+CREATE MACRO lake_skill_body_chars(body) AS
+    CASE WHEN regexp_matches(body, '^\s*Skill /\S+ (is already loaded|was loaded earlier)') THEN 0
+         ELSE length(regexp_replace(body, '^\s*\(Re-invocation of /[^\n]*\n?', '')) END;
+CREATE MACRO lake_skill_injection(paths) AS TABLE
+SELECT path, record_uuid, body_key,
+       CASE json_type(message_content)
+           WHEN 'VARCHAR' THEN lake_skill_body_chars(json_extract_string(message_content, '$'))
+           WHEN 'ARRAY' THEN CASE WHEN len(text_blocks) > 0
+                                   AND len(list_filter(text_blocks, lambda block:
+                                           coalesce(json_type(block, '$.text'), '') <> 'VARCHAR')) = 0
+                                  THEN list_sum(list_transform(text_blocks, lambda block, i:
+                                           CASE WHEN i = 1 THEN lake_skill_body_chars(json_extract_string(block, '$.text'))
+                                                ELSE length(json_extract_string(block, '$.text')) END)) END
+       END AS chars
+FROM (
+    SELECT path, record_uuid, message_content,
+           CASE WHEN source_tool_use_id <> '' THEN source_tool_use_id ELSE parent_uuid END AS body_key,
+           CASE WHEN json_type(message_content) = 'ARRAY' THEN
+               list_filter(json_transform(message_content, '["JSON"]'),
+                           lambda block: json_extract_string(block, '$.type') = 'text') END AS text_blocks
+    FROM lake_record
+    WHERE contains(raw_line, '"isMeta"') AND list_contains(paths, path) AND record_type = 'user' AND is_meta
+    QUALIFY record_uuid = '' OR row_number() OVER (PARTITION BY path, record_uuid ORDER BY line_seq) = 1
+);
 
 -- 名指しした file の最後の session id と cwd。slice の file 単位の anchor になる。
 CREATE MACRO lake_file_anchor(paths) AS TABLE
@@ -452,7 +499,7 @@ WHERE reason IS NOT NULL;
 -- user record の手入力 prompt の判定材料。形の解釈だけをここで持ち、発話の分類は問いの側に置く。
 -- prompt_source と origin_kind の NULL は key が無いことを表す。
 CREATE VIEW lake_user_prompt AS
-SELECT path, split_part(substr(path, getvariable('lake_root_length') + 2), '/', 1) AS project_dir,
+SELECT path, lake_project_dir(path) AS project_dir,
        transcript_kind, line_seq, record_uuid, session_id, ts, ts_epoch, cwd, git_branch, cli_version,
        is_meta, is_sidechain, is_compact_summary, prompt_source, origin_is_object, origin_kind,
        trim(CASE json_type(message_content)

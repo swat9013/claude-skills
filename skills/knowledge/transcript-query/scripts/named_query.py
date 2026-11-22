@@ -54,7 +54,7 @@ class QueryRun:
     window: Window
     params: Mapping[str, str]
     _execute: Callable[[str, Mapping[str, Any]], tuple[list[str], list[tuple]]]
-    resolve_repo: Callable[[str], Mapping[str, str | None]] | None = None
+    resolve_repo: Callable[[str], Mapping[str, str | None]]
     meta: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def select(self, sql: str, **binds: Any) -> list[dict]:
@@ -62,28 +62,57 @@ class QueryRun:
         return [dict(zip(columns, row)) for row in rows]
 
 
+def _git(cwd: str, *argv: str) -> tuple[str, str | None]:
+    """cwd で git を走らせ、stdout と、失敗したときの cause を返す。"""
+    try:
+        proc = subprocess.run(["git", "-C", cwd, *argv], capture_output=True, text=True,
+                              timeout=GIT_TIMEOUT_SEC, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return "", "git_unavailable"
+    return (proc.stdout.strip(), None) if proc.returncode == 0 else ("", "not_a_repo")
+
+
 @functools.cache
 def resolve_repo(cwd: str) -> dict[str, str | None]:
     """cwd から repo の表現を引く。実在しない cwd は祖先の repo に寄せない。"""
     if not os.path.isdir(cwd):
         return {"repo": None, "cause": "cwd_missing"}
-
-    def git(*argv: str) -> tuple[str, str | None]:
-        try:
-            proc = subprocess.run(["git", "-C", cwd, *argv], capture_output=True, text=True,
-                                  timeout=GIT_TIMEOUT_SEC, check=False)
-        except (OSError, subprocess.SubprocessError):
-            return "", "git_unavailable"
-        return (proc.stdout.strip(), None) if proc.returncode == 0 else ("", "not_a_repo")
-
-    url, _ = git("remote", "get-url", "origin")
+    url, cause = _git(cwd, "remote", "get-url", "origin")
+    if cause == "git_unavailable":
+        # path の形へ倒すと、origin の URL で解決した同じ repo の cwd と別の repo に読まれる
+        return {"repo": None, "cause": cause}
     if url:
         # URL に埋めた認証情報を成果物へ出さない。password は `@` や `/` を含みうるので、最後の `@` まで落とす
         return {"repo": re.sub(r"://.*@", "://", url.splitlines()[0].strip()), "cause": None}
-    common_dir, cause = git("rev-parse", "--git-common-dir")
+    common_dir, cause = _git(cwd, "rev-parse", "--git-common-dir")
     if not common_dir:
-        return {"repo": None, "cause": cause}
+        # 成功して空を返したときも cause を空にしない。cause の無い未解決は数える側で鍵を失う
+        return {"repo": None, "cause": cause or "not_a_repo"}
     return {"repo": str((Path(cwd) / common_dir).resolve().parent), "cause": None}
+
+
+def checkout_root(cwd: str) -> dict[str, str | None]:
+    """cwd の repo の main checkout の root (git の common dir の親) と、git が答えられなかったときの cause。
+
+    worktree の追加と削除では変わらない。common dir が `.git` でないか bare の構成 (bare の repo に並べた worktree・
+    submodule・分けた git dir) は親が作業ツリーでないので root を None にする。呼んだ worktree の root を代わりにすると、
+    呼んだ dir で同じ lake と窓の答えが変わる。git が答えられなければ root を None にして cause を返す — bare と同じ None に
+    倒すと、main checkout の下の file が黙って絶対 path になる。
+    """
+    common_dir, cause = _git(cwd, "rev-parse", "--git-common-dir")
+    if not common_dir:
+        return {"root": None, "cause": cause or "not_a_repo"}
+    # git は common dir を物理の cwd からの path で返すので、cwd は symlink を解いてから足す (overhead は os.getcwd() の
+    # 物理 path を渡すが、論理 path の cwd を渡す呼び出し元でも root を外さない)。`.git` 自身は解かずに名前を
+    # 見る — `.git` が別名の dir への symlink でも、作業ツリーの直下の `.git` の親が root
+    common = Path(os.path.abspath(Path(os.path.realpath(cwd)) / common_dir))
+    if common.name != ".git":
+        return {"root": None, "cause": None}
+    # core.bare は extensions.worktreeConfig の repo では config.worktree にあるので、file を直接読まず git に聞く
+    bare, cause = _git(cwd, "--git-dir", str(common), "rev-parse", "--is-bare-repository")
+    if bare not in ("true", "false"):
+        return {"root": None, "cause": cause or "not_a_repo"}
+    return {"root": str(common.parent) if bare == "false" else None, "cause": None}
 
 
 def main_population(_params: Mapping[str, str]) -> tuple[str, ...]:
