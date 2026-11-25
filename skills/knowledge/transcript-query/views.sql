@@ -229,6 +229,8 @@ CREATE VIEW lake_tool_use AS
 SELECT path, transcript_kind, line_seq, block_no, raw_line, record_uuid, is_sidechain, session_id, ts, ts_epoch, cwd,
        attribution_skill,
        coalesce(json_extract_string(block, '$.id'), '') AS tool_use_id,
+       -- 呼出しで入る本文の record が親に持つ値 (Skill tool の呼出しは起動の tool_use id)。lake_skill_injection の body_key と同じ値
+       coalesce(json_extract_string(block, '$.id'), '') AS body_key,
        coalesce(json_extract_string(block, '$.name'), '') AS tool,
        lake_first_string(tool_input, '$.command', '$.command', '$.command') AS command,
        lake_first_string(tool_input, '$.file_path', '$.path', '$.notebook_path') AS target_path,
@@ -376,8 +378,10 @@ CREATE MACRO lake_slash_command(body) AS
          THEN nullif(trim(regexp_extract(body, '<command-name>/([^<]+)</command-name>', 1)), '') END;
 
 CREATE VIEW lake_slash_invocation AS
+-- body_key は呼出しで入る本文の record が親に持つ値 (slash の呼出しは呼出しの record の uuid)。lake_skill_injection の
+-- body_key と同じ値で、呼出しの側の key を問いごとに選ばせない。
 SELECT path, transcript_kind, line_seq, raw_line, record_uuid, is_sidechain, session_id, ts, ts_epoch, cwd,
-       command_name, command_args
+       command_name, command_args, record_uuid AS body_key
 FROM (
     SELECT *, lake_slash_command(json_extract_string(message_content, '$')) AS command_name,
            regexp_extract(json_extract_string(message_content, '$'), '(?s)<command-args>(.*?)</command-args>', 1) AS command_args
@@ -394,13 +398,13 @@ CREATE MACRO lake_bare_skill(name) AS trim(regexp_extract(name, '[^:]*$'));
 -- 2 つの経路を UNION で 1 本にしない。optimizer が共通の行の読み取りを積んで memory の上限を超える。
 CREATE MACRO lake_skill_tool_call(bare) AS TABLE
 SELECT path, line_seq, record_uuid, is_sidechain, ts, 'skill_tool' AS channel, unit_id AS called_name, skill_args AS args,
-       tool_use_id AS body_key
+       body_key
 FROM lake_tool_use
 WHERE contains(raw_line, bare) AND tool = 'Skill' AND lake_bare_skill(unit_id) = bare;
 
 CREATE MACRO lake_skill_slash_call(bare) AS TABLE
 SELECT path, line_seq, record_uuid, is_sidechain, ts, 'command' AS channel, command_name AS called_name, command_args AS args,
-       record_uuid AS body_key
+       body_key
 FROM lake_slash_invocation
 WHERE contains(raw_line, bare) AND lake_bare_skill(command_name) = bare;
 
@@ -437,6 +441,14 @@ FROM (
     WHERE contains(raw_line, '"isMeta"') AND list_contains(paths, path) AND record_type = 'user' AND is_meta
     QUALIFY record_uuid = '' OR row_number() OVER (PARTITION BY path, record_uuid ORDER BY line_seq) = 1
 );
+
+-- 呼出しごとの本文の字数。同じ呼出しを指す record (通知と本文が分かれた形) の和で、字数を解釈できない record が
+-- 1 つでも混ざると NULL にする (0 にしない)。本文の record が無い呼出しは行を持たない。
+CREATE MACRO lake_skill_injection_by_call(paths) AS TABLE
+SELECT path, body_key, CASE WHEN bool_or(chars IS NULL) THEN NULL ELSE sum(chars) END AS chars
+FROM lake_skill_injection(paths)
+WHERE body_key <> ''
+GROUP BY path, body_key;
 
 -- 名指しした file の最後の session id と cwd。slice の file 単位の anchor になる。
 CREATE MACRO lake_file_anchor(paths) AS TABLE

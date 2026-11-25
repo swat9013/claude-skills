@@ -73,7 +73,7 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 
 ### 7. CLAUDE.md:31  「エラーメッセージは読んでから対処する」
 - bucket: delete
-- 証拠: 診断表「既定どおりの行 (no-op)」に当たる / micro-test (1 場面・各 1 回): 場面「テストが失敗した直後に次の手を決める」/ あり: 失敗出力を読んで原因箇所を特定してから修正 / なし: 同じく失敗出力を読んでから修正 → 取る行動が一致 / est_tokens: 12 (estimator: <token_cost.estimator を転記>)
+- 証拠: 診断表「既定どおりの行 (no-op)」に当たる / 判定: この行が無くても、失敗出力を読んでから修正する / est_tokens: 12 (estimator: <token_cost.estimator を転記>)
 - 提案: 削除
 - 適用手順: 対象 file (CLAUDE.md) の該当行を編集
 
@@ -98,7 +98,6 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 ## informational
 
 - CLAUDE.md:130  「Revision Policy」— 決定的観測では bucket 割当てなし。用途不明のため人間確認
-- CLAUDE.md:66  「変更は小さく保つ」— no-op の疑い・未検証 (micro-test の上限から外れた)
 
 ## 観測範囲外 (人間確認へ回す)
 

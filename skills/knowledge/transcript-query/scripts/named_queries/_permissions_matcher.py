@@ -24,8 +24,10 @@ AUTOMODE_DENIAL_TEXT = "denied by the claude code auto mode"
 AUTOMODE_REASON_LABEL_RE = re.compile(r"Reason:\s*\[([^\]]+)\]")
 
 # hook command 中の script file token (照合キーの抽出源)。
+# 先頭の否定の後読みは token の途中から探し直さないため、最後の `[\w-]` を 1 文字にしているのは直前の `*` と
+# 重ねて探索を増やさないため。両方を戻すと拡張子の無い長い語で探索が 3 乗に、片方だけでも 2 乗に膨らむ。
 HOOK_SCRIPT_TOKEN_RE = re.compile(
-    r"[\w./~${}@-]*[\w-]+\.(?:py|sh|bash|zsh|js|cjs|mjs|ts|rb|pl)\b"
+    r"(?<![\w./~${}@-])[\w./~${}@-]*[\w-]\.(?:py|sh|bash|zsh|js|cjs|mjs|ts|rb|pl)\b"
 )
 
 _ASSIGNMENT_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")

@@ -25,7 +25,7 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | skill | 起動 | 用途 |
 | --- | --- | --- |
 | `inventory-claude-md` | コマンド | project の CLAUDE.md 系 (root / `CLAUDE.local.md` / サブディレクトリ / `.claude/rules/`) を静的観測し、行単位の bucket の見直し候補と規範の届き方の数を前後で示すレポートを作る棚卸し。 |
-| `inventory-harness` | コマンド | 実行中 repo の harness を、plant ごとの棚卸しと利用の多い skill の監査を 1 回の実行に統合し、根本課題と候補を番号つきの設問 1 ラウンドで人に示して、承認分の反映と採られた根本課題の起票まで進める棚卸し。 |
+| `inventory-harness` | コマンド | 実行中 repo の harness を、plant ごとの棚卸しと、選んだ skill の監査と本文の見直しを 1 回の実行に統合し、根本課題と候補を番号つきの設問 1 ラウンドで人に示して、承認分の反映と採られた根本課題の起票まで進める棚卸し。 |
 | `inventory-permissions` | コマンド | Claude Code の permission (allow/deny/ask) / sandbox / guard hook を transcript の tool_use 実績と突合し、5 bucket (revoke / promote / refine / sandbox / keep) の候補を人間の判定へ差し出す棚卸し。 |
 | `inventory-project-values` | コマンド | 実行中 project の transcript から手入力プロンプトを観測し、再出現した規範を証拠 anchor 付きで候補化して、候補ごとの人間判定を経た承認分だけを cwd repo の CLAUDE.md / `.claude/rules/` / 索引行が指す文書へ反映する棚卸し。 |
 | `inventory-skill-mcp` | コマンド | install 済みの skill / MCP を直近 30 日の transcript invocation と突合し、単位別 (skill / MCP tool / MCP server / plugin) の削除・見直し・保持候補を証拠付きで提示する棚卸し (判定は人間)。 |
@@ -92,6 +92,7 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 | `dialogue` | コマンド | 安易な解決に走らない・sycophancy 禁止の対話モード。 |
 | `explainer` | コマンド | 会話の現在の話題 (事象・状態・概念) を、結論を最初に置き図を中心にした使い捨ての HTML 1 file で説明して開く。 |
 | `worktree-setup` | コマンド | 対象リポジトリに Claude Code の worktree 並列セッション環境 (settings の worktree キー / .worktreeinclude / 初期化 hook) をセットアップする。 |
+| `isolated-env-setup` | コマンド | AI coding agent に作業させる隔離環境 (Docker Sandboxes の microVM。 |
 | `issue-restructure` | コマンド | open issue を根本課題ごとのクラスタに束ねて課題型の issue へまとめ直す案を、人間の承認を通して tracker へ反映する、triage の前段の対話。 |
 | `backlog-triage` | コマンド | open issue 全件を issue-triage に通し、AFK 境界の外側に残った判定と止まったものを、人間と設問のラウンドで決めて tracker と規範へ反映する対話 triage。 |
 | `issue-triage` | コマンド / 自動 | issue を 1 件以上受けて AFK 境界で振り分け、境界の内側 (ready-for-agent・close・wontfix) は tracker へ反映し、外側の判定 (規範の文案・深掘り・人手の作業・報告者への質問) と止まったものを呼び出し元へ返す. |

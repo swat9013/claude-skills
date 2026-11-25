@@ -120,11 +120,21 @@ schema を埋めた形の記入例が要るときは [references/report-example.
 
 ## 返却 (統合の棚卸しから開かれたとき)
 
-`inventory-harness` の subagent として Read で開かれたときは、人に問わず、repo の file・MCP の config・plugin の設定を書き換えない。手順 1・2 を進め、手順 3 は高確度候補の抽出と追跡の確認までで止め (AskUserQuestion と適用は行わない)、手順 4 のレポートをセッション内提案の結果を空けて書いてから、最終報告で次を返す。
+`inventory-harness` の subagent として Read で開かれたときは、人に問わず、repo の file・MCP の config・plugin の設定を書き換えない。次の段落のとおり手順 1 の呼出しの条件を決めてから手順 1・2 を進め、手順 3 は高確度候補の抽出と追跡の確認までで止め (AskUserQuestion と適用は行わない)、手順 4 のレポートをセッション内提案の結果を空けて書いてから、最終報告で下の項目を返す。
+
+「観測窓の中で本文が変わった skill」は、手順 1 の呼出しの前に cwd の repo の履歴から決め、呼出しの条件に足す — 問いの側は履歴を読まないので、注入字数の合計と変更の後の呼出数はこの条件を渡したときだけ返る。
+
+1. `git log --first-parent --diff-filter=AMR --since=<手順 1 の --since に渡す時刻> --format= --name-only -- ':/*SKILL.md'` の出力から重複を除き、今も在る file を並べる。file ごとに `git log --follow --first-parent --since=<同じ時刻> --format=%cI --name-status -- ':/<path>'` を取り、状態が `R100` (中身を変えずに移しただけ) の commit を除いた最も古い commit の時刻 (窓の中で最初に中身が変わった時刻) を取る。残る commit が無い file は外す。`--follow` は、窓の中で移した file の移す前の変更を追い、移した commit を追加と読ませない。`--first-parent` は、merge commit で入れる運用では branch の commit の時刻ではなく merge の時刻を取らせる。最初の変更から数えるので、変更の後の呼出数と、次に書く差分が同じ範囲を指す
+   - 先に `mkdir -p /tmp/inventory-skill-mcp` を行い、`date +%Y%m%dT%H%M%S` で時刻を 1 回取る。file ごとに `git log -p --follow --first-parent --since=<同じ時刻> -- ':/<path>'` の出力を `/tmp/inventory-skill-mcp/diff-<SKILL.md の repo root 相対の path の / を _ にしたもの>-<取った時刻>.patch` に書く
+2. skill の id は、`.claude/skills/<名前>/SKILL.md` なら `<名前>`、それ以外は SKILL.md のディレクトリ名にする。後者は、cwd の repo に `.claude-plugin/plugin.json` があれば、その `name` と `:` を前に付ける — mart の `units` の id と同じ形にしないと、変更の後の呼出数が数えられない
+3. id から時刻への JSON object を、手順 1 の呼出しに `--param 'body_changed_at=<JSON>'` で足す。1 件も無ければ `{}` を渡す (渡さないと注入字数の合計も返らない)
+
+返す項目:
 
 - レポートの path と、ヘッダの観測の劣化
 - 高確度候補の一覧。1 件ごとに: レポートの番号 / 単位 / bucket / 対象 / 証拠の要旨 1 行 / 反映 (手順 4 の単位別分岐表の当たる行)
 - 手順 3 の追跡の確認だけで外れた候補は「編集できない」と付け、実 path と反映 (手順 4 の単位別分岐表の当たる行) を添えて返す
 - それ以外の高確度でない候補は「反映しない」と付け、レポートの番号・単位・bucket・対象・証拠の要旨 1 行を返す
-- cwd の repo が追跡している skill の呼出数: `units` の skill のうち、SKILL.md を cwd の repo が追跡している (`git ls-files --error-unmatch <path>` が exit 0) ものを、skill 名と count の対で降順に並べる。SKILL.md の path は mart の分母が持つものを使い、持たないか cwd の repo の外を指すときは、名前で cwd の repo の中を探す。名前で探すのは、plugin prefix が cwd の repo の `.claude-plugin/plugin.json` の `name` と一致する skill (prefix を除いた名前で探す) と、prefix の無い skill だけにする — ほかの plugin の同名の skill の呼出数を、cwd の skill のものに数えない
+- cwd の repo が追跡している skill の呼出数: `units` の skill のうち、SKILL.md を cwd の repo が追跡している (`git ls-files --error-unmatch <path>` が exit 0) ものを、skill 名・SKILL.md の絶対 path・count・本文の注入字数の合計 (`injected_chars`。`injected_chars_unmeasured` が 0 でなければその数を添える) の組で count の降順に並べる。SKILL.md の path は mart の分母が持つものを使い、持たないか cwd の repo の外を指すときは、名前で cwd の repo の中を探す。名前で探すのは、plugin prefix が cwd の repo の `.claude-plugin/plugin.json` の `name` と一致する skill (prefix を除いた名前で探す) と、prefix の無い skill だけにする — ほかの plugin の同名の skill の呼出数を、cwd の skill のものに数えない
+- 観測窓の中で本文が変わった skill: 上で決めた skill ごとに、skill 名・SKILL.md の絶対 path・変わった時刻・差分の file の path と、mart の `body_changes` の同じ id の行の変更の後の呼出数 (`count_after_change`) を組にして返す。上で 1 件も決まらなければ「窓の中の変更なし」と返す
 - 手順 1 で終了したときは、理由を言い換えずに返す

@@ -59,7 +59,7 @@ THREADS = 4
 def _load_named_queries() -> dict[str, NamedQuery]:
     """`named_queries/<名前>.py` の `QUERY` を集める。`_` で始まる file は問いの部品で、問いではない。
 
-    呼び出し名は file 名の `_` を `-` にしたもの。消費者が実在する問いだけを足す。上限は 10 本。
+    呼び出し名は file 名の `_` を `-` にしたもの。消費者が実在する問いだけを足す。
     """
     return {path.stem.replace("_", "-"): importlib.import_module(f"named_queries.{path.stem}").QUERY
             for path in sorted(NAMED_QUERIES_DIR.glob("[!_]*.py"))}

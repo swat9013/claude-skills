@@ -89,21 +89,6 @@ MISSING_BODY = "この file にこの呼出しを指す本文の record が無�
 UNPARSED_BODY = "本文の record の字数を解釈できない (形式が変わった)"
 
 
-def _injected_chars(run: QueryRun, paths: list[str]) -> dict[tuple[str, str], int | None]:
-    """呼出しを指す本文の record の字数の和。字数を解釈できない record が混ざると None。"""
-    if not paths:
-        return {}
-    totals: dict[tuple[str, str], int | None] = {}
-    for row in run.select("SELECT * FROM lake_skill_injection($paths)", paths=paths):
-        if not row["body_key"]:
-            continue
-        key = (row["path"], row["body_key"])
-        # 字数を解釈できない record が混ざると和が決まらないので、0 にせず null にする
-        previous = totals.get(key, 0)
-        totals[key] = None if previous is None or row["chars"] is None else previous + row["chars"]
-    return totals
-
-
 def _build(run: QueryRun) -> list[dict]:
     skill, invoked_name = run.params["skill"], run.params["invoked_name"].strip()
     bare = _bare_name(skill)
@@ -143,7 +128,9 @@ def _build(run: QueryRun) -> list[dict]:
         })
     selected = _read_order(hits, limit)
     # 本文は読む file の分だけ引く。当たった file を全部読むと、呼出しの多い skill で時間と memory がかさむ
-    injected = _injected_chars(run, sorted(hit["path"] for hit in selected))
+    paths = sorted(hit["path"] for hit in selected)
+    injected = {(row["path"], row["body_key"]): row["chars"]
+                for row in run.select("SELECT * FROM lake_skill_injection_by_call($paths)", paths=paths)} if paths else {}
     unparsed = 0
     for hit in selected:
         for call in hit["invocations"]:

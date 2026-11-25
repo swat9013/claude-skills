@@ -48,6 +48,7 @@
     "./skills/design/sud-design",
     "./skills/design/grill-with-docs",
     "./skills/util/worktree-setup",
+    "./skills/util/isolated-env-setup",
     "./skills/util/issue-restructure",
     "./skills/util/backlog-triage",
     "./skills/util/issue-triage",

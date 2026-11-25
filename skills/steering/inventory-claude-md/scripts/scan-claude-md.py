@@ -49,6 +49,33 @@ script は bucket を割り当てず、bucket の候補を決定的に出す rul
 CLAUDE.md 行の bucket 判定はすべて内容判断であり、count 0 / 完全一致のような
 「観測の列だけで評価でき自然言語の解釈を要さない述語」が存在しないため。
 
+invariant 一覧:
+
+1. link の分類: check_mode は url (http(s)・ftp・mailto) > anchor > dynamic > absolute >
+   relative-path の順で決まり、url・anchor・dynamic は実在を検査しない (exists=None)。
+   重なる入力 (URL 内の `{id}`・anchor 内の `{x}`) は先に当たった分類になる
+2. 実在検査の起点: relative-path は link を書いた file の dir から、anchor を除いた path で
+   検査する。absolute は書いた file の位置に依らずそのまま検査する (repo 外も可)。
+   `@import` も書いた file の dir から解決する
+3. ```` ``` ```` で始まる行を境に、開閉を交互に読んだフェンスの中は、見出し・link・`@import` を
+   抽出しない (開きと閉じを区別しないので、backtick 4 本の入れ子は正しく読まない)
+4. `@import` は行頭か空白の直後で、拡張子のある path だけを拾う (@mention・メールを拾わない)
+5. 見出しは level・行番号・本文で出し、section は見出しから、次の同じか上位の level の
+   見出しの直前までで、入れ子になる
+6. 不在の root・local は status=missing、読めない file は status=unreadable で、どちらも
+   観測値はゼロ (読めなかった file の観測を黙って作らない)
+7. 探索範囲: subdir の CLAUDE.md は root 直下・`.git` 配下・`.claude/worktrees` 配下・
+   `CLAUDE.local.md` を含めない。rules は `.claude/rules` 配下を再帰で、名前順に拾う。
+   root と project-local (`CLAUDE.local.md`) は別キーで観測し、meta も合算しない
+8. rules の `paths:` は先頭の frontmatter だけから読む (本文の例示を frontmatter と読まない)
+9. token の概算は transcript-query の `views.sql` と同じ係数で、行ごと・section ごと・
+   meta に出す (値が黙って誤ると、静的コストと注入実績が突合できない)
+10. reach の値 (scoped_lines・uncovered_scoped_lines・index_targets・unpointed_docs・
+    missing_targets・duplicates・always_loaded・counts) は入力の file の中身と
+    `--covered` と母集団だけで決まる (repo の外へ解決される link・`@import` の実在は、実行する機械に
+    依存する)。`--covered` が無ければ uncovered を出さず、
+    `--before` があれば母集団は前の観測のものを使う
+
 出力: --output-dir に observation-<timestamp>.json を書き、path を stdout に
 print する。Markdown レポートは LLM 段階の成果物で、本 script は生成しない。
 
@@ -104,7 +131,7 @@ DYNAMIC_MARKERS = ("$", "{", "}", "|", "`", " ")
 
 # token 概算の係数。**transcript-query の `views.sql` の係数と同じ規則**で、
 # 変えるなら両方を同時に変える (片方だけ動かすと、同じ file の静的コストと注入実績が
-# 別スケールになり突合できない)。parity は `tests/test_scan_claude_md.py` が検査する。
+# 別スケールになり突合できない)。parity は `scripts/tests/test_scan_claude_md.py` が検査する。
 # script は DuckDB の macro を呼べないため写しになる。
 CJK_RE = re.compile("[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef]")
 ASCII_CHARS_PER_TOKEN = 4.0

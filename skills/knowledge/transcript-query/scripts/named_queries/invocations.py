@@ -11,6 +11,8 @@ invariant:
 5. 提示と呼出しは MCP server の表記が違っても join する
 6. rule は候補までで bucket を確定しない
 7. 編集だけの session も sessions に載せ、2 つの ts 欄は同じ表記で出す
+8. 注入字数は find-invocations と同じ view で判定し、本文の入らない Read の経路は字数に数えない
+9. body_changed_at を渡さなければ、返り値は注入字数と本文の変更の欄を持たない
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 
 from named_queries import _invocation_denominators as denominators
-from named_query import NamedQuery, QueryRun
+from named_query import NamedQuery, QueryRun, Stopped
 
 # 総 invocation がこれ未満なら、個別の 0 件を「使われていない」と読める母数が無い
 SUFFICIENT_THRESHOLD = 30
@@ -34,6 +36,8 @@ EXCERPT_TEXT_LIMIT = 200
 MCP_NAME_RE = re.compile(r"^mcp__(.+?)__(.+)$")
 MCP_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 SKILL_LOAD_CHANNELS = ("skill_tool", "command", "read")
+# 本文の record が呼出しを指す経路。Read した SKILL.md は tool_result に入るので本文の record を持たない
+SKILL_BODY_CHANNELS = ("skill_tool", "command")
 CODE_EDIT_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
 PLAN_MODE_TOOLS = frozenset({"EnterPlanMode"})
 
@@ -46,13 +50,15 @@ USAGE_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "c
 
 IN_WINDOW = "(ts_epoch IS NULL OR ts_epoch BETWEEN $since AND $until)"
 TOOL_USES = f"""
-SELECT lake_project_dir(path) AS project_dir, path, line_seq, block_no, tool, unit_id, target_path, input_excerpt,
+SELECT lake_project_dir(path) AS project_dir, path, line_seq, block_no, tool, body_key,
+       unit_id, target_path, input_excerpt,
        outcome_base AS outcome, attribution_skill, session_id, ts, ts_epoch
 FROM lake_tool_outcome
 WHERE {IN_WINDOW} AND (tool IN ('Skill', 'Agent', 'Read') OR starts_with(tool, 'mcp__'))
 """
 SLASHES = f"""
-SELECT lake_project_dir(path) AS project_dir, path, line_seq, command_name, session_id, ts, ts_epoch
+SELECT lake_project_dir(path) AS project_dir, path, line_seq, body_key, command_name,
+       session_id, ts, ts_epoch
 FROM lake_slash_invocation WHERE {IN_WINDOW}
 """
 USER_TEXTS = f"SELECT path, line_seq, text_blocks FROM lake_user_prompt WHERE {IN_WINDOW} AND len(text_blocks) > 0"
@@ -90,6 +96,8 @@ class Invocation:
     outcome: str
     attribution_skill: str | None
     channel: str = "skill_tool"  # skill の unit だけ意味を持つ
+    path: str = dataclasses.field(kw_only=True)
+    body_key: str = dataclasses.field(kw_only=True)  # 本文の record が親に持つ値。SKILL_BODY_CHANNELS の skill の呼出しだけが持つ
 
 
 def _parse_mcp_name(name: str) -> tuple[str, str] | None:
@@ -210,13 +218,16 @@ def _collect_invocations(run: QueryRun, known_ids: set[str],
             if skill_id is not None:
                 invocations.append(Invocation(
                     "skill", skill_id, row["session_id"], row["ts"], row["ts_epoch"], row["project_dir"],
-                    f"/{row['command_name']}"[:EXCERPT_TEXT_LIMIT], "", "success", None, "command"))
+                    f"/{row['command_name']}"[:EXCERPT_TEXT_LIMIT], "", "success", None, "command", path=path,
+                    body_key=row["body_key"]))
         else:
             unit = _tool_unit(row, skill_of_read)
             if unit is not None:
+                body_key = row["body_key"] if unit[0] == "skill" and unit[2] in SKILL_BODY_CHANNELS else ""
                 invocations.append(Invocation(
                     unit[0], unit[1], row["session_id"], row["ts"], row["ts_epoch"], row["project_dir"], last_prompt,
-                    row["input_excerpt"], row["outcome"], row["attribution_skill"] or None, unit[2]))
+                    row["input_excerpt"], row["outcome"], row["attribution_skill"] or None, unit[2], path=path,
+                    body_key=body_key))
     return invocations
 
 
@@ -349,6 +360,57 @@ def _aggregate_units(invocations: list[Invocation], plugin_ids: Collection[str])
     return units
 
 
+def _body_changed_at(text: str) -> tuple[dict[str, float], dict[str, str]] | None:
+    """`body_changed_at` (skill の id → 本文が変わった時刻の ISO 8601) を epoch と元の表記にする。渡されなければ None。"""
+    if not text.strip():
+        return None
+    message = "body_changed_at は skill の id から時差つきの ISO 8601 の時刻への JSON object で渡してください"
+    try:
+        given = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise Stopped("bad_argument", message) from error
+    if not isinstance(given, dict) or not all(isinstance(value, str) for value in given.values()):
+        raise Stopped("bad_argument", message)
+    epochs = {}
+    for skill_id, stamp in given.items():
+        try:
+            moment = dt.datetime.fromisoformat(stamp)
+        except ValueError as error:
+            raise Stopped("bad_argument", message) from error
+        # 時差の無い時刻は実行する機械の時差で読まれ、呼出しとの前後が機械ごとに変わる
+        if moment.tzinfo is None:
+            raise Stopped("bad_argument", message)
+        epochs[skill_id] = moment.timestamp()
+    return epochs, given
+
+
+def _add_injected_chars(run: QueryRun, skills: list[dict], invocations: list[Invocation]) -> None:
+    """skill の unit に、観測窓の呼出しで入った本文の注入字数の合計と、合計に入らなかった呼出しの数を足す。"""
+    calls = [invocation for invocation in invocations
+             if invocation.unit_type == "skill" and invocation.channel in SKILL_BODY_CHANNELS]
+    paths = sorted({call.path for call in calls})
+    injected = {(row["path"], row["body_key"]): row["chars"]
+                for row in run.select("SELECT * FROM lake_skill_injection_by_call($paths)", paths=paths)} if paths else {}
+    chars: dict[str, list[int | None]] = collections.defaultdict(list)
+    for call in calls:
+        chars[call.unit_id].append(injected.get((call.path, call.body_key)) if call.body_key else None)
+    for entry in skills:
+        values = chars[entry["id"]]
+        entry["injected_chars"] = sum(value for value in values if value is not None)
+        entry["injected_chars_unmeasured"] = sum(1 for value in values if value is None)
+
+
+def _body_changes(changed_at: dict[str, float], given: dict[str, str], invocations: list[Invocation]) -> list[dict]:
+    """渡された skill ごとに、本文が変わった時刻より後の呼出数。窓の中に呼出しの無い skill も 0 で載せる。"""
+    rows = []
+    for skill_id, since in changed_at.items():
+        # 時刻の無い呼出しは変更の前とも後とも決まらないので数えない
+        count = sum(1 for invocation in invocations if invocation.unit_type == "skill" and invocation.unit_id == skill_id
+                    and invocation.ts_epoch is not None and invocation.ts_epoch > since)
+        rows.append({"id": skill_id, "changed_at": given[skill_id], "count_after_change": count})
+    return sorted(rows, key=lambda row: (-row["count_after_change"], row["id"]))
+
+
 def _complement_denominators(denoms: dict[str, list[dict]], units: dict[str, list[dict]]) -> None:
     """観測されたが分母に無い id を session-observed で補う。観測分の下限の保証で、install 済みの一覧ではない。"""
     known_skills = {skill["id"] for skill in denoms["skills"]}
@@ -476,6 +538,7 @@ def _rule_candidates(run: QueryRun, rule_units: list[dict]) -> list[dict]:
 
 
 def _build(run: QueryRun) -> list[dict]:
+    changed_at = _body_changed_at(run.params["body_changed_at"])
     repo_root = Path(run.params["repo_root"]).expanduser().absolute()
     config_dir = Path.home() / ".claude"
     plugins = denominators.enumerate_installed_plugins(config_dir)
@@ -497,7 +560,14 @@ def _build(run: QueryRun) -> list[dict]:
     units = _aggregate_units(invocations, plugin_ids)
     _complement_denominators(denoms, units)
     presented = _presented_section(run, invocations, tool_sessions, plugin_ids, plugins_of_tool)
+    usage = _usage_section(run)
     sufficient = total >= SUFFICIENT_THRESHOLD
+    rule_candidates = _rule_candidates(run, _rule_units(denoms, units, presented, sufficient, total, plugins_of_tool))
+    body = {}
+    if changed_at is not None:
+        # 本文の record は最後に引く。先に引くと、後の問いが memory の上限を超える (実測)
+        _add_injected_chars(run, units["skill"], invocations)
+        body = {"body_changes": _body_changes(*changed_at, invocations)}
     return [{
         "meta": {
             "window_start": _epoch_to_iso(run.window.since),
@@ -514,8 +584,9 @@ def _build(run: QueryRun) -> list[dict]:
         "units": units,
         "sessions": _sessions_section(invocations, _session_attributes(tool_sessions)),
         "presented": presented,
-        "usage": _usage_section(run),
-        "rule_candidates": _rule_candidates(run, _rule_units(denoms, units, presented, sufficient, total, plugins_of_tool)),
+        "usage": usage,
+        "rule_candidates": rule_candidates,
+        **body,
     }]
 
 
@@ -562,6 +633,16 @@ CONTRACT = {
         "内訳は units.skill[].channels に出る。plugin の skill の Read は、plugin の名前を含む path の下の同じ相対 path "
         "(更新前の版・開発中の checkout) も数える。"
         "session の再開で別の file へ写った呼出しは file ごとに数える。",
+        "body_changed_at (skill の id → 本文が変わった時刻) を渡したときだけ、units.skill[] に injected_chars と "
+        "injected_chars_unmeasured が付き、行に body_changes の列が足される。渡さなければ返り値はこれらを持たない。",
+        "units.skill[].injected_chars は観測窓の呼出しで入った skill 本文の注入字数の合計で、読み方は find-invocations の "
+        "injected_chars と同じ (呼び直しの通知は数えず、後から Read した file は含まない)。数えるのは Skill の tool_use と "
+        "slash command の呼出しだけで、SKILL.md への Read は本文の record を持たないので数えない。"
+        "injected_chars_unmeasured は、本文の record が無いか字数を解釈できず合計に入らなかった呼出しの数で、0 でなければ "
+        "injected_chars はその分を欠いた下限。",
+        "body_changes は body_changed_at に渡した skill ごとに 1 行で、渡した時刻 (changed_at。渡した表記のまま) より後の"
+        "呼出しの数 (count_after_change。3 channel の合算) を持ち、count_after_change の降順に並ぶ。窓の中に呼出しの無い "
+        "skill も 0 で載る。時刻の無い呼出しは数えない。id は units の id と完全一致で照らすので、id の形が違えば 0 になる。",
         "meta.unreadable_components は在るのに読めない plugin の manifest と .mcp.json の path で、Claude Code もその component を"
         "読み込まない。manifest が読めない plugin は plugin・skill・同梱の server のどれも分母に無い。.mcp.json だけが読めない plugin は"
         "skill と plugin の行が分母に残り、その .mcp.json の server は分母にも同梱の server の一覧にも無い。repo の .mcp.json が読めない"
@@ -590,4 +671,4 @@ CONTRACT = {
     ],
 }
 
-QUERY = NamedQuery(contract=CONTRACT, params={"repo_root": "."}, build=_build)
+QUERY = NamedQuery(contract=CONTRACT, params={"repo_root": ".", "body_changed_at": ""}, build=_build)

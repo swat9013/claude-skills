@@ -8,6 +8,13 @@
 # stdin: {"session_id","transcript_path","cwd","hook_event_name","name"}
 #   (2026-07-15 実証。cwd = 元 repo root、name = worktree 名)
 # stdout: 作成した worktree の絶対 path 1 行のみ。診断・コマンド出力はすべて stderr へ。
+#
+# invariant:
+#   1. 成功時は stdout が worktree の絶対 path 1 行だけで、.worktreeinclude に当たる ignored file だけを写す
+#   2. SETUP_COMMANDS の失敗は hook を失敗させ、stdout に path を出さず、作った worktree と branch を片付ける
+#   3. 入力に name / cwd が無ければ失敗する
+#   4. 失敗時の片付けは、hook が作っていない既存の branch と worktree を壊さない
+#   5. SYMLINK_DIRS は、追跡内容のあるディレクトリを symlink で上書きしない
 set -Eeuo pipefail
 
 # ===== native 設定の再現 (必要な場合のみ列挙。空なら従来どおり全 checkout / symlink なし) =====

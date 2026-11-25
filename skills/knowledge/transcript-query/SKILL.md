@@ -21,7 +21,7 @@ stdout は 1 個の JSON で、exit 0 は答えた、exit 1 は止まった。`s
 | `find-invocations` | 名指しした skill は実際にどの transcript のどこで呼ばれたか (呼出しの位置と、呼出しごとの skill の注入字数つきの slice) |
 | `sum-stage-usage` | 名指しした transcript の工程ごとの所要・subagent 数・turn 数・token はいくつか (工程の境界は呼び出し元が渡す) |
 | `permissions` | permission entry・hook 設定と tool の実績の突き合わせ (条件: `section`・`transcript_kind`・`repo_root`) |
-| `invocations` | skill・agent・MCP・plugin は窓の中でどれだけ提示され、呼ばれたか。token 経済と未使用の候補を含む。条件は `repo_root` (分母を読む project。既定は cwd) |
+| `invocations` | skill・agent・MCP・plugin は窓の中でどれだけ提示され、呼ばれたか。token 経済と未使用の候補を含む。条件は `repo_root` (分母を読む project。既定は cwd) と `body_changed_at` (skill の id から本文が変わった時刻 (時差つきの ISO 8601) への JSON。渡したときだけ、skill ごとの本文の注入字数の合計と、渡した skill ごとのその時刻より後の呼出数を返す。注入字数の合計だけが要るときは `{}` を渡す) |
 | `scan-prompts` | 観測窓の中で人間が手入力した prompt は何か (全 project 横断の mart) |
 | `select-prompt-candidates` | 手入力 prompt のうち読むべき候補はどれか (長さ・repo・正規形で絞った slice。`repo` の既定は実行中の dir の repo で、`all` で全 repo) |
 | `overhead` | cwd の repo の session に載った静的コンテキストの量と、memory file が注入された session 数と、compaction で捨てた token |
