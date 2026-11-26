@@ -5,15 +5,16 @@
 # ///
 """指示文の決定的な検査と、書き直しの前後の記号の差を stdout へ出す。model を呼ばない。
 
-    check-instruction-text.py lint <file>...        曖昧語と、長い文を挙げる
+    check-instruction-text.py lint <file>...        曖昧語・強調語と、長い文を挙げる
     check-instruction-text.py diff <前> <後>        片側にだけ出る記号と、個数が変わった語を挙げる
 
 出力は 1 件 1 行の tab 区切り。
 
-- lint: <path>:<行>  曖昧語  <当たった語>  /  <path>:<行>  文長  <字数>
+- lint: <path>:<行>  曖昧語|強調語  <当たった語>  /  <path>:<行>  文長  <字数>
 - diff: <種類>  前だけ|後だけ  <記号>  /  <種類>  <語>  <前の個数>-><後の個数>
 
-lint は frontmatter と code fence の中を見ない。曖昧語は、inline code と「」で引いた語には当てない (語への言及は指示ではない)。
+lint は frontmatter と code fence の中を見ない。曖昧語と強調語は、inline code と「」で引いた語には当てない (語への言及は指示ではない)。
+強調語は、全大文字の `CRITICAL` / `IMPORTANT` / `MUST` / `NEVER` / `ALWAYS` (英字に続かない単語) と「念のため」。
 文は行 (表は cell) を「。」で切ったもので、link の先は字数に数えない。
 diff の「前だけ・後だけ」は、数値・inline code・link の先・内容語 (2 字以上の漢字・カタカナ・英字の並び) の集合の差。
 否定・義務と禁止と許可・条件と例外の語は、出現数が前後で変わったものを挙げる (これらの語は書き直しの後にも
@@ -58,6 +59,8 @@ MENTION = re.compile(r"(`+)[^`\n]*?\1|「[^」\n]*」")
 KIND_OF_WORD = {word: kind for kind, words in WORD_KINDS.items() for word in words}
 COUNTED_WORD = re.compile("|".join(sorted(map(re.escape, KIND_OF_WORD), key=len, reverse=True)))
 CELL_BREAK = re.compile(r"(?<!\\)\|")
+# 予防的な強調。全大文字の英単語だけを当て、文中の must / Never は拾わない
+EMPHATIC_WORD = re.compile(r"(?<![A-Za-z])(?:CRITICAL|IMPORTANT|MUST|NEVER|ALWAYS)(?![A-Za-z])|念のため")
 
 
 def _read(path: str) -> str:
@@ -96,6 +99,7 @@ def lint(paths: list[str]) -> list[str]:
             for word in VAGUE_WORDS:
                 if word in stated:
                     findings.append(f"{path}:{number}\t曖昧語\t{word}")
+            findings += [f"{path}:{number}\t強調語\t{word}" for word in EMPHATIC_WORD.findall(stated)]
             cells = CELL_BREAK.split(line) if line.lstrip().startswith("|") else [line]
             for cell in cells:
                 for sentence in LINK.sub(r"\1", cell).split("。"):

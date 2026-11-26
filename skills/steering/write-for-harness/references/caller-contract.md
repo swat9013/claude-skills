@@ -19,7 +19,7 @@
 
 本 skill は、宣言が無ければ invoke ごとにその invoke で診断した行を検証する (component の規範と、対象 file に当たる設計 doc に照らす)。検証を省くときだけ、invoke 直前の同じ turn のテキストで `省く` と宣言する。本 skill は前の invoke を数えないので、同じ変更のまとまり (CL を切る運用ならその CL) の中で同じ file を何回検証したかは呼び出し元が数える — 検証し直すたびに、反映した文が次の検証の指摘を呼び、検証が終わらない。同じ file の検証は 2 回 (初回と、その後の変更の再レビュー) までにし、3 回目からは `省く` を宣言する。検証 subagent の側が `検証レビュー未実施:` 行を返した回と、その file を未レビューとして挙げた回は、回数に数えない (構造 reviewer の側だけが未実施なら検証には数え、構造レビューは未レビューとして報告に載せる)。
 
-同じ変更のまとまりで同じ component の file を複数書き、それらが同じ作業の中で一緒に読まれ (同じ索引から引かれる file・同じ skill の SKILL.md と `references/` など)、1 体が全 file を全文 Read して足りる量なら、検証を 1 組にまとめてよい — file ごとに起動すると、検証の質を変えずに費用だけが file の数に比例して増える。1 組に入れる file を書く invoke では `省く` を宣言し、全部を書き終えてから、本 skill の invoke で読み込まれた SKILL.md の手順 4 の起動条件で 1 組だけ起動する (構造 reviewer の条件は、1 組に入れた invoke のどれかのパッチが満たせば満たす)。それらの file はすべてレビュー対象に並べ、prompt の雛形・参照する reference・構造 reviewer に渡す harness 全体一覧の作り方は手順 4 のとおりにする。返った指摘は呼び出し元が手順 5 の区分で分け、Act on と、採った Consider は file ごとに本 skill を invoke して反映させる (`文面は承認済み` の変更なら、本節の `文面は承認済み` の段落のとおり承認を取り直した文面だけを反映させる)。この反映の invoke は手順 5 の反映に当たるので、検証し直さず `省く` を宣言する。
+同じ変更のまとまりで同じ component の file を複数書き、それらが同じ作業の中で一緒に読まれ (同じ索引から引かれる file・同じ skill の SKILL.md と `references/` など)、1 体が全 file を全文 Read して足りる量なら、検証を 1 組にまとめてよい — file ごとに起動すると、検証の質を変えずに費用だけが file の数に比例して増える。1 組に入れる file を書く invoke では `省く` を宣言し、全部を書き終えてから、本 skill の invoke で読み込まれた SKILL.md の手順 4 の起動条件で 1 組だけ起動する (構造 reviewer の条件は、1 組に入れた invoke のどれかのパッチが満たせば満たす)。それらの file はすべてレビュー対象に並べ、prompt は手順 4 の script で組み立てる。`--snapshot` には、1 組の最初の invoke の前に、SKILL.md 手順 3 の「控え」と同じ引数で 1 組の file を `--keep` に渡して取った控えを使う。返った指摘は呼び出し元が手順 5 の区分で分け、Act on と、採った Consider は file ごとに本 skill を invoke して反映させる (`文面は承認済み` の変更なら、本節の `文面は承認済み` の段落のとおり承認を取り直した文面だけを反映させる)。この反映の invoke は手順 5 の反映に当たるので、検証し直さず `省く` を宣言する。
 
 この 1 組はそれらの file の検証 1 回に数える。ただし数えない回の決め方は本節の最初の段落と同じで、数えない file は手順 5 と同じく未レビューとして報告に載せる。反映の invoke の `省く` は回数に数えないので、反映の後に同じ file を別の理由で直したら、2 回の上限に達していなければ宣言せずに検証する。まだ 1 回も検証していない file で `省く` を宣言してよいのは、1 組に入れる file を書く invoke と 1 組の指摘を反映する invoke だけで、1 組を起動しないまま終えると、それらの file は検証を通らずに残る。
 
@@ -60,11 +60,11 @@
 
 ## 委譲後の変更 path の照合
 
-本 skill は呼び出し元の許可 path (呼び出し元の手順が決める、invoke ごとに書いてよい path) を知らず、書いた path がそこに収まったかを返さない (返す diff とパッチの行は本 skill の申告にとどまる)。args の file の外 (外出しの新しい file・別の file) を書いたかは、許可 path を手順で決めている呼び出し元が、invoke ごとに git の事実で次の手順で確かめる。cwd と反映先の repo が違いうるときは、git をすべて `git -C <repo-root>` で撃ち、控えと照合を同じ repo に対して行う:
+本 skill は呼び出し元の許可 path (呼び出し元の手順が決める、invoke ごとに書いてよい path) を知らず、書いた path がそこに収まったかを返さない (返す diff とパッチの行は本 skill の申告にとどまる)。args の file の外 (外出しの新しい file・別の file) を書いたかは、許可 path を手順で決めている呼び出し元が、invoke ごとに git の事実で次の手順で確かめる。script は本書の 1 つ上のディレクトリの `scripts/snapshot-changes.py`。cwd と反映先の repo が違いうるので、`--repo` には反映先の repo root を渡す:
 
-1. invoke の直前に `git rev-parse HEAD` と `git status --porcelain --untracked-files=all` の出力を控え、status に載っていた path (前の invoke で書いた file を含む) ごとに `git hash-object <path>` の値も控える (file が無い path は「不在」と控える)
-2. 戻ったら (反映を完了したかを問わず) `git diff --name-only <控えた HEAD>` と `git status --porcelain --untracked-files=all` の path を合わせる。控えた status に載っていた path は、`git hash-object` の値が控えと変わっていない (file が消えていない) もの (「不在」と控えた path は戻った後も不在のもの) だけを除く — 前の invoke で書いた file や元から未 commit の変更があった file への範囲外の書き込みを見逃さないため。`--untracked-files=all` は、新規ディレクトリの中の file が `?? <dir>/` に畳まれて許可 path と一致しなくなるのを防ぐ
-3. 残った path を許可 path と比べる。git の出力は repo root 相対なので、許可 path も repo root 相対で比べる (args に渡した絶対 path と比べると全件が対象外に見える)。許可 path の外にある新規 file も対象外とする
+1. invoke の直前に `snapshot-changes.py take <控え file> --repo <repo-root>` で控える。控え file は作業ツリーの外に置く。控えには HEAD と status の path と、path ごとの `git hash-object` の値 (無い file は「不在」) が入る
+2. 戻ったら (反映を完了したかを問わず) `snapshot-changes.py compare <控え file> <許可 path>...` を撃つ。許可 path の外で変わった path (新規 file を含む) が 1 行 1 件出る。控えから中身の変わらない path だけを除くので、前の invoke で書いた file や元から未 commit の file への範囲外の書き込みも出る。許可 path は repo root 相対で比べる (絶対 path を渡すと repo root 相対に直す)
+3. 出た path を対象外の path とする。script が exit 非 0 で終わったら、照合が止まったものとして扱う
 
 同じ file の中の差分が渡した制約に沿うかは path では確かめられないので、この照合の外にある。
 

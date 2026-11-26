@@ -5,8 +5,9 @@
 # ///
 """review-stage の巡が読む範囲 (base / head) を決め、JSON で stdout へ出す。
 
-決めるのは git の状態と前巡の出力 file から機械的に決まることだけ — 初回か再レビューか、
-base / head の SHA、止まるならその理由、出力へ積む注記行。段階 (docs / 軽量 / 標準) は
+決めるのは git の状態と前巡の出力 file から機械的に決まることだけ — 初回か再レビューか (と、
+増分に絞れたか)、base / head の SHA、commit message の起点、前巡から引き継ぐ段階と重要領域、
+止まるならその理由、出力へ積む注記行。段階 (docs / 軽量 / 標準) は
 hunk を読んで決める判定なので本 script は持たない。
 
 止まる巡も exit 0 で JSON を返す (`stop` が埋まる)。exit 非 0 は git 自体が動かないなど、
@@ -24,6 +25,9 @@ invariant (破ると巡を止める・exit 非 0 にする条件):
 6. 前巡の出力 file が読めなければ止まる
 7. 前巡が再レビュー `要` なのに reviewed 行の SHA が無ければ止まる
 8. git 自体が動かなければ exit 非 0 で、stderr の 1 行目に git のエラーを出す
+9. `log_base` は増分に絞れた再レビューの巡だけ前巡の `reviewed:` 行の左側で、それ以外は null
+   (増分に絞れなかった巡で渡すと、rebase の後は差分に無い upstream の commit message が混ざる)
+10. 再レビューの段階は前巡の `段階:` 行の段階で、args の段階の指定は受けない
 """
 
 from __future__ import annotations
@@ -35,12 +39,14 @@ import subprocess
 import sys
 import traceback
 from dataclasses import dataclass, field
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 # 停止理由の token。playbook はこの値で commit して呼び直すか止まるかを分ける。SKILL.md の
 # 停止テンプレートとも playbook とも機械では照合しない — 食い違っても playbook は「user へ報告して
 # 止まる」側へ倒れ、取り消せない被害が無いため
 # (`reviewer 未起動` は reviewer を立てる側が出すので本 script は出さない)
+RENDER_OUTPUT = Path(__file__).resolve().parent / "render-output.py"
 STOP_UNCOMMITTED = "未 commit"
 STOP_OTHER = "その他"
 
@@ -61,7 +67,14 @@ START_POINT_NOTE_PREFIXES = (
 
 PREV_REREVIEW_LINE = re.compile(r"^再レビュー: (.*)$", re.MULTILINE)
 PREV_REVIEWED_LINE = re.compile(r"^reviewed: ([0-9a-f]{7,64})\.\.([0-9a-f]{7,64})\s*$", re.MULTILINE)
-PREV_STAGE_LINE = re.compile(r"^段階: (\S+)", re.MULTILINE)
+PREV_STAGE_LINE = re.compile(r"^段階: (\S+)(.*)$", re.MULTILINE)
+# 名前が括弧を含む (「永続データの更新 (削除・migration 等の不可逆操作を含む)」) ので、行末の `)` まで読む
+PREV_CRITICAL_AREAS = re.compile(r"\(重要領域: (.+)\)\s*$")
+
+# prepare-inputs.py prompts の --round に渡す値
+ROUND_FIRST = "first"
+ROUND_REREVIEW = "re-review"
+ROUND_WIDENED = "re-review-widened"
 
 
 class Stop(Exception):
@@ -80,16 +93,24 @@ class Round:
     """1 巡ぶんの解決結果。stop で抜けても、そこまでに解決した値を出力へ残す。"""
 
     mode: str = "初回"
-    requested: str = "args なし"
+    unresolved: str | None = None  # resolve() が範囲を解決する前に組む
     base: str | None = None
     head: str | None = None
     prev_stage: str | None = None
+    prev_critical_areas: str | None = None
+    log_base: str | None = None
+    widened: bool = False
     notes: list[str] = field(default_factory=list)
+
+    def round(self) -> str:
+        if self.mode == "初回":
+            return ROUND_FIRST
+        return ROUND_WIDENED if self.widened else ROUND_REREVIEW
 
     def reviewed(self) -> str:
         if self.base and self.head:
             return f"{self.base}..{self.head}"
-        return f"未解決: {self.requested}"
+        return self.unresolved or ""
 
 
 @dataclass
@@ -97,6 +118,8 @@ class Prev:
     rereview: str
     stage: str | None
     head: str | None
+    base: str | None = None
+    critical_areas: str | None = None
 
     @property
     def requires_rereview(self) -> bool:
@@ -252,8 +275,10 @@ def _read_prev(path: str) -> Prev:
             "前巡の出力 file を読めない",
             f"{path} は `再レビュー: 要` なのに `reviewed: <base>..<head>` か `段階: <{' | '.join(STAGES)}>` の行が無い",
         )
-    prev.head = reviewed.group(2)
+    prev.base, prev.head = reviewed.group(1), reviewed.group(2)
     prev.stage = stage.group(1)
+    if (critical := PREV_CRITICAL_AREAS.search(stage.group(2))) is not None:
+        prev.critical_areas = critical.group(1).strip()
     return prev
 
 
@@ -309,6 +334,7 @@ def _resolve_first(r: Round, range_arg: str | None, base_branch: str | None) -> 
 def _resolve_rereview(r: Round, prev: Prev, range_arg: str | None, base_branch: str | None) -> None:
     r.mode = "再レビュー"
     r.prev_stage = prev.stage
+    r.prev_critical_areas = prev.critical_areas
     if range_arg is not None:
         r.notes.append(f"範囲を使わず: prev= があるので {range_arg} ではなく前巡の head から見た")
     r.head = _head_sha()
@@ -320,12 +346,25 @@ def _resolve_rereview(r: Round, prev: Prev, range_arg: str | None, base_branch: 
         r.base = _merge_base(r.head, _start_branch_sha(base_branch, r.notes))
         if r.base is None:
             raise _other("範囲が解決しない", "HEAD と起点 branch に共通の祖先が無い")
+        r.widened = True
         r.notes.append(f"{NOTE_WIDENED} 前巡の head が head の祖先でない — 起点 branch からの全差分を見た")
         # 起点 branch からの全差分が空なら、前巡の指摘が指すコードごと無い。初回と同じく止める
         if not _has_diff(r.base, r.head):
             raise _other("差分が空", f"{r.base}..{r.head} に差分が無い (前巡の head も残っていない)")
-    elif not _has_diff(r.base, r.head):
-        r.notes.append(f"{NOTE_NO_INCREMENT} 前巡の head から差分が無い")
+    else:
+        r.log_base = prev.base
+        if not _has_diff(r.base, r.head):
+            r.notes.append(f"{NOTE_NO_INCREMENT} 前巡の head から差分が無い")
+
+
+def unresolved_reviewed(range_arg: str | None, base_branch: str | None, prev_path: str | None) -> str:
+    """範囲を解決できなかった巡の `reviewed:` の値。形の正本は render-output.py (停止出力を組む側) の同名の関数。"""
+    spec = spec_from_file_location("render_output", RENDER_OUTPUT)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"{RENDER_OUTPUT} を読めない")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.unresolved_reviewed(range_arg, base_branch, prev_path)
 
 
 def resolve(range_arg: str | None, base_branch: str | None, prev_path: str | None) -> dict:
@@ -333,10 +372,7 @@ def resolve(range_arg: str | None, base_branch: str | None, prev_path: str | Non
     _git_out("rev-parse", "--git-dir")
     r = Round()
     stop: Stop | None = None
-    # 解決できなかった巡の `reviewed:` は、渡された args をそのまま並べる
-    passed = [a for a in (range_arg, base_branch and f"base={base_branch}", prev_path and f"prev={prev_path}") if a]
-    if passed:
-        r.requested = " ".join(passed)
+    r.unresolved = unresolved_reviewed(range_arg, base_branch, prev_path)
     try:
         prev = _read_prev(prev_path) if prev_path is not None else None
         if prev is not None and prev.requires_rereview:
@@ -360,7 +396,10 @@ def resolve(range_arg: str | None, base_branch: str | None, prev_path: str | Non
         "base": r.base,
         "head": r.head,
         "reviewed": r.reviewed(),
+        "round": r.round(),
+        "log_base": r.log_base,
         "prev_stage": r.prev_stage,
+        "prev_critical_areas": r.prev_critical_areas,
         "stop": None if stop is None else {"reason": stop.reason, "detail": stop.detail},
         "notes": r.notes,
     }

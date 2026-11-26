@@ -43,6 +43,12 @@ project 範囲の CLAUDE.md 系 (root `CLAUDE.md` + project-local `CLAUDE.local.
   - always_loaded: root / local CLAUDE.md と `paths:` の無い rules と、それらから `@import`
     で展開される repo 内の file の推定 token と字数
   - counts: missing_targets・unpointed_docs・duplicates の件数
+  - read_sessions_paths: named query `read-sessions` の条件 `paths` に渡す値 (index_targets をカンマで繋いだもの)
+- 観測できたか (meta.unobservable_reason): root と project-local の CLAUDE.md がどちらも
+  status=missing のときだけ理由の文、それ以外は null
+- 参照の実在検査の fail 数 (meta.link_check_fail_count_total): root・project-local・subdir の
+  CLAUDE.md と rules の全 file の link_targets のうち、検査して解決しなかったもの (exists=false) の数。
+  検査しない link (exists=null) は数えない
 
 原則: **決定的にできる推論は script へ、意味判断だけを LLM へ、判定は人間に**。
 script は bucket を割り当てず、bucket の候補を決定的に出す rule も持たない。既存
@@ -158,6 +164,8 @@ CODE_SPAN_UNCHECKED_CHARS = ("<", ">", "*", "{", "}", "$")
 # 写しとみなす行の最短の字数 (正規化した後)。短い定型句の一致を写しに数えない
 MIN_DUPLICATE_CHARS = 30
 LIST_MARKER_RE = re.compile(r"^(?:[-*+>]|\d+\.)\s+")
+
+UNOBSERVABLE_REASON = "root の CLAUDE.md と project-local の CLAUDE.local.md がどちらも無い"
 
 
 # --- 純関数 ------------------------------------------------------------------
@@ -507,6 +515,11 @@ def find_rules_files(repo_root: Path) -> list[Path]:
     return sorted(rules_dir.rglob("*.md"))
 
 
+def link_check_fail_count(obs: dict[str, Any]) -> int:
+    """検査して解決しなかった link (exists=false) の数。未検査 (exists=null) と `@import` は数えない。"""
+    return sum(1 for t in obs.get("link_targets", []) if t["exists"] is False)
+
+
 def summarize_meta(root_obs: dict[str, Any]) -> dict[str, Any]:
     """CLAUDE.md 自体のメタ観測 (行数 / 見出し内訳 / @import 数 / 参照 fail 数)。"""
     headings = root_obs.get("headings", [])
@@ -515,7 +528,6 @@ def summarize_meta(root_obs: dict[str, Any]) -> dict[str, Any]:
         by_level[h["level"]] = by_level.get(h["level"], 0) + 1
     link_targets = root_obs.get("link_targets", [])
     checkable = [t for t in link_targets if t["exists"] is not None]
-    fails = [t for t in checkable if t["exists"] is False]
     imports = root_obs.get("imports", [])
     import_fails = [t for t in imports if t.get("exists") is False]
     return {
@@ -524,7 +536,7 @@ def summarize_meta(root_obs: dict[str, Any]) -> dict[str, Any]:
         "import_count": len(imports),
         "import_fail_count": len(import_fails),
         "link_check_total": len(checkable),
-        "link_check_fail_count": len(fails),
+        "link_check_fail_count": link_check_fail_count(root_obs),
         # 常時ロードの実コスト。行数と併記するのは、行数が同じでも token は数倍
         # 違う (表・コードブロック・日本語) ため
         "est_tokens": root_obs.get("token_cost", {}).get("total_est_tokens", 0),
@@ -771,6 +783,7 @@ def build_reach(
                       | {p for p in pointed_by_sources if p.suffix == ".md"})
     duplicates = find_duplicates(compared, sources_resolved, repo_root)
 
+    index_target_paths = [_repo_relative(p, repo_root) for p in index_targets]
     always_files = [repo_root / o["path"] for o in always] + sorted(imported)
     always_texts = [read_file_safe(p)[1] for p in always_files]
     coverage: dict[str, Any] = {}
@@ -782,7 +795,8 @@ def build_reach(
         "scoping_patterns": [p.pattern for p in SCOPING_PATTERNS] + [
             f"code span containing {' or '.join(SCOPING_CODE_SPAN_CHARS)}"],
         "scoped_lines": scoped_lines,
-        "index_targets": [_repo_relative(p, repo_root) for p in index_targets],
+        "index_targets": index_target_paths,
+        "read_sessions_paths": ",".join(index_target_paths),
         "population_docs": sorted(_repo_relative(p, repo_root) for p in population),
         "unpointed_docs": unpointed,
         "missing_targets": missing_targets,
@@ -834,6 +848,12 @@ def build_observation(
             "repo_root": str(repo_root),
             "root_meta": summarize_meta(root_obs),
             "local_meta": summarize_meta(local_obs),
+            "unobservable_reason": (
+                UNOBSERVABLE_REASON if root_obs["status"] == local_obs["status"] == "missing" else None
+            ),
+            "link_check_fail_count_total": sum(
+                link_check_fail_count(o) for o in [root_obs, local_obs, *subdir_obs, *rules_obs]
+            ),
         },
         "sources": {
             "claude_md": {

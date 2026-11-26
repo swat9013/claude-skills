@@ -4,7 +4,7 @@ issue 本文を書き換え、旧本文を逐語で記録する手順。同じ i
 
 ## 基準の保存
 
-基準は、書き換え案の元にした取得の本文にする。呼び出し元が本文を先に保存していなければ、書き換え案を作る前に `gh issue view <N> -R <issue 置き場> --json body --jq .body` で本文を file に保存し、書き換え案はこの file の本文を元に作る。呼び出し元が先に保存した本文 (複数の issue を 1 回で取得した JSON の file など) から書き換え案を作ったときは、その issue の本文 (`fetch-result-keys.md` の表で、取得した形の本文の鍵) を `jq -r` などのコマンドで file に切り出す — context から書き起こすと逐語が崩れ、比較で偽の競合が出る。この file が書き戻す直前の比較の基準になる。別の取得で読んだ本文を書き換え案の元にしない — 二つの取得の間に入った他の書き手の編集を、比較で検知できなくなる。
+基準は、書き換え案の元にした取得の本文にする。呼び出し元が本文を先に保存していなければ、書き換え案を作る前に `gh issue view <N> -R <issue 置き場> --json body --jq .body` で本文を file に保存し、書き換え案はこの file の本文を元に作る。呼び出し元が先に保存した本文 (複数の issue を 1 回で取得した JSON の file など) から書き換え案を作ったときは、その issue の本文を file に切り出す — context から書き起こすと逐語が崩れ、比較で偽の競合が出る。1 件の issue を gh / glab で取得した file なら、この skill の `scripts/issue-fetch.py body <file> --number <N> --out <file>` で切り出す。それ以外 (複数の issue を 1 回で取得した JSON など) は、`fetch-result-keys.md` の表で取得した形の本文の鍵を `jq -r` などのコマンドで切り出す。この file が書き戻す直前の比較の基準になる。別の取得で読んだ本文を書き換え案の元にしない — 二つの取得の間に入った他の書き手の編集を、比較で検知できなくなる。
 
 同じ issue を続けて書き換えるときは、前回の書き戻しの読み直しで一致を確かめた本文 (前回書いた file) を次の基準にする。読み直しより後に他の書き手が入れば、次の比較で検知される。
 
@@ -16,19 +16,19 @@ issue 本文を書き換え、旧本文を逐語で記録する手順。同じ i
 
 書き戻しの手順 1 に入る前に、issue を閉じる open CL が無いことを確かめる。issue を閉じる CL とは、closing keyword か tracker の閉じる関連で、その issue を閉じると宣言した CL を指す。そうした CL が open の間に本文を書き換えると、実装中の CL が拠った仕様と本文が食い違い、CL を読む人もどちらが正か決められない。issue を参照するだけの CL (閉じると宣言せずに番号を書いた CL。本文が前提とする規範を足す CL など) は数えない — 数えると、その CL が merge を待つ間、本文を書き換えられない。
 
-次のどちらかに当たる CL を、issue を閉じる open CL とする。
+次のどちらかに当たる CL を、issue を閉じる open CL とする。gh では、本 skill (`issue-tracker-operations`) の dir の下の `scripts/open-cl.py` が、gh の出力を保存した file から本節の規則で判定する (gh は script の外で撃つ)。
 
-- `gh issue view <N> -R <issue 置き場> --json closedByPullRequestsReferences` が返す各 CL のうち、`gh pr view <url> --json state` が open を返すもの。GitLab では、CLI 規約に閉じる関連の引き方が無ければ `glab api --paginate projects/<issue 置き場の / を %2F にしたもの>/issues/<N>/closed_by` が返す、merge で issue を閉じる MR のうち `state` が `opened` のもの — 取得結果にこの関連の鍵が無い tracker (`fetch-result-keys.md` の表) では、gh の綴りの読み替えでは引けないので、別に引く
-- `gh pr list -R <CL 置き場> --state open --search "<N> in:body" --limit 1000 --json number,body` が返す CL (返った件数が `--limit` に届いたら上げて引き直す — 超えた分は黙って打ち切られる) のうち、本文が closing keyword の直後にこの issue を書いたもの。closing keyword は tracker の語 (GitHub なら `close`・`closes`・`closed`・`fix`・`fixes`・`fixed`・`resolve`・`resolves`・`resolved`。大文字小文字と直後の `:` は問わない) で、issue の書き方は `<owner>/<repo>#<N>` か issue の URL で、CL 置き場と issue 置き場が同じなら `#<N>` も含む (どれも番号の直後が数字でないもの)。GitHub は既定 branch 以外へ向かう CL の closing keyword を閉じる関連として張らないので、積み重ねた CL はこちらでしか見つからない
+- 閉じる関連で閉じると宣言した CL のうち、状態が open のもの。gh では、`gh issue view <N> -R <issue 置き場> --json closedByPullRequestsReferences` の出力 (この鍵を含む取得結果の file でもよい) の各 CL の url に `gh pr view <url> --json url,state` を撃って出力を 1 件 1 file で受け、`open-cl.py closed-by <閉じる関連の file> --number <N> --views <受けた file>...` で open の CL を出す。GitLab では、CLI 規約に閉じる関連の引き方が無ければ `glab api --paginate projects/<issue 置き場の / を %2F にしたもの>/issues/<N>/closed_by` が返す、merge で issue を閉じる MR のうち `state` が `opened` のもの — 取得結果にこの関連の鍵が無い tracker (`fetch-result-keys.md` の表) では、gh の綴りの読み替えでは引けないので、別に引く
+- 本文が closing keyword の直後にこの issue を書いた open の CL。gh では `gh pr list -R <CL 置き場> --state open --search "<N> in:body" --limit 1000 --json number,body` の出力を file に受け、`open-cl.py body <受けた file> --issue <N> --issue-repo <issue 置き場> --cl-repo <CL 置き場> --limit 1000` で CL を出す (exit 2 で件数が `--limit` に届いたと出たら、上げて引き直す — 超えた分は黙って打ち切られる)。closing keyword は tracker の語 (GitHub なら `close`・`closes`・`closed`・`fix`・`fixes`・`fixed`・`resolve`・`resolves`・`resolved`。大文字小文字と直後の `:` は問わない) で、issue の書き方は `<owner>/<repo>#<N>` か issue の URL で、CL 置き場と issue 置き場が同じなら `#<N>` も含む (どれも番号の直後が数字でないもの)。gh 以外の tracker では、この規則で CL の本文を照らす。GitHub は既定 branch 以外へ向かう CL の closing keyword を閉じる関連として張らないので、積み重ねた CL はこちらでしか見つからない
 
-当たる CL があるか、上の閉じる関連を引くコマンドが失敗したときは、書き戻さずに止める (「停止の扱い」) — 引けないまま進むと、閉じる関連だけを張った open CL を見落とす。CLI 規約にも上の項にも閉じる関連の引き方が無い tracker では、CL の本文を探す項だけで確かめる。
+当たる CL があるか、上の閉じる関連を引くコマンドが失敗したとき (`open-cl.py` の exit 2 で、stderr の `引き直す:` の理由が件数でないものを、同じ取得で取り直してもまた返したときを含む) は、書き戻さずに止める (「停止の扱い」) — 引けないまま進むと、閉じる関連だけを張った open CL を見落とす。CLI 規約にも上の項にも閉じる関連の引き方が無い tracker では、CL の本文を探す項だけで確かめる。
 
 ## 書き戻し
 
 上の「open CL の確かめ」を通してから、次の順で書き戻す。
 
 1. **外す label を先に外す。** 状態の label のうち、呼び出し元の手順か「書き換えた後の状態」が外すとしたものは、比較より先に `state-label.md` の付け替え方で外す (外す label が無い呼び出し元もある。保証を持たない状態の label (`needs-triage` など) を付けるなら同じ 1 回の操作で付ける)。`ready-for-agent` は、手順 5 の読み直しが済んでから付ける — この順にすると、手順 2 か 5 で止めたときに検査を通っていない本文へ `ready-for-agent` が付いたまま残らない
-2. **比べる。** 書き戻す直前に `gh issue view <N> -R <issue 置き場> --json body --jq .body` で本文を別の file に保存し、`diff --strip-trailing-cr <基準の file> <保存した file>` で比べる (この option は GNU と BSD の diff の両方にある)。出力が本文の末尾の改行と空行の差だけなら一致と読む — 取得のコマンドと tracker が本文の末尾の改行を増減する。それ以外の出力があれば、他の書き手と競合しているので書き戻さずに止める
+2. **比べる。** 書き戻す直前に `gh issue view <N> -R <issue 置き場> --json body --jq .body` で本文を別の file に保存し、比べる。行末の CR と本文の末尾の改行・空行 (空白だけの行を含む) の差だけを一致とする — 取得のコマンドと tracker が本文の末尾の改行を増減する。gh / glab では本 skill の dir の下の `scripts/body-compare.py <基準の file> <保存した file>` で比べ、`一致` (exit 0) のときだけ進む。`競合` (exit 1) は他の書き手との競合なので書き戻さずに止め、exit 2 (file を読めない) は本文を保存し直して比べ直し、また exit 2 なら書き戻さずに止める。ほかの tracker では script を通さずに同じ規則で 2 つの file を比べ、一致のときだけ進む
 3. **書き戻す。** 書き換え後の本文を file に書き、`gh issue edit <N> -R <issue 置き場> --body-file <file>` で書き戻す (題名も変えるなら同じコマンドに `--title <題名>` を足す)
 4. **旧本文を記録する。** 次の形のコメントを file に書き、`gh issue comment <N> -R <issue 置き場> --body-file <file>` で投稿する。旧本文は基準の file から写す — context から書き起こすと逐語が崩れる。投稿が失敗したら、基準の file の path を添えて人へ報告し (宛先は呼び出し元の手順が決める)、手順 5 へ進む。親子の関係の記録で親の本文に子の行を足すだけのときは、この手順を飛ばす — 旧本文は書き換えた本文の中に残る
 
@@ -44,7 +44,7 @@ issue 本文を書き換え、旧本文を逐語で記録する手順。同じ i
    </details>
    ```
 
-5. **読み直す。** 本文をもう一度保存し、手順 3 で書いた file と手順 2 の diff で比べる。本文の末尾の改行と空行の差のほかに出力があれば、書き戻しの後に他の書き手が入ったので、以降の操作を止める
+5. **読み直す。** 本文をもう一度保存し、手順 3 で書いた file と手順 2 と同じ比べ方で比べる。一致でなければ、書き戻しの後に他の書き手が入ったので、以降の操作を止める
 
 ## 書き換えた後の状態
 

@@ -6,9 +6,12 @@
 """harness の file を path のパターンで component に分け、`<path> - <component>` を 1 行 1 件 stdout へ出す。
 
 component の分類の正本。write-for-harness (手順 1 の対象の振り分けと、手順 4 の構造 reviewer に渡す harness 全体一覧)
-と claude-config-review (「ファイル種類判定」節の type の判定) がこの script の出力を使う。
+と claude-config-review (「ファイル種類判定」節の type の判定) と ready-for-agent-review (手順 2 の、issue の変更対象の path の
+component の判定) がこの script の出力を使う。
 
 - 引数なし: `git ls-files` の file (repo root 相対) を分類する。分類できなかった file は出さない
+- `--with-tracked` を付けて path を渡す: 引数なしの行を出した後に、渡した path の行を path を渡したときと同じ形で続ける。
+  `git ls-files` の file と同じ path は二重に出さない (git 管理外の path と未追跡の file を一覧へ足す用途)
 - path を渡す: 渡した path を cwd 基準の絶対 path (`..` は畳み、symlink は解かない) にして分類し、出力は渡した表記のまま出す。分類できなかった path は stderr へ `分類外: <path>` を 1 行ずつ出す。
   git を使わないので、repo の外の path (`~/.claude/` 系) も渡せる
 
@@ -31,7 +34,7 @@ invariant:
 2. `hooks/` の下の `tests/` にある file は hook にしない
 3. `agents/*.md` は、親が `.claude/` か plugin root のときだけ agent にする
 4. path を渡したとき、分類できなかった path は stderr へ 1 件 1 行で出す
-5. 引数なしで git が動かなければ exit 1
+5. 引数なしか `--with-tracked` で git が動かなければ exit 1
 6. `.md` は `.claude/rules/` の下 (サブディレクトリを含む) にあるときだけ rules にする
 """
 
@@ -104,19 +107,28 @@ def tracked_files() -> tuple[Path, list[str]]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("paths", nargs="*", help="分類する path。省くと git ls-files の file を分類する")
+    p.add_argument("--with-tracked", action="store_true", help="git ls-files の file の行の後に、渡した path の行を足す")
     return p.parse_args(argv)
 
 
+def _print_given(paths: list[str], skip: set[Path]) -> None:
+    for given in paths:
+        # cwd が `.claude/` の中だと、相対 path の表記に `.claude` が現れないので cwd を足して判定する。
+        # abspath は `..` を畳み、symlink は解かない (resolve() だと symlink 表記の path が別の場所の判定になる)
+        path = Path(os.path.abspath(Path(given).expanduser()))
+        # git の root は symlink を解いた path なので、重複の判定は realpath でそろえる
+        if path in skip or Path(os.path.realpath(path)) in skip:
+            continue
+        component = classify(path)
+        if component:
+            print(f"{given} - {component}")
+        else:
+            print(f"分類外: {given}", file=sys.stderr)
+
+
 def main(args: argparse.Namespace) -> int:
-    if args.paths:
-        for given in args.paths:
-            # cwd が `.claude/` の中だと、相対 path の表記に `.claude` が現れないので cwd を足して判定する。
-            # abspath は `..` を畳み、symlink は解かない (resolve() だと symlink 表記の path が別の場所の判定になる)
-            component = classify(Path(os.path.abspath(Path(given).expanduser())))
-            if component:
-                print(f"{given} - {component}")
-            else:
-                print(f"分類外: {given}", file=sys.stderr)
+    if args.paths and not args.with_tracked:
+        _print_given(args.paths, set())
         return 0
     try:
         root, files = tracked_files()
@@ -128,6 +140,7 @@ def main(args: argparse.Namespace) -> int:
         component = classify(root / rel)
         if component:
             print(f"{rel} - {component}")
+    _print_given(args.paths, {root / rel for rel in files})
     return 0
 
 

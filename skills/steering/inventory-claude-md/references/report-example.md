@@ -1,6 +1,6 @@
 # レポート出力例
 
-`inventory-claude-md` が組み立てる棚卸しレポートの記入例 (概略)。**固定 schema の正本は SKILL.md 手順 3** で、本 file はその具体化 — 各 section を実際にどう書き下すかが掴めないときに Read する。
+`inventory-claude-md` が組み立てる棚卸しレポートの記入例 (概略)。**固定 schema の正本は SKILL.md 手順 3** で、本 file はその具体化。
 
 候補の番号は識別子で、本文での出現順ではない。例の証拠欄が引く診断表の行: [既定どおりの行 (no-op)](../../write-for-harness/references/patches.md#diag-no-op) / [禁止の形で書かれた規範](../../write-for-harness/references/patches.md#diag-prohibition)
 
@@ -61,8 +61,9 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 
 ### 5. CLAUDE.md:56  「個人パスのハードコード禁止」
 - bucket: move-to-lint
-- 証拠: 決定的検査可能 (regex `/Users/[^s-watanabe]`)。実際 `.githooks/pre-commit` に `lint-personal-paths.py` 実装済
-- 提案: CLAUDE.md 行は残しつつ「(gate で自動検査)」注記を追加 or 完全に削除 (gate が実 enforcer)
+- 証拠: est_tokens: 15 (estimator: <token_cost.estimator を転記>)
+- 根拠: 診断表「機械が判定でき例外の無い規範」に当たる。判定形式: regex `/Users/[^/]+/`。移し先: lint
+- 提案: 束「lint」(行: #5) の設問で問い、採られたら依頼文で起票する
 
 ## delete
 
@@ -113,7 +114,7 @@ meta 観測 (project-local): 見出し H2 x 2 / @import 展開 0 / 参照実在 
 | 2 | keep-inline | CLAUDE.local.md:8 | project-local | - |
 | 3 | move-to-path-scoped | CLAUDE.md:78-84 | project | 反映済み |
 | 4 | move-to-path-scoped (共有化) | CLAUDE.local.md:11-13 | project-local → project | 見送り |
-| 5 | move-to-lint | CLAUDE.md:56 | project | - |
+| 5 | move-to-lint | CLAUDE.md:56 | project | 起票済み (`<issue 置き場>#<N>`) |
 | 6 | delete | CLAUDE.md:120 | project | 反映済み |
 | 7 | delete | CLAUDE.md:31 | project | `undecided` |
 | 8 | merge | CLAUDE.md:92 / 140 | project | 承認済み・未反映 |

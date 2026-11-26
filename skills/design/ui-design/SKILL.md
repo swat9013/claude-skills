@@ -16,6 +16,8 @@ description: >-
 
 成果物の書式はすべて [references/artifacts.md](references/artifacts.md)、検証の手順は [references/verification.md](references/verification.md) が持つ。書く段階になったら該当ファイルを Read する。
 
+既にある UI 設計 doc を書き換えずに、経緯を知らない読み手が引けるかだけを確かめる依頼は、ユーザーが名指した設計 doc の置き場を使い (名指しが無ければ「1.」の引き方で引き、引けなければユーザーに尋ねる)、[references/verification.md](references/verification.md) 段 4 だけを通して終える。
+
 ## 1. 置き場を決める
 
 - 既存の設計の置き場は、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」を Read し、その引き方で引く。新しく作る設計は、既存の設計の置き場と同じ並び (案内が無ければ `docs/design/<name>/`) に作る。以降の手順と `references/` の `<置き場>` は、ここで決めた置き場を指す
@@ -27,6 +29,8 @@ description: >-
 ## 2. 設計セッションを進める
 
 各段は、下記の確定項目が埋まるまで質問を続けてから次の段へ進む。質問はまとめて出し、ユーザーの回答が要らない事実 (既存コード・既存 doc・stack の実態) は自分で調べて埋める。決定するのはユーザー、事実を集めるのは自分。段の順序は固定。確定項目に条件の羅列が出たら、条件を減らして 1 本にできないか、残る条件を直交する規則へ畳めないかを `principle-orthogonal-rules` で、手段 (実装形式・既製品) を画面の要求より先に決めていないかを `principle-design-derivation-order` で見る。
+
+設計 doc に書く決定に添えるものと、添える範囲・形は `${CLAUDE_SKILL_DIR}/../sud-design/references/artifacts.md` の「決定の見直し条件」が持つので、最初の決定を問う前にその節を Read する。添えるものもユーザーに決めてもらう。
 
 **画面インベントリ** — 確定項目:
 
@@ -109,6 +113,7 @@ README / screens.md / navigation.puml / components.md / tokens.md の 5 成果�
 
    `.svg` は `.puml` と必ず対で更新する (source だけ直すと README が古い図を貼り続ける)
 4. セッション中の決定のうち根拠と却下肢を残す価値があるものを `decision/NNNN-<slug>.md` に記録する (基準と様式は artifacts.md)
+5. 書き終えた設計 doc を、[verification.md](references/verification.md) 段 4 (書いた経緯を知らない読み手に読ませる) に通す
 
 ## 4. 実装する agent へ届ける
 
@@ -124,6 +129,8 @@ README / screens.md / navigation.puml / components.md / tokens.md の 5 成果�
 - どの変更がどの file の正本かは README の索引表で引く。同じ内容を複数 file へ書き足さず、正本 1 つに書いて他からは参照する — `principle-artifact-register`
 - `navigation.puml` を直したら再描画と網羅検査を回す (手順は「3.」と同じ)
 - 過去の決定を覆すときは decision/ の旧 file を書き換えず、新しい決定 file を起こして旧 file を Superseded にする
+- 更新で入る決定にも、`${CLAUDE_SKILL_DIR}/../sud-design/references/artifacts.md` の「決定の見直し条件」が定めるものを添え、ユーザーに決めてもらう
+- 直し終えたら、直した設計 doc を [verification.md](references/verification.md) 段 4 に通す
 
 ## 何をしない skill か
 

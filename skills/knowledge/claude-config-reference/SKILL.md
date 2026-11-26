@@ -8,7 +8,7 @@ user-invocable: false
 
 Claude Code の Computational harness (settings / permission / hook script) を編集・新設・レビューするときに引く参照知識。中身は Claude Code の仕様と汎用ベストプラクティス。
 
-Inferential 側 (CLAUDE.md / rules / SKILL.md 指示文 / hook 注入文 / agent 定義) の文面規範は対象外で、呼び出し元のフローに委ねる。ただし一次情報源の引き先 ([sources](references/sources.md)) は Inferential 側の照合でも共用する。
+Inferential 側 (CLAUDE.md / rules / SKILL.md 指示文 / hook 注入文 / agent 定義) の文面規範は対象外で、呼び出し元のフローに委ねる。ただし一次情報源の引き先 ([sources](references/sources.md)) と、Claude Code が rules を読み込む `paths` の照合 ([list-matching-rules](scripts/list-matching-rules.py)) は Inferential 側の作業でも共用する。
 
 ## 索引
 
@@ -16,6 +16,7 @@ Inferential 側 (CLAUDE.md / rules / SKILL.md 指示文 / hook 注入文 / agent
 |---|---|---|
 | コンポーネント | [settings](references/settings.md) | settings.json / settings.local.json を編集する前、`permissions` / `hooks` の宣言場所に迷ったとき |
 | コンポーネント | [hook](references/hook.md) | hook の登録・script を新設 / 変更する前、hook をどの event に置くか判断するとき |
+| 共通 | [list-matching-rules](scripts/list-matching-rules.py) | Read せず実行する。repo root と path の列から、`paths` が当たる `.claude/rules/**/*.md` を列挙するとき (`${CLAUDE_SKILL_DIR}/scripts/list-matching-rules.py --root <repo root> <repo root 相対の path>...` の stdout の `rules`。`paths` を持たない rules は全 path に当たる) |
 | 共通 | [sources](references/sources.md) | 仕様が不明・古い・矛盾しているとき、公式のベストプラクティスと照らすとき (一次情報源とエスカレーション順) |
 
 プロジェクト固有の価値観文書 (CLAUDE.md と、対象 repo の `docs/agents/domain.md` が案内する用語集・ADR) があれば併用し、食い違ったらプロジェクト側を優先する。

@@ -4,9 +4,10 @@ user-invocable: true
 argument-hint: "[設計名または設計したい対象の説明]"
 description: >-
   設計ドキュメント一式を目的 → システム関連図 → ユースケース → ドメインモデル図の順の
-  対話的セッションで作成・更新する。モジュール分割・実装アーキテクチャの設計は対象外。
+  対話的セッションで作成・更新し、既存の設計 doc の読みやすさの確認も受ける。モジュール分割・実装アーキテクチャの設計は対象外。
   Use when「設計ドキュメント (設計 doc) を作る・更新する」「ドメインモデルを設計する」
-  「ユースケースを書く」「システム境界を設計する」.
+  「ユースケースを書く」「システム境界を設計する」
+  「設計 doc が読みやすいか確かめる」.
 ---
 
 # sud-design
@@ -14,6 +15,8 @@ description: >-
 設計対象について、目的 (達成したい状態とトレードオフ) → システム関連図 (境界と接続点) → ユースケース (アクターの意図) → ドメインモデル図 (実体と設計規則) の順に質問して決定を固め、設計ドキュメント一式を書く。順序が漏れを炙り出す: 優先順位を決めずに境界を切ると段ごとにトレードオフの判断がぶれ、境界を決めずに描いたドメインモデルは port の内外が混ざり、ユースケースに現れない entity は根拠を持たない。
 
 成果物の書式はすべて [references/artifacts.md](references/artifacts.md)、検証の手順は [references/verification.md](references/verification.md) が持つ。書く段階になったら該当ファイルを Read する。
+
+既にある設計 doc を書き換えずに、経緯を知らない読み手が引けるかだけを確かめる依頼は、ユーザーが名指した設計 doc の置き場を使い (名指しが無ければ「1.」の引き方で引き、引けなければユーザーに尋ねる)、[references/verification.md](references/verification.md) 段 4 だけを通して終える。
 
 ## 1. 置き場を決める
 
@@ -29,8 +32,8 @@ description: >-
 
 **目的** — 確定項目:
 
-- 設計対象が達成したい状態。機構の動き方ではなく、終わったときに何が成り立っているかで書く
-- 達成したい状態どうしがトレードオフになる軸の有無と、あるなら食い違ったときの優先順位
+- 達成したい状態。利用時品質の特性ごとに、人 (直接使う人・保守する人・運用する人) の体験で書く。機構の動き方と、機械の呼び出し元が要ることは体験にせず、体験を支える保証として書く (様式は [references/artifacts.md](references/artifacts.md) の「目的」)
+- 体験どうしがトレードオフになる軸の有無と、あるなら食い違ったときの優先順位
 
 **システム関連図** — 確定項目:
 
@@ -47,6 +50,7 @@ description: >-
 
 - entity・集約の範囲・多重度・ID 参照。ユースケースに現れない entity は理由を確かめる (根拠が無ければ落とす — `principle-deletability` の「導入は価値の立つ項目だけに絞る」)
 - entity ごとの設計規則 (note に束縛する)
+- 図の note にもユースケースにも載らない判断の規則があれば、主題ごとの目的・完了条件・制約 (README の「判断基準」に書く)
 - 用語: 図に登場する語は全部、用語の正本 (既存の用語集、無ければ README の対訳表) と一致させる。正本に無い語を名付けるときは `principle-intention-revealing-names` に従う
 
 system.md / usecases.md / domain.puml の 3 成果物は既定で全部作る。設計の規模に対して不要な成果物は省いてよいが、**何を省きなぜ不要かを README に 1 行残す** (省略の判断も設計判断として読める形にする)。
@@ -65,7 +69,8 @@ system.md / usecases.md / domain.puml の 3 成果物は既定で全部作る。
    ```
 
    `.svg` は `.puml` と必ず対で更新する (source だけ直すと README が古い図を貼り続ける)
-4. セッション中の決定のうち根拠と却下肢を残す価値があるものを `decision/NNNN-<slug>.md` に記録する (基準と様式は artifacts.md)
+4. 決定の根拠と退けた案を `rationale.md` に、根拠に要る日付つきの観測を `observations/` に書く。決定のうち記録として残す価値があるものは `decision/NNNN-<slug>.md` に記録する (基準と様式は artifacts.md)。rationale.md と observations/ の文面は、書く前に逐語でユーザーへ示し、承認された文面だけを書く
+5. 書き終えた設計 doc を、[verification.md](references/verification.md) 段 4 (書いた経緯を知らない読み手に読ませる) に通す
 
 ## 4. 既存設計を更新する
 
@@ -75,6 +80,7 @@ system.md / usecases.md / domain.puml の 3 成果物は既定で全部作る。
 - `domain.puml` / `statechart.puml` を直したら再描画と組合せ検査を回す (手順は「3.」と同じ)。状態機械を持つ設計で、状態機械かそれに関わる文章を変えたら、段 2 を通してから、変えた箇所と、それに触れる規則に [verification.md](references/verification.md) 段 3 を当てる
 - 過去の決定を覆すときは decision/ の旧 file を書き換えず、新しい決定 file を起こして旧 file を Superseded にする
 - 更新で入る決定にも、[references/artifacts.md](references/artifacts.md) の「決定の見直し条件」が定めるものを添え、ユーザーに決めてもらう
+- 文章を直す前に [references/artifacts.md](references/artifacts.md) の「読みやすさの基準」を Read し、直し終えたら、直した設計 doc を [verification.md](references/verification.md) 段 4 に通す
 
 ## 何をしない skill か
 

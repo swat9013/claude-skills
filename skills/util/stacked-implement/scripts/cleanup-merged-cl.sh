@@ -6,6 +6,7 @@ set -uo pipefail
 usage() {
   cat <<'EOF'
 usage: cleanup-merged-cl.sh [--remote <名前>] [--default-branch <名前>] [--keep-remote-branch] <CL の branch> <worktree の絶対 path>
+       cleanup-merged-cl.sh --worktree-only <worktree の絶対 path>
 
 cwd の repo (worktree の外。通常は main checkout) で呼ぶ。次を順に行う。
   1. worktree に未 commit の変更 (未追跡の file を含む) があれば、何も消さずに終わる (exit 3)。
@@ -24,6 +25,9 @@ cwd の repo (worktree の外。通常は main checkout) で呼ぶ。次を順�
      git branch -D で消す。fetch が失敗していたら確かめずに拒まれた branch を全部残す。
      exit 0 でない branch (squash merge・merge されずに closed など) と、-D が拒まれた branch は残す。
 
+--worktree-only は手順 1 と 3 だけを行い、remote とローカルの branch には触れない (CL の branch を残して
+worktree だけを片付ける)。
+
 --remote の既定は origin。--default-branch の既定は <remote>/HEAD が指す branch。
 呼び出し側が確かめること: 手順 2 の前に、CL の branch を target にしている open の CL が無いこと
 (付け替えより先に消すと、後続の CL は close されうる)。merge の完了は script が remote で確かめるので、
@@ -39,6 +43,7 @@ EOF
 remote=origin
 default_branch=
 keep_remote=0
+worktree_only=0
 positional=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,23 +51,32 @@ while [ $# -gt 0 ]; do
     --remote) remote="${2:?--remote には名前が要る}"; shift 2 ;;
     --default-branch) default_branch="${2:?--default-branch には名前が要る}"; shift 2 ;;
     --keep-remote-branch) keep_remote=1; shift ;;
+    --worktree-only) worktree_only=1; shift ;;
     --) shift; positional+=("$@"); break ;;
     -*) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     *) positional+=("$1"); shift ;;
   esac
 done
-if [ "${#positional[@]}" -ne 2 ]; then
+if [ "$worktree_only" -eq 1 ]; then
+  if [ "${#positional[@]}" -ne 1 ]; then
+    usage >&2
+    exit 2
+  fi
+  cl_branch=
+  worktree="${positional[0]}"
+elif [ "${#positional[@]}" -ne 2 ]; then
   usage >&2
   exit 2
+else
+  cl_branch="${positional[0]}"
+  worktree="${positional[1]}"
 fi
-cl_branch="${positional[0]}"
-worktree="${positional[1]}"
 case "$worktree" in
   /*) ;;
   *) echo "worktree は絶対 path で渡す: $worktree" >&2; exit 2 ;;
 esac
 
-if [ -z "$default_branch" ]; then
+if [ "$worktree_only" -eq 0 ] && [ -z "$default_branch" ]; then
   head_ref=$(git symbolic-ref --short "refs/remotes/$remote/HEAD" 2>/dev/null) || {
     echo "$remote の既定ブランチを引けない。--default-branch で渡す" >&2
     exit 2
@@ -100,7 +114,7 @@ if [ -d "$worktree" ]; then
 fi
 
 # 2. remote の branch。merge の完了を remote で確かめてから消す
-if [ "$keep_remote" -eq 0 ]; then
+if [ "$worktree_only" -eq 0 ] && [ "$keep_remote" -eq 0 ]; then
   if ! ensure_fetch; then
     keep "remote branch $remote/$cl_branch: git fetch $remote が失敗したので merge の完了を確かめていない。worktree とローカルの branch も残す"
     printf 'note: git fetch %s: %s\n' "$remote" "$fetch_out"
@@ -133,6 +147,10 @@ if [ -d "$worktree" ]; then
   fi
 else
   echo "deleted: worktree $worktree (既に無かった)"
+fi
+
+if [ "$worktree_only" -eq 1 ]; then
+  exit "$kept"
 fi
 
 # 4. branch

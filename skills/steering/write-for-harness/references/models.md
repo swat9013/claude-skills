@@ -15,7 +15,7 @@ Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化�
 | Sonnet 5.5 | `claude-sonnet-5-5` | バランス (速度 × 推論 × コスト) | 通常の実装 / レビュー / 中程度の推論 |
 | Haiku 5.5 | `claude-haiku-5-5` | 最速 / 最低単価 | 分類 / 抽出 / routing / 大量・低レイテンシの subagent 作業 |
 
-**単価の段差** (選定判断に効くのは絶対額でなく比): **Fable ≒ Opus × 2.5、Opus ≒ Sonnet × 2、Sonnet ≒ Haiku × 20** (2026-10 時点の公式 pricing)。Haiku 5.5 だけは prompt の長さで単価が変わり、100k token を超える prompt では Sonnet との差が 4 倍まで縮む — 長い入力を読ませる仕事は、Haiku に下ろしても安くなる幅が小さい。絶対額は改定されるので本表に書かない ([sources](../../../knowledge/claude-config-reference/references/sources.md) 経由で確認する)。
+**単価の段差** (選定判断に効くのは絶対額でなく比): **Fable ≒ Opus × 2.5、Opus ≒ Sonnet × 2、Sonnet ≒ Haiku × 20** (2026-10 時点の公式 pricing)。Haiku 5.5 だけは prompt の長さで単価が変わり、100k token を超える prompt では Sonnet との差が 4 倍まで縮む — 長い入力を読ませる仕事は、Haiku に下ろしても安くなる幅が小さい。絶対額は [sources](../../../knowledge/claude-config-reference/references/sources.md) 経由で確認する。
 
 **context window / max output は Fable と Opus で同等** (1M / 128k)。両者の差は「扱える長さの上限」ではなく、能力と単価にある — 長い入力を読ませたいだけなら Fable に上げる理由にならない。
 
@@ -25,9 +25,7 @@ Claude の主要モデル (fable / opus / sonnet / haiku) の特性を明文化�
 
 指示文をどのモデルに合わせて書くかの基準。本書は基本的に「どのモデルを選ぶか」を扱うが、この基準はモデル ID の表と同時に動くので本書に置く。**現在は Opus 5.5** (差分は [models/opus-5-5.md](./models/opus-5-5.md))。
 
-**対象モデルの決め方** (write-for-harness の各所はここを引く): 実行モデルを宣言している指示文 (skill の `model:` / agent 定義の `model:` や Agent tool の `model` 引数で指名する subagent への依頼文) はそのモデル。宣言の無い指示文 (`model:` 未指定の skill / CLAUDE.md / rules / hook 注入文) は文面の基準モデル。`opus` / `sonnet` のような alias は、解決先のモデル (`claude-code-guide` で確かめる) に合わせる。
-
-基準は常に最新の Opus に置く。ただし移すのは、新しい Opus の差分 reference を [models/](./models/) に新設するのと同じ変更で行う — 差分の無いモデルを基準にすると、そのモデル固有の対策が空白のまま文面が書かれる。
+**対象モデルの決め方** (write-for-harness の各所はここを引く): 指示文の file は `../scripts/resolve-target-model.py` に渡す。frontmatter の `model:` が完全な ID ならそのモデル、`model:` が無ければ文面の基準モデルを対象モデルにし、Read する reference を出す。script が `判断` 行を返したときと、file を持たない依頼文は次で決める。Agent tool の `model` 引数で指名する subagent への依頼文はそのモデル。`opus` / `sonnet` のような alias は、解決先のモデル (`claude-code-guide` で確かめる) に合わせる。
 
 ## モデル別の向き先と避ける帯
 
@@ -147,9 +145,8 @@ token 数の増加に伴い signal-to-noise 比が下がり、関連情報が他
 
 以下のいずれかが発生したら本ドキュメントを更新する。
 
-- 新モデルの発表 (世代が上がったら本表の ID を差し替える。ID 一覧は本書が唯一の正本なので他 doc の追随は不要)
+- 新モデルの発表 (世代が上がったら本表の ID を差し替える)
 - **tier の増減** (既存の上位/下位に新しい段が入る)。この場合は ID 差し替えでは済まず、「モデル別の向き先と避ける帯」「`model:` 選定基準」「effort の使いどころ」「アンチパターン」の各節に書かれた**梯子の記述をすべて組み替える**。特性が未確認のまま一覧行だけ足すのは未更新と同義
-- 新しい Opus の差分 reference を [models/](./models/) に新設したとき (「文面の基準モデル」をそのモデルへ移す)
 - 既存モデルの ID 変更
 - 既存モデルの deprecation 通知
 - 公式 prompt engineering ガイドの大きな更新 (文面の正本は [writing.md](./writing.md) 側なので、本書と対で見直す)

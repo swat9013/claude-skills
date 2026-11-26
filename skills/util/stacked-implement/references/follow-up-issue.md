@@ -1,0 +1,5 @@
+# 起票された follow-up issue の扱い
+
+SKILL.md 手順 5 の中継で、CL エージェントが起票した follow-up issue を `<issue 置き場>#<N>` で知らせてきたときと、SKILL.md 手順 7 で triage にかけ直すときの手順。
+
+`swat-skills:issue-triage` を invoke する background の subagent を `name` を付けずに起動し (`isolation` なしで `name` を付けた agent は teammate になり、triage が立てる反証の subagent の報告を受け取れない。CL エージェントは `isolation` 付きなので当たらない)、届いた issue を置き場ごとにまとめて渡す — 親が自分で triage する間は中継が止まる。`ready-for-agent` になった issue は、SKILL.md 手順 5 の「どの担当範囲にも載らない変更」の項と同じ判定で既存の行に含めるか、SKILL.md 手順 1〜3 で新しい行にして計画に足し、どちらも SKILL.md 手順 5 の計画の修正として扱う。含める先から、CL が merged か closed の行は除く (含めても issue は閉じない)。既存の行に含めたときは、その行の issue 参照に `Closes <issue 置き場>#<N>` を 1 行足し、含めた先の CL エージェントへ「担当範囲への依頼」として issue 本文を逐語で、`Closes <issue 置き場>#<N>` と並べて渡し、実装させて CL の説明文にその参照を足させる — 説明文の issue 参照は起動した側が渡したものを書くので、含めると決めた親が渡す。その依頼の完了の知らせが届いたら、SKILL.md 手順 5 の「最終報告」の項と同じ確かめ方で、依頼を渡した後に投稿された、投稿の印を持つコメントがあるかを確かめる (依頼の前からあるコメントは数えない)。無ければ、依頼分の範囲で CL エージェント定義の手順 2 を通し直し、レビュー出力を投稿するよう、その CL エージェントへ伝える。それ以外の結果は label を動かさず、返ったブロックを逐語で応答テキストに写す。停止理由が計画の CL を前提に挙げた issue は、issue と CL の名前を対にして応答テキストに書く (SKILL.md 手順 7 で使う。会話の圧縮や再開の後も読めるように残す)

@@ -11,7 +11,7 @@ description: CLAUDE.md / .claude/rules/ / SKILL.md 指示文 / hook 注入文 / 
 
 Inferential harness (CLAUDE.md / `.claude/rules/` / SKILL.md 指示文 / hook 注入文 / agent 定義) を書く手順。決定論的に動く Computational 側 (settings / permission / hook script / gate) は本 skill の対象外。Computational を書く規範は呼び出し元のフローに委ね、レビュー手順は `claude-config-review` が持つ。
 
-本 skill を呼び出すときの呼び出し口 (渡す args・invoke の回数・検証の範囲の宣言・返答を呼び出し元の報告へ運ぶこと・反映を終えられなかったときの返し方・委譲後の変更 path の照合) は、呼び出し元向けに `${CLAUDE_SKILL_DIR}/references/caller-contract.md` に置いてある。同じ file を同じ変更のまとまり (CL を切る運用ならその CL) でもう一度 invoke するときは、他の skill からでも自分の session から直接でも、invoke の前にこの契約の「検証の範囲」を Read して `省く` を宣言するかを決める — 本 skill は検証の範囲を決めるときに前の invoke を数えないので、宣言が無いと毎回検証が走る。人が文面を承認した変更を書かせるときも、invoke の前に同節を Read して `文面は承認済み` を宣言する。
+呼び出し元向けの契約 (渡す args・検証の範囲の宣言・反映を終えられなかったときの返し方、戻った後に通す変更 path の照合など) は `${CLAUDE_SKILL_DIR}/references/caller-contract.md` に置いてある。他の skill からでも自分の session から直接でも、同じ file を同じ変更のまとまり (CL を切る運用ならその CL) でもう一度 invoke するときは、invoke の前に契約の「検証の範囲」を Read して `省く` を宣言するかを決める — 本 skill は前の invoke を数えないので、宣言が無いと毎回検証が走る。人が文面を承認した変更を書かせるときも、invoke の前に同節を Read して `文面は承認済み` を宣言する。
 
 ## 手順
 
@@ -61,7 +61,11 @@ component が skill で、手順が subagent を起こすなら (新規作成を
 
 加えて文面規範 `${CLAUDE_SKILL_DIR}/references/writing.md` を Read する。
 
-続けて対象モデルの差分を読む (どの file かは writing.md 末尾の表)。対象モデルは `${CLAUDE_SKILL_DIR}/references/models.md` の「文面の基準モデル」節の決め方で決める。モデル選定そのもの (能力帯・単価比・モデル ID) も同書が正本。
+続けて対象モデルの差分を読む。対象 file を次の script に渡し、`reference` 行の file を Read する。`判断` 行が出たときと、新規作成で file がまだ無いときは、`${CLAUDE_SKILL_DIR}/references/models.md` の「文面の基準モデル」節で対象モデルを決める。読む file は writing.md 末尾の表で引く。script が exit 非 0 で終わったときも、同じく models.md の節で決める。モデル選定そのもの (能力帯・単価比・モデル ID) も models.md が正本。
+
+```bash
+${CLAUDE_SKILL_DIR}/scripts/resolve-target-model.py <対象 file>
+```
 
 書く前に `${CLAUDE_SKILL_DIR}/references/patches.md` を Read し、変更をパッチ 7 種の候補から選ぶ。7 種は、追加 / 書き換え / 削除 / 統合 / 外出し / 分割 / Computational 化。パッチの診断と当て方は次の規則に従う。
 
@@ -74,6 +78,12 @@ component が skill で、手順が subagent を起こすなら (新規作成を
   - 項目単位に割れない、宣言の無い節の書き直し
 
   報告に回したものが宣言された変更 (定義は手順 5 の「反映を終えられなかったとき」) に当たれば、手順 5 の「反映を終えられなかったとき」の形でも返す
+- **控え**: 最初のパッチを当てる前に、対象 file の中身を作業ツリーの外の file へ控える。`省く` の宣言があれば取らない — 手順 4 が起動しないので使わず、呼び出し元が 1 組の検証のために取った控えを上書きしうる。手順 4 は、この控えからの diff を検証に渡す (invoke より前の未 commit の変更を diff に混ぜない)。対象 file が git repo の中にあれば `--repo <その repo root>` も渡す。`--keep` に渡していない file (外出しで新しく作る file) は、控えた HEAD の中身 (無ければ空) が diff の起点になる
+
+  ```bash
+  ${CLAUDE_SKILL_DIR}/scripts/snapshot-changes.py take <控え file> --keep <対象 file>... [--repo <repo root>]
+  ```
+
 - **文字数の計測**: パッチ (手順 5 で findings を反映する変更を含む) は 1 つずつ当て、その直前と直後の対象 file の文字数を `wc -m` で数える。複数の Edit を 1 つの message や 1 回の script にまとめて当てない (前後差が混ざり、手順 5 の報告でパッチ単位の前後差を書けない)。新規作成の file は、書く前を 0 とする。
 - **決定的な検査**: 書き終えたら、対象 file に下の script を当てる。出力のうち、自分が書いた文に当たった行を直してから、手順 4 へ進む。次の 3 つは直さず、当たりを手順 5 の報告に `検査の当たり:` の行で載せる: 既存の文の語を替えただけの行 / 直すと意味が変わる行 / `文面は承認済み` と宣言された文面
 
@@ -89,74 +99,34 @@ ${CLAUDE_SKILL_DIR}/scripts/check-instruction-text.py lint <対象 file>
 
 呼び出し元が invoke 直前の同じ turn で `省く` と宣言していれば、どちらも起動せずに手順 5 へ進み、手順 5 の報告に `検証省略: 呼び出し元の宣言` と書く。宣言が無ければ、下の各 subagent の条件で起動する。
 
-起動するものは `Agent` tool で同一 message 内で起動する。どちらも結果を受け取るだけの役割なので `name` を付けず、報告は各 subagent の最終メッセージで受け取る (SendMessage での報告は求めない)。model・effort・手順・返答の schema は agent 定義が持つので、Agent tool の `model` / `effort` 引数は渡さず、prompt には下の雛形の入力だけを渡す。
+起動するものは `Agent` tool で同一 message 内で起動し、報告は各 subagent の最終メッセージで受け取る。どちらも結果を受け取るだけの役割なので `name` を付けない。深さは agent 定義が持つので `model` / `effort` 引数は渡さない。`name` と `model` / `effort` が外れた呼び出しには、Agent の PreToolUse hook が案内を返す。手順・返答の schema も agent 定義が持つので、prompt には下の script が組み立てた stdout だけを渡す。
 
 - **検証 subagent**: 書いた file の文面を component 別 reference に照らし、当たる設計 doc があれば (`設計 doc は後段` の宣言が無いとき) その設計 doc にも照らす。条件なしで起動する。`subagent_type: swat-skills:harness-component-reviewer` で指名する
 - **構造 reviewer**: 書いた内容の**配置**が正しいかを harness 全体の中で見る。この invoke が新規作成か、当てたパッチに追加・外出しがあれば、対象が 1 ファイルでも 1 つ起動する。無ければ起動せず、手順 5 の報告に `構造レビュー省略: 配置が新しく決まるパッチなし` と書く — 書き換え・削除・統合と、報告だけにしたパッチ (分割を含む) は既存の行の置き場を変えないので、配置を見る対象が無い。`subagent_type: swat-skills:harness-structure-reviewer` で指名する
 
 名前が解決しないときは `general-purpose` で代替しない — 代替すると model・effort・tools が呼び出し元の値へ黙って戻り、指名した深さで見たように見える。2 つの結果は互いに独立しているので、解決した側の結果だけで手順 5 へ進む。解決しなかった側の結果を報告する位置 (検証 subagent なら findings、構造 reviewer なら `structural_proposals`) に、代わりに `<検証|構造>レビュー未実施: <error が挙げた available agents>` と次の手順 (swat-skills plugin の agent が読み込まれる状態にしてからレビューをやり直す) を書く。
 
-構造 reviewer の入力になる「harness 全体一覧 (path + component)」は、起動前に main agent が手順 1 の分類の script を引数なしで起動し、stdout (git 管理下の file の `<path> - <component>`) をそのまま使う:
+2 つの prompt は次の script で組み立て、stdout をそのまま prompt にする。script が exit 非 0 で終わったら、その subagent は起動しない。結果の位置には `<検証|構造>レビュー未実施: prompt を作れなかった (<stderr の 1 行>)` を書く。次の手順は、stderr の原因を直してから、その subagent だけをやり直すこと。
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/list-harness-inventory.py
+${CLAUDE_SKILL_DIR}/scripts/build-review-prompts.py verify --component <component> --target <対象 file>... --snapshot <手順 3 の控え file> --model-ref <手順 3 で Read した対象モデルの差分 file>... [--agent-ref] [--range <file>=<行範囲>...] [--design-later | --design-doc <置き場> <索引> <照らす対象>...]
+${CLAUDE_SKILL_DIR}/scripts/build-review-prompts.py structure --target <対象 file>...
 ```
 
-git 管理外の `~/.claude/` 系 path は、args で対象として渡された場合のみ、同じ script にその path を渡して出た行を一覧へ加える。script が exit 非 0 で終わったら構造 reviewer を起動せず、その結果の位置に `構造レビュー未実施: 一覧を作れなかった (<stderr の 1 行>)` と次の手順 (stderr の原因を直してから構造 reviewer だけをやり直す) を書く。一覧は prompt へ全件埋め込む — 各ファイルの全文 Read は reviewer が必要と判断したものだけが行う。今回新しく書いた file は、まだ git に追跡されていないので一覧に入らない。同じ script にその path を渡して出た行を一覧へ加える。
+- `--agent-ref`: 手順 3 の条件で agent の reference も Read したとき
+- `--range`: 手順 3 で診断した行範囲 (パッチを当てた後の file の行番号。例: `<file>=64-68,81-86`。空白を入れるなら値ごと引用する)。file 全体の見直しの依頼・新規作成で全行を診断した file には渡さない — 診断していない行への指摘は手順 5 で Noted にしかならず、人が読む量だけを増やす
+- `--design-later` / `--design-doc`: 下の、`設計 doc は後段` の宣言を扱う段落で決める
+- structure の一覧 (path + component) は script が全件埋めるので、手で足さない。今回新しく書いた未追跡の file と git 管理外の `~/.claude/` 系 path も、`--target` に渡せば一覧に入る
 
-検証 subagent の prompt (入力):
+返答で期待する JSON の鍵は、検証 subagent が `findings`、構造 reviewer が `structural_proposals`。未実施行はその鍵の位置に置く (読み方とやり直しは下の「返答の読み方」)。
 
+呼び出し元が invoke 直前の同じ turn で `設計 doc は後段` と宣言していれば、設計 doc を決めずに `--design-later` を渡し、手順 5 の報告に対象の file ごとの `設計 skip: <file>: 呼び出し元の宣言` と書く。宣言が無ければ、起動前に main agent がレビュー対象の file ごとに当たる設計 doc を決める。file を持つ git repo の `docs/agents/domain.md` に節「設計 doc の置き場」があれば、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` を Read し、その「設計 doc の置き場の引き方」で当たる行を決める。当たる行が 1 つでもあれば、規範の優先順位の leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-norm-precedence.md` も Read する (2 つの leaf は手順 5 の区分に使う)。当たる行ごとに `--design-doc <置き場の絶対 path> <索引列の file の絶対 path (空なら '')> <その行の適用範囲に当たるレビュー対象の絶対 path (複数なら , 区切り)>` を渡す — 適用範囲の外の file に設計 doc を当てると、その file に当たらない指摘が出る。置き場か索引の file が無い行は渡さず、その行の適用範囲に当たる file ごとに手順 5 の報告へ `設計 skip: <file>: 設計 doc 不在: <path>` と書く。domain.md の行に 1 つも当たらない file は、手順 5 の報告に `設計 skip: <file>: <理由>` (git repo の外 / `docs/agents/domain.md` か節が無い / 節が設計 doc を案内しない / 当たる行が無い) と書く — 置き場の宣言は repo ごとに無いことが正常なので、止めずに文面の検証だけを走らせる。
+
+**返答の読み方** (検証 subagent と構造 reviewer に共通): 最終メッセージを作業ツリーの外の file に書き、次の script に渡す。やり直した後の返答なら `--retried` を付ける。script は前後の文を外して JSON を読み、期待した鍵があるかを `判定` の行に出す。`判定` が `得た` 以外なら `${CLAUDE_SKILL_DIR}/references/review-retry.md` を Read し、その手順で、やり直すか `<検証|構造>レビュー未実施:` 行を書くかを決める。ほかの行は手順 5 で使う。
+
+```bash
+${CLAUDE_SKILL_DIR}/scripts/classify-review-reply.py <検証|構造> <最終メッセージの file> [--retried]
 ```
-component: <COMPONENT>
-
-参照する reference (絶対 path):
-- <COMPONENT_REF>
-- <WRITING_REF>
-- <MODEL_REF>
-- <CONFORMANCE_LEAF>
-
-レビュー対象 (絶対 path):
-- <PATH_1>
-- ...
-
-reference が公式 docs の確認を求めていても、外部の確認を試みず reference に書かれた内容の範囲で判定する。
-
-<SCOPE_LINE>
-
-照らす設計 doc (1 行に `<置き場> | <索引> | <照らすレビュー対象>`。索引があれば索引から読む file を決め、空なら置き場の全体を読む):
-<DESIGN_DOCS>
-
-レビュー対象に当てたパッチの diff (2 つの検査は、この diff が変えた箇所にだけ当てる):
-<PATCH_DIFF>
-
-各設計 doc を、その行に並べたレビュー対象にだけ照らし、reference の principle-design-conformance の 2 つの検査を当てる。その指摘は category を `conformance` か `design drift` にし、evidence に設計 doc の行を file:line で添える。
-```
-
-`<COMPONENT>` / `<PATH_*>` / 各 `*_REF` / `<SCOPE_LINE>` / `<CONFORMANCE_LEAF>` / `<DESIGN_DOCS>` / `<PATCH_DIFF>` は起動時に埋める (後の 3 つは下の段落)。`<SCOPE_LINE>` は「レビューするのは、次の行範囲と、その範囲が他の行と食い違いを生む箇所だけ: <手順 3 で診断した行範囲>」で埋める。行範囲はパッチを当てた後の file の行番号で書き、レビュー対象が複数あれば file ごとに並べる。手順 3 で全行を診断した file (file 全体の見直しの依頼・新規作成) は範囲に並べず、全 file がそうなら行ごと落とす — 診断していない行への指摘は手順 5 で Noted にしかならず、人が読む量だけを増やす。`<COMPONENT_REF>` と `<WRITING_REF>` は手順 3 で Read した component 別 reference と文面規範で、手順 3 の条件で agent の reference が要るなら `<COMPONENT_REF>` は 2 本とも 1 行ずつ並べる。`<MODEL_REF>` は手順 3 で決めた対象モデルの差分 file で、writing.md の表が 2 本を挙げるモデルでは両方を並べる。返答で期待する JSON の鍵は `findings` で、未実施行は findings の位置に置く (返答の読み方とやり直しは下の「JSON が得られないとき」)。
-
-呼び出し元が invoke 直前の同じ turn で `設計 doc は後段` と宣言していれば、設計 doc を決めず、雛形の `<CONFORMANCE_LEAF>` の行と、「照らす設計 doc」の行から雛形の末尾までを落とし、手順 5 の報告に対象の file ごとの `設計 skip: <file>: 呼び出し元の宣言` と書く。宣言が無ければ、`<DESIGN_DOCS>` と `<CONFORMANCE_LEAF>` は、起動前に main agent がレビュー対象の file ごとに当たる設計 doc を決めて埋める。file を持つ git repo の `docs/agents/domain.md` に節「設計 doc の置き場」があれば、原則 leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-design-conformance.md` を Read し、その「設計 doc の置き場の引き方」で当たる行を決める。当たる行が 1 つでもあれば、規範の優先順位の leaf `${CLAUDE_SKILL_DIR}/../../knowledge/principle-index/references/leaves/principle-norm-precedence.md` も Read する (2 つの leaf は手順 5 の区分に使う)。`<DESIGN_DOCS>` には、当たる行を 1 行ずつ `<置き場の絶対 path> | <索引列の file の絶対 path (空なら空欄)> | <その行の適用範囲に当たるレビュー対象の絶対 path (複数なら , 区切り)>` で並べ、`<CONFORMANCE_LEAF>` は前者の leaf の path で埋める — 適用範囲の外の file に設計 doc を当てると、その file に当たらない指摘が出る。置き場か索引の file が無い行は並べず、その行の適用範囲に当たる file ごとに手順 5 の報告へ `設計 skip: <file>: 設計 doc 不在: <path>` と書く。domain.md の行に 1 つも当たらない file は、手順 5 の報告に `設計 skip: <file>: <理由>` (git repo の外 / `docs/agents/domain.md` か節が無い / 節が設計 doc を案内しない / 当たる行が無い) と書く — 置き場の宣言は repo ごとに無いことが正常なので、止めずに文面の検証だけを走らせる。並べる行が 1 つも無ければ、雛形の `<CONFORMANCE_LEAF>` の行と、「照らす設計 doc」の行から雛形の末尾までを落とす。`<PATCH_DIFF>` は、起動の時点でレビュー対象の file に当ててあるパッチ全部の diff を、省かずに埋める — 2 つの検査はどちらも変更に当てるもので、file だけを渡すと前からあったずれと今回のずれを分けられず、省いた hunk は検査から黙って抜ける。
-
-構造 reviewer の prompt (入力):
-
-```
-参照する reference (絶対 path):
-- 共通: ${CLAUDE_SKILL_DIR}/references/architecture.md
-- 判断規則: ${CLAUDE_SKILL_DIR}/references/structure.md
-- 共通: ${CLAUDE_SKILL_DIR}/references/models.md
-
-レビュー対象 (今回書いた file、絶対 path):
-- <PATH_1>
-- ...
-
-harness 全体一覧 (path + component):
-<INVENTORY>
-```
-
-`<PATH_*>` と `<INVENTORY>` (一覧の全件) は起動時に埋める。返答で期待する JSON の鍵は `structural_proposals` で、未実施行は `structural_proposals` の位置に置く (返答の読み方とやり直しは下の「JSON が得られないとき」)。
-
-**この SKILL.md をロードした時点で `${CLAUDE_SKILL_DIR}` は絶対 path へ置換済み**なので、どちらの prompt も本文に見えている path をそのまま写す — 変数表記を復元して渡すと subagent 側では展開されず、reference を 1 本も読めない (どちらの subagent も `unread_refs` を返して止まり、レビューは行われない)。送信前に prompt へ `${` が残っていないことを確かめる。
-
-**JSON が得られないとき** (検証 subagent と構造 reviewer に共通): 返答の前後に文が付いていたら外して JSON を読む。期待した鍵を持つ JSON が無いとき (`unread_refs` だけを返した・空) は、その subagent だけを 1 回までやり直す。`unread_refs` なら、やり直す前に挙がった path が実在するかを確かめる (`${` を含む path は、変数を本文に見えている絶対 path へ置き換えてから確かめる)。実在しなければ、起動し直しても同じ `unread_refs` が返るだけなので、やり直さない。実在するなら、prompt に `${` が残っていないかを確かめ、参照 path を起動時と同じ埋め方 (各 prompt の雛形とその直後の段落) で埋め直してからやり直す。やり直しても得られないときと、path が実在せずやり直さなかったときは、その subagent の結果の位置に `<検証|構造>レビュー未実施: <理由>` と次の手順を書く。次の手順は、path が実在しなかったなら「挙がった path の欠落か書き誤りを直してから、その subagent だけをやり直す」、やり直しても `unread_refs` が返ったなら「挙がった path を Read できるかと、prompt に `${` が残っていないかを確かめてから、その subagent だけをやり直す」、それ以外は「その subagent だけをやり直す」。
 
 ### 5. 指摘を反映して終える
 
@@ -172,11 +142,11 @@ findings を 1 件ずつ次の区分に分け、Act on だけを対象ファイ�
 
 指摘はどれもこの 3 区分のどれかに置き、外したい指摘も Consider に理由を添えて置く — 指摘を落とせるのは反証だけで、本 skill は反証の工程を持たない。
 
-**反映後、本 skill を終える返答に diff と、区分名を付けて 1 件ずつ並べた findings を載せる** (呼び出し元が人間でも skill でも、反映を人間の目に載せる唯一の面がここになる。後の turn へ回すと、呼び出し元の作業に紛れて出ないまま終わる)。返答の後も作業を続ける呼び出し元は、この返答を自分の最終報告へ逐語で運ぶ (契約の「返答を呼び出し元の報告へ運ぶ」) ので、契約 (`${CLAUDE_SKILL_DIR}/references/caller-contract.md`) の同節を Read し、同節が挙げる項目ごとに見出しを付けて別立てに並べる — 1 つの段落に混ぜると、写すときに項目ごと落ちる。検証 subagent と構造 reviewer の返答の `unread_targets` に挙がった file は、どちらのレビューで読めなかったかを添えて未レビューとして別に挙げる — findings や `structural_proposals` が 0 件でも、その file はそのレビューを通っていない。構造 reviewer の `unread_inputs` に挙がった file は、構造提案の判断材料を欠いた file として未レビューとは分けて挙げる。
+**反映後、本 skill を終える返答に diff と、区分名を付けて 1 件ずつ並べた findings を載せる** (呼び出し元が人間でも skill でも、反映を人間の目に載せる唯一の面がここになる。後の turn へ回すと、呼び出し元の作業に紛れて出ないまま終わる)。返答の後も作業を続ける呼び出し元は、この返答を自分の最終報告へ逐語で運ぶ (契約の「返答を呼び出し元の報告へ運ぶ」) ので、契約 (`${CLAUDE_SKILL_DIR}/references/caller-contract.md`) の同節を Read し、同節が挙げる項目ごとに見出しを付けて別立てに並べる — 1 つの段落に混ぜると、写すときに項目ごと落ちる。`classify-review-reply.py` が `未レビュー` の行に出した file は、どちらのレビューで読めなかったかを添えて未レビューとして別に挙げる。findings や `structural_proposals` が 0 件でも、その file はそのレビューを通っていない。`判断材料を欠いた file` の行の file は、構造提案の判断材料を欠いた file として未レビューとは分けて挙げる。
 
 diff の提示に続けて、パッチごとに 1 行ずつ「種別・対象 file・対象 file の文字数の前後差」を書く (例: `書き換え / skills/payment/SKILL.md / 15227→15305 (+78)`。数え方と数える対象は手順 3 の「文字数の計測」) — 人間が指示文の増え方を採否の材料にできるようにするため。追加には、どの既存概念にも吸収できなかった理由を添える。報告だけにしたパッチは、前後差の代わりに案を書く。分割と Computational 化の案には、patches.md の種別表が報告に求めるものを含める。直さなかった検査の当たりは、`検査の当たり:` の行で 1 件ずつ続ける。
 
-起動できなかった側と JSON を得られなかった側は、手順 4 で書いた `<検証|構造>レビュー未実施:` 行をそのまま報告する (書式と置き場の正本は、JSON を得られなかった側は手順 4 の「JSON が得られないとき」、起動できなかった側は手順 4 の名前が解決しないときの段落)。`structural_proposals` は findings へ混ぜず別立てで報告し (severity と impact / migration_cost は別の評価軸)、提案ごとに `${CLAUDE_SKILL_DIR}/references/structure.md` の「impact / migration_cost の 2 軸」の採否の目安で採用候補かを添える — 構造 reviewer は目安で絞らずに全件返すので、採否はここで決める。採用候補とした提案も編集せず案として返す — 当てる先は手順 1 の書き換える対象の外にあり、反映は呼び出し元の判断になる。**検証は 1 ラウンドで終える** — 反映後に subagent を起動し直す再検証ループは回さない。
+起動できなかった側と JSON を得られなかった側は、手順 4 で書いた `<検証|構造>レビュー未実施:` 行をそのまま報告する。`structural_proposals` は findings へ混ぜず別立てで報告する (severity と impact / migration_cost は別の評価軸)。提案ごとに、`classify-review-reply.py` が `構造提案` の行に出した採用候補かの判定を添える。構造 reviewer は目安で絞らずに全件返すので、採否はここで決める。目安は `${CLAUDE_SKILL_DIR}/references/structure.md` の「impact / migration_cost の 2 軸」が持つ。`判定不能` の提案は、値が schema の外であることを添えて返す。採用候補とした提案も編集せず案として返す — 当てる先は手順 1 の書き換える対象の外にあり、反映は呼び出し元の判断になる。**検証は 1 ラウンドで終える** — 反映後に subagent を起動し直す再検証ループは回さない。
 
 #### 反映を終えられなかったとき
 

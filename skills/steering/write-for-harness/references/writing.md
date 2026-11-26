@@ -6,7 +6,7 @@ Claude に渡す指示文の**文面**をどう書くかの決定規則。skill 
 
 - **文書構成** (情報の 3 段梯子・外出しの branching test・pruning・term of art による圧縮・description の invocation 別書式) の正本は `swat-skills:writing-for-agents` (同 skill の leading word のうち、事前学習の知識に定着した語が term of art に当たる)。**文面 (指示の効かせ方) の正本は本書**で、両者が食い違ったら本書に従う。term of art による圧縮をどこまで当てるか (事実の知識と repo で作った語彙には当てない) は本書が持つ。term of art の選び方と表記は原則 leaf `principle-intention-revealing-names` が持つ
 - **skill ファイルとしての作法** (frontmatter・invocability・配置・trigger 語彙・参照の実在) は [components/skill.md](components/skill.md) が正本。本書は「その本文に何をどう書くか」だけを扱う
-- **どのモデルを選ぶか** (能力帯・単価比・モデル ID・`model:` frontmatter の選定・long-context 現象) は [models.md](models.md) が正本。本書にモデル ID は書かない
+- **どのモデルを選ぶか** (能力帯・単価比・モデル ID・`model:` frontmatter の選定・long-context 現象) は [models.md](models.md) が正本
 - 対象モデルの差分は末尾のモデル別 reference に降りて読む。対象モデルの決め方は [models.md](models.md) の「文面の基準モデル」が正本
 
 ## メタ規則 (最優先)
@@ -23,7 +23,7 @@ Claude に渡す指示文の**文面**をどう書くかの決定規則。skill 
 - **自己検証・再チェックの指示** (「応答前に再検証しろ」「検証ステップを含めろ」「subagent で検証しろ」) — 現行モデルは指示なしで自分の作業を検証する。残すと過剰検証になる。ハーネス側に足した検証ステージのスキャフォールディングも同じ
 - **徹底化・怠惰対策** (「必ず全部読め」「迷ったらこの tool を使え」) — 現行モデルはツールを十分に呼ぶ。この種の指示は過剰トリガーを生む。**例外は thinking を切った構成** — 思考を無効化すると tool に手を伸ばしにくくなるので、そのときだけ明示的な促しを残す (使う条件を具体で書く。「迷ったら」は条件ではない)
 - **中間ステータスの強制** (「tool 呼び出し 3 回ごとに進捗を要約しろ」) — 既定で報告する。強制は報告の質を下げる
-- **強調語の盛り** (`CRITICAL: You MUST ...`) — 平叙な「Use this tool when ...」に落とす。現行モデルはシステムプロンプトへの反応が強く、強調はトリガー過剰に直結する
+- **強調語の盛り** (`CRITICAL: You MUST ...`。候補の行は `../scripts/check-instruction-text.py lint` の種別「強調語」が挙げる) — 平叙な「Use this tool when ...」に落とす。現行モデルはシステムプロンプトへの反応が強く、強調はトリガー過剰に直結する
 - **内部推論の再現要求** (「思考過程を書き出せ」「なぜそう判断したか復唱しろ」) — 上位モデルでは拒否カテゴリを踏み、thinking を切った構成では内部タグが可視出力に漏れる。途中経過が要るなら thinking block を読むか、逐語表示用の tool を別に用意する
 - **prefill / 手動 thinking budget を前提にしたスキャフォールディング** — 現行モデルでは受け付けられない。出力形式の強制は構造化出力か tool 定義へ、思考量の制御は effort へ移す
 
@@ -68,7 +68,7 @@ Claude に渡す指示文の**文面**をどう書くかの決定規則。skill 
 
 ## モデル別の差分
 
-共通原則で足りない差分だけを reference に置いた。読むのは対象モデル (決め方は [models.md](models.md) の「文面の基準モデル」) の 1 系統だけ。宣言の無い指示文は基準モデルに寄せるので、差分を当てる先は常に 1 つに決まる。
+共通原則で足りない差分だけを reference に置いた。読むのは対象モデル (決め方は [models.md](models.md) の「文面の基準モデル」) の 1 系統だけ。宣言の無い指示文は基準モデルに寄せるので、差分を当てる先は常に 1 つに決まる。指示文の file から表の行を引くのは `../scripts/resolve-target-model.py`。
 
 | 対象モデル | Read する reference | 主に効く場面 |
 |---|---|---|

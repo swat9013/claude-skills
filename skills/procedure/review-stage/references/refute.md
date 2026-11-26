@@ -1,16 +1,16 @@
 # 反証者の prompt
 
-反証者へ渡す入力 file の雛形と、欄の埋め方。落とし候補ごとに下の雛形を埋めた file を、SKILL.md 手順 1 の `dir` に `refute-<番号>.md` で書き、起動の prompt にはその file の path 1 行だけを書く。
+反証者へ渡す入力 file の雛形と、欄の埋め方。落とし候補ごとに下の雛形を埋めた file を、SKILL.md 手順 2「進行役の報告」の `dir` に `refute-<番号>.md` で書き、起動の prompt にはその file の path 1 行だけを書く。
 
-`<hunk>` 欄には、SKILL.md 手順 1 の `diff` の file から Location を含む hunk を逐語で切り出して埋める (`diff --git` 行と `@@` 行まで含め、file 全体の差分は貼らない)。指摘が複数箇所を指すならその全部を並べる。Location が差分に無いとき (Spec の「未実装」、差分の外を指す指摘) は `該当 hunk なし: <理由>` と 1 行書く — 空欄にすると、差分に無かったのか渡し忘れたのかが反証者から区別できない。切り出しに手間取ったときも同じ file から切り出し直す (diff を取り直すと、reviewer が読んだ差分と同じものである保証が無くなる)。
+`<hunk>` 欄には、SKILL.md 手順 2「進行役の報告」の `diff` の file から Location を含む hunk を逐語で切り出して埋める (`diff --git` 行と `@@` 行まで含め、file 全体の差分は貼らない)。指摘が複数箇所を指すならその全部を並べる。Location が差分に無いとき (Spec の「未実装」、差分の外を指す指摘) は `該当 hunk なし: <理由>` と 1 行書く — 空欄にすると、差分に無かったのか渡し忘れたのかが反証者から区別できない。切り出しに手間取ったときも同じ file から切り出し直す (diff を取り直すと、reviewer が読んだ差分と同じものである保証が無くなる)。
 
-`<claim-sources>` 欄は adversarial verification の指摘のときだけ、SKILL.md 手順 2 の `claim_sources` の file の path を埋める。他の観点では欄ごと落とす。
+`<claim-sources>` 欄は adversarial verification の指摘のときだけ、SKILL.md 手順 2「進行役の報告」の `claim_sources` の file の path を埋める。他の観点では欄ごと落とす。
 
-`<commit-messages>` 欄は原則の指摘のときだけ、SKILL.md 手順 1 の `commit_messages` の file の path を埋める (原則の reviewer が読んだものと同じ。反証者は git を実行できないので、渡さないと commit 本文に書かれた根拠を読めず、誤検知が Act on に残る)。他の観点では欄ごと落とす。
+`<commit-messages>` 欄は原則の指摘のときだけ、SKILL.md 手順 2「進行役の報告」の `commit_messages` の file の path を埋める (原則の reviewer が読んだものと同じ。反証者は git を実行できないので、渡さないと commit 本文に書かれた根拠を読めず、誤検知が Act on に残る)。他の観点では欄ごと落とす。
 
-`<spec>` 欄は Spec の指摘のときだけ、SKILL.md 手順 2 の `spec` の file の path を埋める (Spec reviewer に渡したものと同じ)。他の観点では欄ごと落とす。
+`<spec>` 欄は Spec の指摘のときだけ、SKILL.md 手順 2「進行役の報告」の `spec` の file の path を埋める (Spec reviewer に渡したものと同じ)。他の観点では欄ごと落とす。
 
-`<design-docs>` 欄は設計の指摘のときだけ、SKILL.md 手順 2 で `--design-doc` に渡した行を埋める。他の観点では欄ごと落とす。
+`<design-docs>` 欄は設計の指摘のときだけ、SKILL.md 手順 2「進行役の報告」の `design-doc:` 行を埋める。他の観点では欄ごと落とす。
 
 ```
 - 観点: <欠陥探し / adversarial verification / 原則 / Spec / 設計>

@@ -22,7 +22,7 @@ inline subagent を agent 定義に切り出すのは、次の**どれか 1 つ*
 ## model と effort の置き場
 
 - **定義の frontmatter に `model` と `effort` を両方書く (例外は下の `model: inherit` の役割)。** 既定値と同じでも書く — 既定はモデルごとに違い、書いていないと定義を読んでも深さが決まらない。選び方は [models](../models.md) の「`model:` frontmatter 選定基準」と「effort の使いどころ」。
-- **呼び出し元は Agent tool の `model` / `effort` 引数を渡さない。** `model` 引数は frontmatter より優先される。渡すと定義に固定した値が呼び出し元ごとに書き換わり、深さの置き場が散る。
+- **呼び出し元は Agent tool の `model` / `effort` 引数を渡さない。** `model` 引数は frontmatter より優先される。渡すと定義に固定した値が呼び出し元ごとに書き換わり、深さの置き場が散る。agent 定義に解決する指名に渡すと、Agent の PreToolUse hook が外すよう案内する。
 - **環境変数 `CLAUDE_CODE_EFFORT_LEVEL` は frontmatter の `effort` より優先される。** 設定されている環境では、定義ごとに変えた effort が全部その値に揃う。
 - **`model: inherit` は、呼び出し元のセッションと同じ深さで動くこと自体が役割の要件であるものに限る。** この役割では `effort` を書かず、セッションの effort で動かす。並列に作業を分け持つ役割でも、役割に要る深さを定義の側で決められるなら、`model` と `effort` を固定する — inherit にすると、人が対話のために選んだ effort が並列の数だけ費用に掛かる。
 
@@ -94,9 +94,9 @@ agent 定義を新設・編集する前、または skill に subagent の起動
 - [ ] haiku を選んだなら、4 条件をすべて満たすか。検索や複数手順を伴う役割に `effort: low` を付けていないか
 - [ ] `tools` が役割に要るものだけか。読み取りだけの役割から書き込み系 tool を外し、`Bash` はコマンドの実行が要る役割にだけ残したか。外部の人が書きうる文を読む読み取り・判定の役割を、読み取りの tool だけに絞ったか
 - [ ] 本文に、一部の呼び出し元しか使わない手順を入れていないか
-- [ ] 呼び出し元が Agent tool の `model` / `effort` 引数を渡していないか
 - [ ] 同じ大きな入力を Read を持つ複数の subagent へ渡すなら、file の path で渡しているか (新しく作るなら作業ツリーの外)
 - [ ] 呼び出し元の prompt が、定義の本文と同じ手順を書き写していないか
+- [ ] skill の本文が、agent 定義の指名に `model` / `effort` 引数を渡させていないか (呼び出しの検査は PreToolUse hook が持つ)
 - [ ] 報告を最終メッセージで受け取る形か (prompt で SendMessage による報告を求めていないか)
 
 ## アンチパターン

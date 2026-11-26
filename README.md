@@ -79,7 +79,7 @@ Claude Code 自身の設定 (CLAUDE.md / permission / skill / MCP) を実際の�
 | skill | 起動 | 用途 |
 | --- | --- | --- |
 | `ui-design` | コマンド / 自動 | UI 設計ドキュメント一式を 画面インベントリ → 画面遷移 → 領域/レイアウト → component 分解 → デザイントークン の順の対話的セッションで作成・更新する。 |
-| `sud-design` | コマンド / 自動 | 設計ドキュメント一式を目的 → システム関連図 → ユースケース → ドメインモデル図の順の 対話的セッションで作成・更新する。 |
+| `sud-design` | コマンド / 自動 | 設計ドキュメント一式を目的 → システム関連図 → ユースケース → ドメインモデル図の順の 対話的セッションで作成・更新し、既存の設計 doc の読みやすさの確認も受ける。 |
 | `grill-with-docs` | コマンド | 計画・設計を共有理解に至るまで問い詰め、決まった用語を用語集に、戻しにくい決定を ADR に、同じ種類の判断で再び使える決定を規範に、設計を変える決定を設計 doc に、issue の深掘りで決めた本文を issue に書き残す。 |
 
 ### util
@@ -132,7 +132,7 @@ Agent tool 経由で skill やメインの Claude から委譲される、専用
 | `web-research` | WebSearch / WebFetch だけを持つ読み込み専用の Web 調査 subagent。 |
 | `adversarial-verifier` | 差分が宣言する主張 (仕様・要件・docstring・既存の契約・暗黙の主張) を、主張ごとに先に定めたオラクルに照らして壊しにいき、破れた主張を欠陥として返す攻撃役の subagent。 |
 | `refuter` | レビュー指摘・欠陥候補を 1 件受け取り、実コードの読解で反証が成立するかを判定する読み取り専用 subagent。 |
-| `reviewer` | レビュー skill の reviewer 工程を担う subagent。 |
+| `reviewer` | 対象を読み、指摘を返す読み取り専用 subagent。 |
 | `harness-component-reviewer` | Claude Code harness の component 1 種 (skill / CLAUDE.md / rules / hook / settings / agent 定義など) の file を、呼び出し元が渡す reference に照らして読み、違反と改善余地を findings の JSON で返す読み取り専用 subagent。 |
 | `harness-structure-reviewer` | Claude Code harness に書いた file の配置・統廃合・統治構造を、呼び出し元が渡す reference と harness 全体の一覧に照らして読み、構造提案を JSON で返す読み取り専用 subagent。 |
 | `cl-agent` | 並列 CL 実装の CL 計画の 1 行を受け持ち、担当範囲の CL を 1 本実装して出し、merge されるまでその CL への依頼と conflict 解消に応える subagent。 |

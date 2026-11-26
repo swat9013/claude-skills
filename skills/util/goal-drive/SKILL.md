@@ -45,7 +45,7 @@ turn を終えるのは、人の言葉を待つとき、実装役・triage・別
 
    args と同じ名前の記録があれば、その goal を続ける (手順 6 の「止まった goal を続けるとき」)。無ければ args を達したい結果として読み、手順 2 へ進む。ただし args が識別子の形 (日付で始まる ASCII の語) なのに記録が無ければ、新しく始めず、cwd の repo が合っているかを人に確かめる。args が無ければ、対象 repo の記録のうち状態が受け入れ済みでも取り下げでもないものと、受け入れ済みで merge への追従を終えたと「経過」に書いていないものを挙げ、続けるか新しく始めるかを人に問う。挙げる記録が無ければ、達したい結果を人に問う。
 
-2. **goal 契約を合意する。** 関わる issue を tracker から読む。issue 置き場の決め方と issue の引き方は、`${CLAUDE_SKILL_DIR}/../stacked-implement/SKILL.md` の「入力を読む」の手順に従う。CL 置き場は cwd の repo とする。契約の 4 欄の案を作り、状態を合意前にして記録を書き、案を人に示す。まだ issue になっていない作業があれば、起票する作業の一覧を案に添える。
+2. **goal 契約を合意する。** 関わる issue を tracker から読む。issue 置き場の決め方と issue の引き方は、`${CLAUDE_SKILL_DIR}/../stacked-implement/SKILL.md` の「入力を読む」の手順に従う (その手順の `${CLAUDE_SKILL_DIR}` は `${CLAUDE_SKILL_DIR}/../stacked-implement` と読む)。CL 置き場は cwd の repo とする。契約の 4 欄の案を作り、状態を合意前にして記録を書き、案を人に示す。まだ issue になっていない作業があれば、起票する作業の一覧を案に添える。
    - 受け入れ条件は、誰が何を見れば満たしたと言えるかを書く。issue ごとの受け入れ条件の写しにせず、複数の issue をまたぐ結果を書く — issue の検査はその issue の範囲しか見ない
    - goal が引く issue の集合は契約に入れない (合意の後も足し引きする)
 
@@ -53,8 +53,8 @@ turn を終えるのは、人の言葉を待つとき、実装役・triage・別
 
 3. **issue を進める。** goal が引く issue の状態を tracker から引き、状態ごとに次へ回す。
    - **`ready-for-agent`**: `${CLAUDE_SKILL_DIR}/../stacked-implement/SKILL.md` を Read し (会話の圧縮や再開の後は読み直す)、その親セッションとして同書の手順を先頭から末尾まで通して実装へ進める。名指しの集合は、この状態の issue のうち、issue を閉じる CL が open でも merged でもないものとする。CL 計画が動いている間にこの状態に着いた issue は、同書の「計画の修正」として足す。同書を次の 4 点だけ読み替え、CL エージェントを起動するたびに、行の名前・branch・worktree の path を「経過」に書く
-     - 同書の本文にある `${CLAUDE_SKILL_DIR}` は、`${CLAUDE_SKILL_DIR}/../stacked-implement` と読む — Read で開いた本文では展開されず、そのまま読むとこの skill のディレクトリを指す
-     - 同書がユーザーに問うとする箇所 (AskUserQuestion を含む) は、その場で問わず、手順 4 で判断待ちに積む。答えに依存しない行は進める
+     - 同書と、同書が Read させる同書の `references/` の本文にある `${CLAUDE_SKILL_DIR}` は、`${CLAUDE_SKILL_DIR}/../stacked-implement` と読む — Read で開いた本文では展開されず、そのまま読むとこの skill のディレクトリを指す
+     - 同書と、同書が Read させる同書の `references/` がユーザーに問うとする箇所 (AskUserQuestion を含む) は、その場で問わず、手順 4 で判断待ちに積む。答えに依存しない行は進める
      - 同書の最終報告が `見送り` なら (同書の「計画の修正」で外した行の `見送り` を除く)、その行が持つ issue をすべて名指しの集合から外し、理由を添えて手順 4 で判断待ちに積む (選択肢: 見送る / 人が障害を除いてからやり直す)。人の答えが届くまで起動し直さない
      - `ready-for-agent` になった follow-up issue は、結果に関わるなら goal に足して「issue」と「経過」に書く。契約は書き換えない
      - 同書の「完了報告」まで進んだら、報告を人に示したうえで手順 5 へ進む。同書の「merge に追従する」は、人が merge するたびに同書のとおり続ける
@@ -65,7 +65,7 @@ turn を終えるのは、人の言葉を待つとき、実装役・triage・別
 
 4. **判断待ちに積み、別の pane で人と決める。** 問いを「判断待ち」に書く (問い・選択肢と推奨・問いを上げた作業)。問いに答える pane は同時に 1 つにし、答えの無い問いをまとめて渡す。pane が開いている間に積んだ問いは、その pane を閉じた後に次の pane で渡す。深掘りは issue 1 件につき 1 つの pane にし、問いと混ぜない。
    1. pane を開く: `herdr pane split --pane <手順 1 の pane_id> --direction right --cwd <対象 repo の絶対 path> --no-focus`。出力の `pane_id` を「経過」に書く。`--current` は使わない — 人が focus している pane に解決し、別の場所に開く
-   2. セッションを起動する: `herdr agent start <名前> --kind claude --pane <pane_id> -- --name <名前>`。名前は `goal-dialog-<識別子から日付を除いた語>-<n>` (`<n>` は「経過」に書いた対話の pane の数で、今開いた pane を含む) とし、32 字を超えるなら語の `-<番号>` (記録の名前が重なったときに足したもの) より前を末尾から削って収める — herdr は小文字で始まる 32 字以内でない名前を `invalid_agent_name` で拒む
+   2. セッションを起動する: `herdr agent start <名前> --kind claude --pane <pane_id> -- --name <名前> --model fable --effort low`。名前は `goal-dialog-<識別子から日付を除いた語>-<n>` (`<n>` は「経過」に書いた対話の pane の数で、今開いた pane を含む) とし、32 字を超えるなら語の `-<番号>` (記録の名前が重なったときに足したもの) より前を末尾から削って収める — herdr は小文字で始まる 32 字以内でない名前を `invalid_agent_name` で拒む。`--model` と `--effort` を外すと、利用者の既定の model と effort で立ち上がる
    3. 依頼を送る: `herdr agent prompt <名前> '<依頼文>'`。依頼文は 1 つの引数で渡し、文中の `'` は `'\''` と書く。`--wait` は付けない — 人との対話が終わるまで戻らず、中継が止まる。送った後に `herdr agent read <名前> --source recent-unwrapped --lines 30` で画面を読み、依頼文の冒頭が出ていなければ 1 回だけ送り直す — 起動の直後の送信は、成功を返しても届かないことがあり、`agent_status` では見分けられない
    4. 人に知らせる: `herdr notification show '<goal の識別子>: 判断待ち' --body '<問いの数と pane の名前>' --sound request`
 
@@ -85,4 +85,4 @@ turn を終えるのは、人の言葉を待つとき、実装役・triage・別
    - 人が受け入れると言ったら、その言葉を「受け入れ」に逐語で書き、状態を受け入れ済みにする。open の CL が残っていれば、同書の「merge に追従する」だけを、全部の CL が merged か closed になるまで続け、終えたことを「経過」に書いて終える。この間に `ready-for-agent` になった follow-up issue は goal に足さず、人に知らせるだけにする。CL が全部 merge されていても、検査が全部通っていても、この言葉が無ければ受け入れ済みにしない
    - 人が差し戻したら、理由を「受け入れ」に書き、状態を進行中に戻す。差し戻しがどの issue も指さなければ、足りない作業を対象 repo の issue の規範に従って起票して goal に足す。手順 3 へ戻る
    - 人が取り下げると言ったら、その言葉を「経過」に書き、状態を取り下げにする。開いている対話の pane を閉じる。動いている CL エージェントがあれば、止めるか、新しい goal で続けるかを人に問う。止めるときの未 commit の変更・push 済みの branch・出した CL の扱いは、`${CLAUDE_SKILL_DIR}/../stacked-implement/SKILL.md` の「計画の修正」で行を外すときに従う
-   - 止まった goal を続けるときは、記録を読み、issue と CL の状態を tracker から引き直す。記録の状態が合意前なら手順 2、進行中なら手順 3、受け入れ待ちならこの手順の先頭から進める。受け入れ済みで open の CL が残っていれば、同書の「merge に追従する」だけを続ける。答えの無い判断待ちは手順 4 で渡し直す。CL 計画は、goal が引く issue を閉じる open の CL から組み立て直す (CL の head と base から branch と target、issue 参照から行と issue の対応、worktree の path は「経過」の起動の行と `git worktree list` から)。「経過」に起動の行があるのに open の CL が無い issue (見送ると人が決めた issue と、CL が merge されずに closed になった issue を除く) は、新しい行として起動しない。worktree に未 commit の変更があれば、扱いを手順 4 で判断待ちに積む。無ければ、既存の branch を渡して起動し直し、実装の続きを頼む。前のセッションが起動した CL エージェントは再開しないので、その行へ送る依頼ができたときにだけ、同書の「SendMessage で CL エージェントが再開しないとき」の段落に従って起動し直す
+   - 止まった goal を続けるときは、記録を読み、issue と CL の状態を tracker から引き直す。記録の状態が合意前なら手順 2、進行中なら手順 3、受け入れ待ちならこの手順の先頭から進める。受け入れ済みで open の CL が残っていれば、同書の「merge に追従する」だけを続ける。答えの無い判断待ちは手順 4 で渡し直す。CL 計画は、goal が引く issue を閉じる open の CL から組み立て直す (CL の head と base から branch と target、issue 参照から行と issue の対応、worktree の path は「経過」の起動の行と `git worktree list` から)。組み立て直した計画は、同書の手順 3 の計画の記録の形 (形は同書の `scripts/cl-plan.py --help` の計画の file が正本。行の名前は「経過」の起動の行から、依存先は CL の base が branch に当たる行から引き、「経過」に起動の行がある merged と closed の CL も行に含める) で作業ツリーの外の file に書き、その path を「経過」に書く — 同書の「merge に追従する」がその file を読む。「経過」に起動の行があるのに open の CL が無い issue (見送ると人が決めた issue と、CL が merge されずに closed になった issue を除く) は、新しい行として起動しない。worktree に未 commit の変更があれば、扱いを手順 4 で判断待ちに積む。無ければ、既存の branch を渡して起動し直し、実装の続きを頼む。前のセッションが起動した CL エージェントは再開しないので、その行へ送る依頼ができたときにだけ、同書の「SendMessage で CL エージェントが再開しないとき」の段落に従って起動し直す
