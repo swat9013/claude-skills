@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # backlog-triage
 
-open issue を全件 `swat-skills:issue-triage` に通す。issue-triage は AFK 境界の内側と判定したもの (`ready-for-agent`・close・`wontfix`) を承認を待たずに反映し、外側の判定と止まったものを返す。ここで user に問うのは、その返ってきたものだけ — 内側の判断は user が報告を見て事後に覆す。深掘り (grilling) はここでは行わず、`needs-grilling` として返す — 1 セッションに深掘りを積むと triage が終わらない。issue を根本課題ごとに束ね直す再構成もここでは行わない。束ね直していない backlog なら、先に user が `/swat-skills:issue-restructure` を回すと、close される issue に判断を費やさずに済む。
+open issue を全件 `swat-skills:issue-triage` に通す。issue-triage は AFK 境界の内側と判定したもの (`ready-for-agent`・close・`wontfix`) を承認を待たずに反映し、外側の判定と止まったものを返す。ここで user に問うのは、その返ってきたものだけ — 内側の判断は user が報告を見て事後に覆す。深掘り (grilling) はここでは行わず、`needs-grilling` として返す — 1 セッションに深掘りを積むと triage が終わらない。issue を根本課題ごとに束ね直す再構成もここでは行わない。束ね直していない backlog なら、先に user が `/swat-skills:issue-restructure` を回すと、close される issue に判断を費やさずに済む — issue-restructure は反映の後に本書を Read して、この手順を続ける。
 
 issue 置き場と CL 置き場は `${CLAUDE_SKILL_DIR}/../../knowledge/issue-tracker-operations/references/placement.md` を Read して決め、コマンドには同書のとおり `-R` で明示する。同書が止まるとしたときは issue-triage を呼ばずに止まり、同書が渡すとしたものを user へ報告する。CLI 規約・label 語彙は対象 repo の `docs/agents/issue-tracker.md` / `docs/agents/triage-labels.md` を Read して決める。本文は label を役の名前 (既定の役と Repo-local の役) で書き、`triage-labels.md` が別の綴りを宣言していればその綴りで付け外しする (コマンドに書いた label と、label で絞る検索も同じ)。`triage-labels.md` が `needs-grilling` の役を宣言していない repo では、区分 4 (判断) を label でなく報告で返す。コマンド例は GitHub (`gh`) の綴りで、他の tracker なら読み替える。
 
