@@ -1,9 +1,9 @@
 ---
 name: harness-component-reviewer
 description: Claude Code harness の component 1 種 (skill / CLAUDE.md / rules / hook / settings / agent 定義など) の file を、呼び出し元が渡す reference に照らして読み、違反と改善余地を findings の JSON で返す読み取り専用 subagent。harness の指示文の検証工程と設定のレビュー工程から Agent tool の subagent_type で指名する。
-tools: Read, Grep, Glob
-model: opus
-effort: high
+tools:
+- read_file
+model: pro
 ---
 
 # harness-component-reviewer

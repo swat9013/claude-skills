@@ -381,6 +381,9 @@ class _ShellLexer:
         self.pending: list[tuple[str, bool, int]] = []  # delimiter・`<<-` か・開いた nesting の深さ
         self.terminators: dict[bool, dict[str, list[int]]] = {}
         self.in_comment = False
+        # 語頭が `~` の語 (引用を落とした字面) → その語の `~` を shell が $HOME へ展開するか。同じ字面は複数回現れうる
+        self.tilde_words: dict[str, set[bool]] = {}
+        self.word_opens_with_home = False  # 読んでいる語が引用の外の `~` + 引用の外の `/` で始まる
 
     def run(self) -> None:
         index = 0
@@ -404,6 +407,9 @@ class _ShellLexer:
         word = "".join(self.word)
         is_unquoted = self.word == list(word)  # 引用と backslash は空の片を積むので、片と文字が揃わない
         self.word = []
+        if word.startswith("~"):
+            self.tilde_words.setdefault(word, set()).add(self.word_opens_with_home)
+        self.word_opens_with_home = False
         if self._top_kind() == _SUBSTITUTION and self.at_statement_head and is_unquoted and not self.in_comment:
             self._count_case(self.nesting[-1], word)
         if word:
@@ -679,6 +685,8 @@ class _ShellLexer:
             if char in ";|&" and self.text[index - 1:index + 1] not in (">&", "<&"):  # `2>&1` は文を割らない
                 self.statements.append([])
         else:
+            if char == "/" and self.word == ["~"]:  # `\~` と引用した `~` は空の片を積むので ["~"] にならない
+                self.word_opens_with_home = True
             self.word.append(char)
         return index + 1
 
@@ -808,6 +816,19 @@ def continues_on_another_line(command: str) -> bool:
     各 hook の allow 以外の判定 (素通し・書き換え・deny) へ倒れる。
     """
     return "\n" in command.rstrip("\n")
+
+
+def home_relative_words(command: str) -> set[str]:
+    """shell が語頭の `~` を $HOME へ展開する `~/…` の語を、引用を落とした字面で返す。
+
+    展開すると数えるのは、引用の外の語頭の `~` の直後が引用の外の `/` の語だけ。`~"/x"` は zsh が展開し
+    bash が展開しないので数えない。引用・escape した `~` と語の途中の `~` も数えない。同じ字面の語が
+    展開されない形でも現れるなら返さない — 字面からはどちらの語かを決められない。
+    """
+    if "~" not in command:
+        return set()
+    lexer = _lex_shell(command, reads_here_documents=False)
+    return {word for word, expands in lexer.tilde_words.items() if expands == {True}}
 
 
 def command_segments(command: str) -> list[list[str]]:

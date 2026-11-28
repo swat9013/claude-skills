@@ -1,9 +1,9 @@
 ---
 name: transcript-auditor
 description: skill の実呼出 transcript 1 件を読み、渡された監査基準 checklist に照らした逸脱と、工程ごとの境界 (最初と最後の record の uuid) と手戻りを決まった形式で報告する subagent。skill の実挙動を監査する工程から Agent tool の subagent_type で指名する。
-tools: Read, Grep, Glob
-model: sonnet
-effort: medium
+tools:
+- read_file
+model: flash
 ---
 
 # transcript-auditor

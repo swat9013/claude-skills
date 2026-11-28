@@ -7,7 +7,12 @@ curl は settings の ask 対象 (外部ホストへのデータ持ち出し / �
   - コマンド中の全 curl サブコマンドの接続先 (URL operand / --url / proxy) が loopback
     (localhost / *.localhost / 127.0.0.0/8 / ::1 / 0.0.0.0 / ::)
   - curl 以外のサブコマンドは既知の安全 read-only コマンドのみ (compound 許容)
-  - curl の出力ファイル (-o 等) は /dev/null / stdout / tmp ルート配下のみ
+  - curl の出力ファイル (-o 等) は /dev/null / stdout / tmp ルート配下のみ。相対 path は payload の cwd
+    (curl が書く基準) で解決し、cwd が無ければ allow しない。1 語で渡した値の `~/` は shell が $HOME へ
+    展開すると確証できる形 (`_prelude.home_relative_words`) だけ $HOME と読み、ほかの語頭の `~`
+    (引用・escape・`~"/x"` 等) は allow しない。`-o~/x` の付着形は cwd 相対の字面として読み、
+    `--output=~/x` は zsh の magic_equal_subst が展開しうるので allow しない。
+    -o / --output の値は curl が実際に書く `<output-dir>/<値>` で検査し、curl の URL glob の `#N` を含む値は allow しない
   - write-out (-w) の書式が file へ書かない (`%output{...}` を含まず、`@` で始まらない)
   - long flag はすべて既知 (値を取るか取らないかを確かめた flag。`LONG_BOOLEAN` 等) で、
     知らない long flag (`--expand-*` / 省略形 / 未分類の値つき flag) を含まない
@@ -45,6 +50,7 @@ from _prelude import (  # noqa: E402
     allow,
     continues_on_another_line,
     decide,
+    home_relative_words,
     passthrough,
     read_payload_or_pass,
     read_stdin_text,
@@ -79,10 +85,14 @@ LONG_HOST = {"proxy", "preproxy", "socks4", "socks4a", "socks5",
              "socks5-hostname", "proxy1.0"}
 # 値を URL operand として loopback 検査する
 LONG_URL = {"url"}
-# 値を書き込み先 path として検査する
-SHORT_PATHOUT = set("oDc")
-LONG_PATHOUT = {"output", "output-dir", "dump-header", "cookie-jar", "trace",
-                "trace-ascii", "etag-save", "stderr", "libcurl", "hsts", "alt-svc"}
+# 値を書き込み先 path として検査する。うち OUTPUT は curl が --output-dir の下へ書く (`<output-dir>/<値>`)
+SHORT_OUTPUT = set("o")
+LONG_OUTPUT = {"output"}
+LONG_OUTPUT_DIR = {"output-dir"}
+SHORT_PATHOUT = SHORT_OUTPUT | set("Dc")
+LONG_PATHOUT = LONG_OUTPUT | LONG_OUTPUT_DIR | {
+    "dump-header", "cookie-jar", "trace", "trace-ascii", "etag-save", "stderr", "libcurl",
+    "hsts", "alt-svc"}
 # 値を消費するが接続先でない (無視する) short flag
 SHORT_OTHER_VALUE = set("AbCdeEFHmPQrtTuUXyYz")
 # 値を write-out の書式として検査する (`%output{file}` で file へ書ける。curl 8.3.0+)
@@ -106,7 +116,6 @@ LONG_OTHER_VALUE = {
 }
 
 LOOPBACK_EXTRA = {"0.0.0.0", "::", "[::]"}
-
 
 def is_loopback(host: str | None) -> bool:
     if not host:
@@ -138,19 +147,24 @@ def scheme_of(operand: str) -> str:
     return operand.split("://", 1)[0].lower() if "://" in operand else ""
 
 
-def outpath_ok(path: str, roots: list[str]) -> bool:
+def outpath_ok(path: str, roots: list[str], cwd: str) -> bool:
+    """curl が path へ書く先が tmp ルート配下と確証できれば True。
+
+    相対 path は curl が書く基準 (payload の cwd) で解決する。hook の process の cwd で解決すると、
+    process の cwd が tmp 配下のとき tmp の外への出力を allow する (#2554)。`~` は shell が展開した後の値を
+    受け取る前提で、ここでは字面 (cwd 相対) として読む (展開は `word_value`)。
+    """
     if path in ("/dev/null", "-"):
         return True
     p = path
-    home = os.environ.get("HOME", "")
-    if p.startswith("~/"):
-        if not home:
-            return False
-        p = home + p[1:]
-    elif p.startswith("~"):
-        return False  # ~user 非対応
-    if "$" in p or "*" in p or "?" in p:
-        return False  # 未展開変数 / glob → 確証なし
+    if p.startswith("="):
+        return False  # zsh は語頭の `=cmd` を cmd の絶対 path に展開する → 確証なし
+    if "$" in p or "*" in p or "?" in p or "{" in p:
+        return False  # 未展開変数 / glob / brace 展開 → 確証なし
+    if not os.path.isabs(p):
+        if not os.path.isabs(cwd):
+            return False  # curl が書く基準が分からない → 確証なし
+        p = os.path.join(cwd, p)
     try:
         real = os.path.realpath(p)
     except (OSError, ValueError):
@@ -159,6 +173,22 @@ def outpath_ok(path: str, roots: list[str]) -> bool:
         if real == r or real.startswith(r + os.sep):
             return True
     return False
+
+
+def word_value(word: str, home_words: set[str]) -> str | None:
+    """1 語で渡った値を、shell が語頭の `~` を展開した後の値にする。展開を確証できなければ None。
+
+    shlex は引用を落とすので、`~` が展開されるかは `home_words` (`_prelude.home_relative_words`) で決める。
+    引用した `'~/x'` は curl が cwd 相対の `~/x` へ書くので、$HOME と読むと tmp の外への出力を allow する (#2733)。
+    展開されない語頭の `~` も cwd 相対とは決めず None にする — shlex の語が引用した形か展開する形かを
+    字面から決められないので、cwd が tmp 配下でも allow しない。
+    """
+    if not word.startswith("~"):
+        return word
+    home = os.environ.get("HOME", "")
+    if word not in home_words or not home:
+        return None  # 引用した `~`・`~user`・`~"/x"` (bash と zsh で展開が分かれる) → 確証なし
+    return home + word[1:]
 
 
 def writeout_ok(fmt: str) -> bool:
@@ -202,12 +232,15 @@ def curlrc_paths() -> list[str]:
     return [c for c in candidates if os.path.lexists(c)]
 
 
-def curl_segment_ok(seg: list[str], out_roots: list[str]) -> bool:
+def curl_segment_ok(seg: list[str], out_roots: list[str], cwd: str, home_words: set[str]) -> bool:
     """curl サブコマンドが allow 可能なら True。
     1 つでも非 loopback 接続先 / 不正書き込み先 / bail flag があれば False。"""
     url_targets: list[str] = []
     host_targets: list[str] = []
     out_paths: list[str] = []
+    # -o / --output の値。curl は --output-dir があると `<output-dir>/<値>` へ書く (値が絶対 path でも前置する)
+    output_files: list[str] = []
+    output_dirs: list[str] = []
     # curl は第 1 引数が `-q` / `--disable` でない限り curlrc を暗黙に読む。curlrc の `location` /
     # `proxy` 等は字面に現れないまま接続先を変えるので、curlrc があれば `-q` 無しは allow しない
     if seg[1:2] not in (["-q"], ["--disable"]) and curlrc_paths():
@@ -229,9 +262,15 @@ def curl_segment_ok(seg: list[str], out_roots: list[str]) -> bool:
                     or name in LONG_WRITEOUT):
                 if eq:
                     value = val
+                    if name in LONG_PATHOUT and value.startswith("~"):
+                        return False  # zsh の magic_equal_subst は `--output=~/x` の `~` も展開する → 確証なし
                 elif i + 1 < n:
                     value = seg[i + 1]
                     i += 1
+                    if name in LONG_PATHOUT:
+                        value = word_value(value, home_words)
+                        if value is None:
+                            return False
                 else:
                     return False
                 if name in LONG_HOST:
@@ -241,8 +280,12 @@ def curl_segment_ok(seg: list[str], out_roots: list[str]) -> bool:
                 elif name in LONG_WRITEOUT:
                     if not writeout_ok(value):
                         return False
+                elif name in LONG_OUTPUT:
+                    output_files.append(value)
                 else:
                     out_paths.append(value)
+                    if name in LONG_OUTPUT_DIR:
+                        output_dirs.append(value)
             elif name in LONG_OTHER_VALUE:
                 if not eq:
                     i += 1  # 値を消費して無視
@@ -258,14 +301,20 @@ def curl_segment_ok(seg: list[str], out_roots: list[str]) -> bool:
                         or c in SHORT_OTHER_VALUE):
                     attached = cluster[j + 1:]
                     if attached:
-                        value = attached
+                        value = attached  # 語の途中の `~` (`-o~/x`) は shell が展開しない
                     elif i + 1 < n:
                         value = seg[i + 1]
                         i += 1
+                        if c in SHORT_PATHOUT:
+                            value = word_value(value, home_words)
+                            if value is None:
+                                return False
                     else:
                         return False
                     if c in SHORT_HOST:
                         host_targets.append(value)
+                    elif c in SHORT_OUTPUT:
+                        output_files.append(value)
                     elif c in SHORT_PATHOUT:
                         out_paths.append(value)
                     elif c in SHORT_WRITEOUT and not writeout_ok(value):
@@ -287,8 +336,16 @@ def curl_segment_ok(seg: list[str], out_roots: list[str]) -> bool:
     if not all(scheme_of(t) in ("", "http", "https") for t in url_targets):
         return False
     for p in out_paths:
-        if not outpath_ok(p, out_roots):
+        if not outpath_ok(p, out_roots, cwd):
             return False
+    for p in output_files:
+        # `#N` は URL glob の一致した文字列 (`../` を含みうる) に置き換わる → 確証なし
+        if "#" in p:
+            return False
+        # curl が使うのは最後の --output-dir だけだが、どれを前置しても tmp 配下のときだけ通す (安全側)
+        for target in [d + "/" + p for d in output_dirs] or [p]:
+            if not outpath_ok(target, out_roots, cwd):
+                return False
     return True
 
 
@@ -320,13 +377,18 @@ def judge(stdin_text: str) -> NoReturn:
 
     lex = shlex.shlex(command, posix=True, punctuation_chars=PUNCT)
     lex.whitespace_split = True
+    # shell が語を割る空白は space と tab (改行は上で止めた)。shlex 既定の `\r` を区切りと読むと、shell が 1 語で
+    # 渡す `-o /tmp/\r-H/../x` を `/tmp/` と読み、`_prelude` の語とも字面が揃わない (#2733)
+    lex.whitespace = " \t\n"
     lex.commenters = ""
     try:
         tokens = list(lex)
     except ValueError:
         passthrough()  # クォート不整合等 → 確証なし
 
-    out_roots = build_out_roots(str(payload.get("cwd") or ""))
+    cwd = str(payload.get("cwd") or "")
+    out_roots = build_out_roots(cwd)
+    home_words = home_relative_words(command)
 
     # punctuation でサブコマンドへ分割。SPLIT_OPS 以外の punctuation は bail。
     segments: list[list[str]] = []
@@ -355,7 +417,7 @@ def judge(stdin_text: str) -> NoReturn:
             passthrough()
         if head == "curl":
             curl_seen = True
-            if not curl_segment_ok(s, out_roots):
+            if not curl_segment_ok(s, out_roots, cwd, home_words):
                 passthrough()
 
     if curl_seen:

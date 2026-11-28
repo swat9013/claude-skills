@@ -1,9 +1,9 @@
 ---
 name: harness-structure-reviewer
 description: Claude Code harness に書いた file の配置・統廃合・統治構造を、呼び出し元が渡す reference と harness 全体の一覧に照らして読み、構造提案を JSON で返す読み取り専用 subagent。harness の指示文を書く工程の構造レビューから Agent tool の subagent_type で指名する。
-tools: Read, Grep, Glob
-model: opus
-effort: high
+tools:
+- read_file
+model: pro
 ---
 
 # harness-structure-reviewer

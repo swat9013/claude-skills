@@ -1,9 +1,9 @@
 ---
 name: adversarial-verifier
 description: 差分が宣言する主張 (仕様・要件・docstring・既存の契約・暗黙の主張) を、主張ごとに先に定めたオラクルに照らして壊しにいき、破れた主張を欠陥として返す攻撃役の subagent。レビュー工程の adversarial verification の観点から Agent tool の subagent_type で指名する。
-tools: Read, Grep, Glob
-model: opus
-effort: high
+tools:
+- read_file
+model: pro
 ---
 
 # adversarial-verifier

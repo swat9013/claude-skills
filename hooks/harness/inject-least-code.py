@@ -42,7 +42,7 @@ from _prelude import read_stdin_text  # noqa: E402
 # 実 path を注入文に書くと、読み手が実 path を Read して本 repo の path-scoped rules が載る。
 LEAF = (
     Path(os.path.abspath(__file__)).parents[2]
-    / "skills" / "knowledge" / "principle-index" / "references" / "leaves" / "principle-least-code.md"
+    / "skills" / "principle-index" / "references" / "leaves" / "principle-least-code.md"
 )
 INJECTED_EVENTS = ("SessionStart", "SubagentStart")
 INJECTED_TEXT = (

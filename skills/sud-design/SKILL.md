@@ -1,0 +1,91 @@
+---
+name: sud-design
+user-invocable: true
+argument-hint: "[設計名または設計したい対象の説明]"
+description: >-
+  設計ドキュメント一式を目的 → システム関連図 → ユースケース → ドメインモデル図の順の
+  対話的セッションで作成・更新し、既存の設計 doc の読みやすさの確認も受ける。モジュール分割・実装アーキテクチャの設計は対象外。
+  Use when「設計ドキュメント (設計 doc) を作る・更新する」「ドメインモデルを設計する」
+  「ユースケースを書く」「システム境界を設計する」
+  「設計 doc が読みやすいか確かめる」.
+---
+
+# sud-design
+
+設計対象について、目的 (達成したい状態とトレードオフ) → システム関連図 (境界と接続点) → ユースケース (アクターの意図) → ドメインモデル図 (実体と設計規則) の順に質問して決定を固め、設計ドキュメント一式を書く。順序が漏れを炙り出す: 優先順位を決めずに境界を切ると段ごとにトレードオフの判断がぶれ、境界を決めずに描いたドメインモデルは port の内外が混ざり、ユースケースに現れない entity は根拠を持たない。
+
+成果物の書式はすべて [references/artifacts.md](references/artifacts.md)、検証の手順は [references/verification.md](references/verification.md) が持つ。書く段階になったら該当ファイルを Read する。
+
+既にある設計 doc を書き換えずに、経緯を知らない読み手が引けるかだけを確かめる依頼は、ユーザーが名指した設計 doc の置き場を使い (名指しが無ければ「1.」の引き方で引き、引けなければユーザーに尋ねる)、[references/verification.md](references/verification.md) 段 4 だけを通して終える。
+
+## 1. 置き場を決める
+
+- 既存の設計の置き場は、原則 leaf `${CLAUDE_SKILL_DIR}/../principle-index/references/leaves/principle-design-conformance.md` の「設計 doc の置き場の引き方」を Read し、その引き方で引く。新しく作る設計は、既存の設計の置き場と同じ並び (案内が無ければ `docs/design/<name>/`) に作り、作った置き場を対象 repo の `docs/agents/domain.md` の節「設計 doc の置き場」の entry (置き場・適用範囲・索引。列の読まれ方は同 leaf の節に従う) に足す。適用範囲は user に確かめ、節が無ければ節ごと足す — 節に載らない設計 doc は、変更を設計 doc に照らす読み手に届かない。以降の手順と `references/` の `<置き場>` は、ここで決めた置き場を指す
+- 設計 doc を束ねるディレクトリ (節が案内する置き場の親。新しく作った既定の置き場なら `docs/design/`) の README に対象リポジトリの規約があれば、「2.」「4.」のどちらへ進む前にも Read する。確定項目や `references/artifacts.md` の様式と食い違う点はその規約に合わせ、合わせた点をユーザーに示す。機械検査される記法 (`domain.puml` の `{field}` など) と段の順序は合わせる対象にしない
+- `<name>` は設計対象の名前 (kebab-case)。既存ディレクトリと重複したら、それが同じ対象の旧設計か別対象かをユーザーに確かめる — 同じ対象なら「4. 既存設計を更新する」の側
+
+置き場が決まったら、「2.」「4.」のどちらへ進む場合も先に `${CLAUDE_SKILL_DIR}/../principle-index/SKILL.md` を Read し、索引の読み方に従って今回の設計に当たる leaf を読む。以降の手順が `principle-*` を名指ししたときも、索引の読み方に従う。以降の本文は leaf を名前でしか指さないので、索引を経由しないと path が解決しない。
+
+## 2. 設計セッションを進める
+
+各段は、下記の確定項目が埋まるまで質問を続けてから次の段へ進む。質問はまとめて出し、ユーザーの回答が要らない事実 (既存コード・既存 doc の実態) は自分で調べて埋める。決定するのはユーザー、事実を集めるのは自分。設計 doc に書く決定に添えるものと、添える範囲・形は [references/artifacts.md](references/artifacts.md) の「決定の見直し条件」が持つので、最初の決定を問う前にその節を Read する。添えるものもユーザーに決めてもらう。段の順序は固定。後の段で判断が食い違ったら、目的の段で決めた優先順位を当てて自分で決め、当てた優先順位をユーザーに示す。目的の段に無い軸で食い違ったら、目的の段に戻り、軸と優先順位をユーザーに決めてもらう。確定項目に条件の羅列が出たら、条件を減らして 1 本にできないか、残る条件を直交する規則へ畳めないかを `principle-orthogonal-rules` で、手段 (ツール・図示) を課題より先に決めていないかを `principle-design-derivation-order` で見る。
+
+**目的** — 確定項目:
+
+- 達成したい状態。利用時品質の特性ごとに、人 (直接使う人・保守する人・運用する人) の体験で書く。機構の動き方と、機械の呼び出し元が要ることは体験にせず、体験を支える保証として書く (様式は [references/artifacts.md](references/artifacts.md) の「目的」)
+- 体験どうしがトレードオフになる軸の有無と、あるなら食い違ったときの優先順位
+
+**システム関連図** — 確定項目:
+
+- システム境界: 何が中で誰が外か。境界の置き方の理由
+- 相手ごとの接続: 経由 (port か否か) と方向。port の切り方は変動性 (変更・取り替えの起きやすさ) で決める — `principle-balance-coupling` の volatility 軸だけを当て、モジュールの分割・統合の判断には踏み込まない
+- 状態機械の有無と、あるなら状態・イベントの一覧
+
+**ユースケース** — 確定項目:
+
+- 外部アクター全員について、user-goal レベルのユースケースが列挙されている (アクターが登場しないユースケース・ユースケースに現れないアクターが残っていない)
+- 各ユースケースの Main Success Scenario と主要な Extensions
+
+**ドメインモデル図** — 確定項目:
+
+- entity・集約の範囲・多重度・ID 参照。ユースケースに現れない entity は理由を確かめる (根拠が無ければ落とす — `principle-deletability` の「導入は価値の立つ項目だけに絞る」)
+- entity ごとの設計規則 (note に束縛する)
+- 図の note にもユースケースにも載らない判断の規則があれば、主題ごとの目的・完了条件・制約 (README の「判断基準」に書く)
+- 用語: 図に登場する語は全部、用語の正本 (既存の用語集、無ければ README の対訳表) と一致させる。正本に無い語を名付けるときは `principle-intention-revealing-names` に従う
+
+system.md / usecases.md / domain.puml の 3 成果物は既定で全部作る。設計の規模に対して不要な成果物は省いてよいが、**何を省きなぜ不要かを README に 1 行残す** (省略の判断も設計判断として読める形にする)。
+
+## 3. 書く・検証する・描く
+
+1. [references/artifacts.md](references/artifacts.md) を Read し、確定した内容を各成果物へ書く
+2. [references/verification.md](references/verification.md) を Read し、検証する:
+   - 遷移列シナリオ 2〜3 本 (必須)。表現できない点が出たらモデル側を直す
+   - 状態機械を持つ設計は `uv run ${CLAUDE_SKILL_DIR}/scripts/check-statechart.py <置き場>/statechart.puml` が exit 0 になるまで、[verification.md](references/verification.md) 段 2 (状態×イベント組合せの網羅検査) の直し方で直す
+   - 状態機械を持つ設計は、段 2 の後に [verification.md](references/verification.md) 段 3 (文章の制約を状態機械に当てる) を通す
+3. `.puml` を描画する。対象リポジトリに PlantUML の描画 gate (再描画コマンド) があればその生成側を使い、無ければ:
+
+   ```bash
+   uv run ${CLAUDE_SKILL_DIR}/scripts/render-puml.py <置き場>/
+   ```
+
+   `.svg` は `.puml` と必ず対で更新する (source だけ直すと README が古い図を貼り続ける)
+4. 決定の根拠と退けた案を `rationale.md` に、根拠に要る日付つきの観測を `observations/` に書く。決定のうち記録として残す価値があるものは `decision/NNNN-<slug>.md` に記録する (基準と様式は artifacts.md)。rationale.md と observations/ の文面は、書く前に逐語でユーザーへ示し、承認された文面だけを書く
+5. 書き終えた設計 doc を、[verification.md](references/verification.md) 段 4 (書いた経緯を知らない読み手に読ませる) に通す
+
+## 4. 既存設計を更新する
+
+設計済みの対象に構造変更 (目的・境界・ユースケース・entity・多重度・状態機械の変更) が入るときは、**設計ドキュメントを先に直してから実装する**。実装が先に着地すると、設計 doc は実装の後追い要約に落ちて正本でなくなる。
+
+- どの変更がどの file の正本かは README の索引表で引く。同じ内容を複数 file へ書き足さず、正本 1 つに書いて他からは参照する — `principle-artifact-register`
+- `domain.puml` / `statechart.puml` を直したら再描画と組合せ検査を回す (手順は「3.」と同じ)。状態機械を持つ設計で、状態機械かそれに関わる文章を変えたら、段 2 を通してから、変えた箇所と、それに触れる規則に [verification.md](references/verification.md) 段 3 を当てる
+- 過去の決定を覆すときは decision/ の旧 file を書き換えず、新しい決定 file を起こして旧 file を Superseded にする
+- 更新で入る決定にも、[references/artifacts.md](references/artifacts.md) の「決定の見直し条件」が定めるものを添え、ユーザーに決めてもらう
+- 文章を直す前に [references/artifacts.md](references/artifacts.md) の「読みやすさの基準」を Read し、直し終えたら、直した設計 doc を [verification.md](references/verification.md) 段 4 に通す
+
+## 何をしない skill か
+
+- **実装しない**: 設計ドキュメントの完成が終点。実装は呼び出し元のフローに委ねる
+- **リポジトリ全体の ADR を起票しない**: decision/ からの昇格基準 (artifacts.md) に当たる決定は、対象リポジトリの ADR 運用に従うようユーザーに提案する
+- **モジュール分割・実装アーキテクチャは扱わない**: 本 skill の対象は目的とドメインの構造 (境界・ユースケース・実体) まで
+- **画面の構造は扱わない**: 画面・遷移・component・トークンは `ui-design` skill の対象
+- **更新の enforce は生成しない**: 「doc を先に直す」を機械的に守らせる仕組み (rules / hook) を作るかは対象リポジトリの判断

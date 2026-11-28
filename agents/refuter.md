@@ -1,9 +1,9 @@
 ---
 name: refuter
 description: レビュー指摘・欠陥候補を 1 件受け取り、実コードの読解で反証が成立するかを判定する読み取り専用 subagent。実行しないと決まらない判定は呼び出し元へ返す。反証工程から Agent tool の subagent_type で指名する。
-tools: Read, Grep, Glob
-model: sonnet
-effort: medium
+tools:
+- read_file
+model: flash
 ---
 
 # refuter

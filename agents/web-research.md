@@ -1,9 +1,9 @@
 ---
 name: web-research
 description: WebSearch / WebFetch だけを持つ読み込み専用の Web 調査 subagent。複数ソースの横断調査・最新性確認 (バージョン、非推奨化、破壊的変更) の場面で Agent tool 経由で呼び出す。単一 URL の単発 fetch は呼び出し元で直接行う。ファイル書き込み・Bash・Edit は持たない。
-tools: WebSearch, WebFetch
-model: sonnet
-effort: medium
+tools:
+- search_web
+model: flash
 ---
 
 # web-research

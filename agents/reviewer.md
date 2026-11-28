@@ -1,9 +1,9 @@
 ---
 name: reviewer
 description: 対象を読み、指摘を返す読み取り専用 subagent。観点・対象・報告形式は呼び出し元の prompt が渡し、model と effort は本定義が固定する。レビュー工程と、文書を経緯を知らない読み手に読ませる検証の段から Agent tool の subagent_type で指名する。
-tools: Read, Grep, Glob
-model: opus
-effort: high
+tools:
+- read_file
+model: pro
 ---
 
 # reviewer

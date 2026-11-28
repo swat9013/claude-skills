@@ -13,6 +13,25 @@ Claude Code のセッション内で 2 手順:
 
 インストール後、`/` 補完に skill が並ぶ。
 
+### Claude Code 以外の client
+
+Agent Plugins 仕様の plugin の形にしてあるので、同仕様を読む client からも skill を読み込める。
+
+Codex CLI:
+
+```
+codex plugin marketplace add swat9013/claude-skills
+codex plugin add swat-skills@swat9013
+```
+
+Antigravity (agy):
+
+```
+agy plugin install https://github.com/swat9013/claude-skills
+```
+
+これらの client で使えるのは skill の読み込みと起動まで。hook と subagent は Claude Code 向けに書いてある。Codex CLI は plugin の hook を一覧に載せ、利用者が信頼するまで走らせない。信頼すると Claude Code 向けの guard が Codex の操作を誤って止めるので、信頼しない。skill の本文は Claude Code の道具の名前 (Agent tool での subagent の指名など) で書いてあるので、別の client で使うときは、その client の設定で読み替える。
+
 ## 同梱している skill
 
 <!-- generated:skills -->
@@ -102,7 +121,7 @@ worktree 環境や並列セッションの起動など、作業の進め方そ�
 
 ### third
 
-この plugin の skill が呼ぶ、または一緒に使う前提の、外部 repo の skill の同梱版。別の plugin を入れなくても動く。license は上流ごとの LICENSE を skills/third/ に同梱している。
+この plugin の skill が呼ぶ、または一緒に使う前提の、外部 repo の skill の同梱版。別の plugin を入れなくても動く。license は上流ごとの LICENSE を skills/ に同梱している。
 
 | skill | 起動 | 用途 |
 | --- | --- | --- |
@@ -165,8 +184,8 @@ hook は install した環境でそのまま動くが、以下を前提にして
 
 MIT ([LICENSE](LICENSE))
 
-[`skills/third/`](skills/third/) の skill はそれぞれの上流 repo のもので、上流の license に従う。上流ごとの LICENSE を `skills/third/LICENSE.<owner>-<repo>` として同梱している。
+「同梱している skill」の third の表に載る skill はそれぞれの上流 repo のもので、上流の license に従う。上流ごとの LICENSE を `skills/LICENSE.<owner>-<repo>` として同梱している。
 
-[`skills/knowledge/principle-index/`](skills/knowledge/principle-index/) の原則 leaf のうち上流の文書を翻案したものは、上流の MIT license に従う。許諾文を [`LICENSE.cursor-plugins-pstack`](skills/knowledge/principle-index/LICENSE.cursor-plugins-pstack) として同梱している。
+[`skills/principle-index/`](skills/principle-index/) の原則 leaf のうち上流の文書を翻案したものは、上流の MIT license に従う。許諾文を [`LICENSE.cursor-plugins-pstack`](skills/principle-index/LICENSE.cursor-plugins-pstack) として同梱している。
 
-[`skills/procedure/`](skills/procedure/) の `create-verification-skill` / `maintain-verification-skill` / `create-formal-verification-skill` / `maintain-formal-verification-skill` は上流の skill を改変したもので、上流の MIT license に従う。許諾文を各 skill の dir に `LICENSE.cursor-plugins-pstack` として同梱している。
+`create-verification-skill` / `maintain-verification-skill` / `create-formal-verification-skill` / `maintain-formal-verification-skill` は上流の skill を改変したもので、上流の MIT license に従う。許諾文を各 skill の dir に `LICENSE.cursor-plugins-pstack` として同梱している。

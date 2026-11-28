@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "swat-skills",
+  "description": "Claude Code で使う skill 集",
+  "author": {
+    "name": "swat9013"
+  },
+  "homepage": "https://github.com/swat9013/claude-skills",
+  "repository": "https://github.com/swat9013/claude-skills",
+  "license": "MIT"
+}
